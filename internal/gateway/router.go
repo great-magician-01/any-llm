@@ -135,6 +135,4 @@ func readAll(r io.Reader) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, u *model.Upstream, realModel string, body []byte) {
-	WriteError(w, 501, inFormat, "gateway not yet implemented", "internal_error")
-}
+

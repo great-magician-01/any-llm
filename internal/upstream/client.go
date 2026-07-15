@@ -47,6 +47,8 @@ func (r *Result) setUsage(u translate.Usage) {
 	r.usageMux.Unlock()
 }
 
+func (c *Client) HTTP() *http.Client { return c.http }
+
 func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.Request) (*Result, error) {
 	var body []byte
 	var err error
