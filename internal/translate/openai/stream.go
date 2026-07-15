@@ -145,3 +145,108 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 // The raw struct doesn't carry index; it is the position in the slice.
 // We rely on the caller having one tool call per chunk for the "new" case.
 func tcIndex(tc rawToolCall) int { return 0 }
+
+type StreamEncoder struct {
+	model    string
+	id       string
+	toolIdx  map[int]int // IR block index -> OpenAI tool index
+	nextTool int
+}
+
+func NewStreamEncoder(model string) *StreamEncoder {
+	return &StreamEncoder{model: model, toolIdx: map[int]int{}}
+}
+
+func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
+	switch evt.Type {
+	case "message_start":
+		e.id = evt.MessageID
+		if e.id == "" {
+			e.id = "chatcmpl-anylem"
+		}
+		ch := map[string]any{
+			"id":      e.id,
+			"object":  "chat.completion.chunk",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"role": "assistant", "content": ""}}},
+		}
+		if e.model != "" || evt.Model != "" {
+			m := evt.Model
+			if m == "" {
+				m = e.model
+			}
+			ch["model"] = m
+			e.model = m
+		}
+		return [][]byte{frame(ch)}, nil
+
+	case "content_block_start":
+		if evt.Block != nil && evt.Block.Type == "tool_use" {
+			idx := e.nextTool
+			e.nextTool++
+			e.toolIdx[evt.Index] = idx
+			ch := map[string]any{
+				"id": e.id, "object": "chat.completion.chunk",
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": idx, "id": evt.Block.ToolUse.ID, "type": "function",
+						"function": map[string]any{"name": evt.Block.ToolUse.Name, "arguments": ""},
+					}},
+				}}},
+			}
+			return [][]byte{frame(ch)}, nil
+		}
+		// text block start -> no OpenAI output
+		return nil, nil
+
+	case "content_block_delta":
+		if evt.Delta == nil {
+			return nil, nil
+		}
+		switch evt.Delta.Type {
+		case "text_delta":
+			ch := map[string]any{
+				"id": e.id, "object": "chat.completion.chunk",
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": evt.Delta.Text}}},
+			}
+			return [][]byte{frame(ch)}, nil
+		case "input_json_delta":
+			idx, ok := e.toolIdx[evt.Index]
+			if !ok {
+				idx = 0
+			}
+			ch := map[string]any{
+				"id": e.id, "object": "chat.completion.chunk",
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+					"tool_calls": []map[string]any{{
+						"index": idx,
+						"function": map[string]any{"arguments": evt.Delta.PartialJSON},
+					}},
+				}}},
+			}
+			return [][]byte{frame(ch)}, nil
+		}
+
+	case "content_block_stop":
+		return nil, nil
+
+	case "message_delta":
+		choice := map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": mapStopReasonToOpenAI(evt.StopReason)}
+		ch := map[string]any{"id": e.id, "object": "chat.completion.chunk", "choices": []map[string]any{choice}}
+		if evt.InputTokens > 0 || evt.OutputTokens > 0 {
+			ch["usage"] = map[string]any{
+				"prompt_tokens": evt.InputTokens, "completion_tokens": evt.OutputTokens,
+				"total_tokens": evt.InputTokens + evt.OutputTokens,
+			}
+		}
+		return [][]byte{frame(ch)}, nil
+
+	case "message_stop":
+		return [][]byte{[]byte("data: [DONE]\n\n")}, nil
+	}
+	return nil, nil
+}
+
+func frame(v any) []byte {
+	b, _ := json.Marshal(v)
+	return []byte("data: " + string(b) + "\n\n")
+}

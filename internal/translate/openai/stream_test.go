@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -98,5 +99,79 @@ func TestStreamDecode_ToolUseFlow(t *testing.T) {
 	}
 	if got[len(got)-2].StopReason != "tool_calls" {
 		t.Fatalf("stop_reason=%+v", got[len(got)-2])
+	}
+}
+
+func TestStreamEncode_TextFlow(t *testing.T) {
+	e := NewStreamEncoder("gpt-4o")
+	var lines []string
+	enc := func(evt *translate.StreamEvent) {
+		fs, err := e.Encode(evt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			lines = append(lines, string(f))
+		}
+	}
+	enc(&translate.StreamEvent{Type: "message_start", MessageID: "m1", Model: "gpt-4o"})
+	enc(&translate.StreamEvent{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "text"}})
+	enc(&translate.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}})
+	enc(&translate.StreamEvent{Type: "content_block_stop", Index: 0})
+	enc(&translate.StreamEvent{Type: "message_delta", StopReason: "stop", InputTokens: 3, OutputTokens: 2})
+	enc(&translate.StreamEvent{Type: "message_stop"})
+
+	// first line: role assistant
+	if !strings.Contains(lines[0], `"role":"assistant"`) {
+		t.Fatalf("line0=%s", lines[0])
+	}
+	// second: content Hi
+	if !strings.Contains(lines[1], `"content":"Hi"`) {
+		t.Fatalf("line1=%s", lines[1])
+	}
+	// finish_reason stop
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, `"finish_reason":"stop"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no finish_reason: %v", lines)
+	}
+	// [DONE]
+	if !strings.HasSuffix(lines[len(lines)-1], "data: [DONE]\n\n") {
+		t.Fatalf("last line=%q", lines[len(lines)-1])
+	}
+}
+
+func TestStreamEncode_ToolUseFlow(t *testing.T) {
+	e := NewStreamEncoder("gpt-4o")
+	var lines []string
+	enc := func(evt *translate.StreamEvent) {
+		fs, err := e.Encode(evt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			lines = append(lines, string(f))
+		}
+	}
+	enc(&translate.StreamEvent{Type: "message_start", MessageID: "m1"})
+	enc(&translate.StreamEvent{Type: "content_block_start", Index: 1, Block: &translate.ContentBlock{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather"}}})
+	enc(&translate.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `{"city":"SF"}`}})
+	enc(&translate.StreamEvent{Type: "content_block_stop", Index: 1})
+	enc(&translate.StreamEvent{Type: "message_delta", StopReason: "tool_calls"})
+	enc(&translate.StreamEvent{Type: "message_stop"})
+
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, `"name":"get_weather"`) || !strings.Contains(joined, `"id":"call_1"`) {
+		t.Fatalf("tool start missing: %s", joined)
+	}
+	if !strings.Contains(joined, `"arguments":"{\"city\":\"SF\"}"`) {
+		t.Fatalf("tool args missing: %s", joined)
+	}
+	if !strings.Contains(joined, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("no tool_calls finish: %s", joined)
 	}
 }
