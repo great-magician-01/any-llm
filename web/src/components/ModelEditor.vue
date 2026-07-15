@@ -22,13 +22,11 @@ async function del(id: number) {
   await load()
 }
 
-function onModalClose(v: boolean) { if (!v) emit('close') }
-
 watch(() => props.show, (s) => { if (s) load() })
 </script>
 
 <template>
-  <n-modal :show="show" @update:show="onModalClose">
+  <n-modal :show="show" @update:show="(show: boolean) => { if (!show) emit('close') }">
     <n-card title="模型管理" style="width:500px">
       <n-space vertical>
         <n-space>

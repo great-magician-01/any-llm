@@ -28,8 +28,6 @@ function add() { editing.value = null; resetForm(); showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function fetchM(id: number) { await fetchUpsModels(id); await load() }
 
-function onFormModalClose(v: boolean) { if (!v) showForm.value = false }
-
 onMounted(load)
 </script>
 
@@ -57,7 +55,7 @@ onMounted(load)
       </template>
     </n-data-table>
 
-    <n-modal :show="showForm" @update:show="onFormModalClose">
+    <n-modal :show="showForm" @update:show="(show: boolean) => { if (!show) showForm = false }">
       <n-card :title="editing ? '编辑上游' : '添加上游'" style="width:500px">
         <n-form>
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
