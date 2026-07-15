@@ -806,6 +806,40 @@ func TestEncodeRequest_ExtraMerged(t *testing.T) {
 		t.Fatalf("extra not merged: %v", got["top_k"])
 	}
 }
+
+func TestEncodeResponse_TextAndToolUse(t *testing.T) {
+	resp := &translate.Response{
+		ID:    "c1",
+		Model: "gpt-4o",
+		Content: []translate.ContentBlock{
+			{Type: "text", Text: "Hi"},
+			{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)}},
+		},
+		StopReason: "tool_calls",
+		Usage:      translate.Usage{InputTokens: 10, OutputTokens: 5},
+	}
+	out, err := EncodeResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got rawResponse
+	_ = json.Unmarshal(out, &got)
+	if got.ID != "c1" || got.Model != "gpt-4o" {
+		t.Fatalf("id/model=%+v", got)
+	}
+	if got.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish=%q", got.Choices[0].FinishReason)
+	}
+	if decodeString(got.Choices[0].Message.Content) != "Hi" {
+		t.Fatalf("content=%s", got.Choices[0].Message.Content)
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 || got.Choices[0].Message.ToolCalls[0].Function.Name != "get_weather" {
+		t.Fatalf("tool_calls=%+v", got.Choices[0].Message.ToolCalls)
+	}
+	if got.Usage == nil || got.Usage.PromptTokens != 10 || got.Usage.CompletionTokens != 5 {
+		t.Fatalf("usage=%+v", got.Usage)
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1017,7 +1051,7 @@ func mapStopReasonToOpenAI(reason string) string {
 }
 ```
 
-Note: `EncodeResponse` is included here because it shares helpers (`mapStopReasonToOpenAI`); its test is in Task 5.
+Note: `EncodeResponse` is included here because it shares helpers (`mapStopReasonToOpenAI`); it is tested in this task's `encode_test.go` (`TestEncodeResponse_TextAndToolUse`).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2242,6 +2276,44 @@ func TestEncodeRequest_ExtraMerged(t *testing.T) {
 	_ = json.Unmarshal(out, &got)
 	if got["top_k"] != float64(40) {
 		t.Fatalf("extra=%v", got["top_k"])
+	}
+}
+
+func TestEncodeResponse_TextAndToolUse(t *testing.T) {
+	resp := &translate.Response{
+		ID:    "msg_1",
+		Model: "claude-3-5",
+		Content: []translate.ContentBlock{
+			{Type: "text", Text: "Hi"},
+			{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "toolu_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)}},
+		},
+		StopReason: "stop",
+		Usage:      translate.Usage{InputTokens: 10, OutputTokens: 5},
+	}
+	out, err := EncodeResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["id"] != "msg_1" || got["model"] != "claude-3-5" {
+		t.Fatalf("id/model=%v %v", got["id"], got["model"])
+	}
+	if got["stop_reason"] != "end_turn" {
+		t.Fatalf("stop_reason=%v", got["stop_reason"])
+	}
+	content := got["content"].([]any)
+	first := content[0].(map[string]any)
+	if first["type"] != "text" || first["text"] != "Hi" {
+		t.Fatalf("text=%+v", first)
+	}
+	second := content[1].(map[string]any)
+	if second["type"] != "tool_use" || second["name"] != "get_weather" {
+		t.Fatalf("tool_use=%+v", second)
+	}
+	usage := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(10) || usage["output_tokens"] != float64(5) {
+		t.Fatalf("usage=%+v", usage)
 	}
 }
 ```
