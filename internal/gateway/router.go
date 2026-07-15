@@ -22,8 +22,16 @@ func New(db *sql.DB, client *upstream.Client, recorder *usage.Recorder) *Gateway
 	return &Gateway{db: db, client: client, recorder: recorder}
 }
 
-func (g *Gateway) Start() { g.recorder.Start() }
-func (g *Gateway) Stop()  { g.recorder.Stop() }
+func (g *Gateway) Start() {
+	if g.recorder != nil {
+		g.recorder.Start()
+	}
+}
+func (g *Gateway) Stop() {
+	if g.recorder != nil {
+		g.recorder.Stop()
+	}
+}
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
