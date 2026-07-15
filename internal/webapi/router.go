@@ -22,6 +22,8 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/admin/upstreams", a.handleUpstreams)
 	mux.HandleFunc("/api/admin/upstreams/", a.handleUpstreamItem)
+	mux.HandleFunc("/api/admin/keys", a.handleKeys)
+	mux.HandleFunc("/api/admin/keys/", a.handleKeyItem)
 	return mux
 }
 
