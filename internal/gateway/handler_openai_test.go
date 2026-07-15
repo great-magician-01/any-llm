@@ -124,3 +124,34 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 		t.Fatalf("formats=%+v", records[0])
 	}
 }
+
+func TestCompletion_UpstreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false)
+	k, _ := model.CreateExtKey(d, "test")
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	if w.Code != 429 {
+		t.Fatalf("status=%d want 429", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "rate limited") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+
+	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	if len(records) != 1 || records[0].Status != "error" {
+		t.Fatalf("records=%+v", records)
+	}
+}
