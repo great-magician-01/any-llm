@@ -119,6 +119,34 @@ func TestDecodeRequest_ExtraFields(t *testing.T) {
 	}
 }
 
+func TestDecodeRequest_StreamOptionsFlowsToExtra(t *testing.T) {
+	src := []byte(`{"model":"gpt-4o","messages":[],"stream":true,"stream_options":{"include_usage":true}}`)
+	req, err := DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	so, ok := req.Extra["stream_options"]
+	if !ok {
+		t.Fatalf("stream_options dropped from Extra: %+v", req.Extra)
+	}
+	if m, ok := so.(map[string]any); !ok || m["include_usage"] != true {
+		t.Fatalf("stream_options=%+v", so)
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	soGot, ok := got["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options not re-emitted: %+v", got["stream_options"])
+	}
+	if soGot["include_usage"] != true {
+		t.Fatalf("stream_options.include_usage=%v", soGot["include_usage"])
+	}
+}
+
 func _useTranslate() { _ = translate.Request{} }
 
 func TestDecodeResponse_TextAndUsage(t *testing.T) {

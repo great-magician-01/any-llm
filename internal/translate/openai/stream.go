@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -10,16 +11,15 @@ import (
 
 type StreamDecoder struct {
 	started     bool
-	textOpen    bool // a text block at index 0 is open
+	textOpen    bool          // a text block at index 0 is open
 	textIndex   int
-	toolOpenIdx int  // which tool_calls index is currently open (-1 = none)
-	toolBlock   int  // IR block index for the open tool block
-	nextBlock   int  // next IR block index to allocate
+	openTools   map[int]int   // OpenAI tool_calls index -> IR block index
+	nextBlock   int           // next IR block index to allocate
 	inputTokens int
 }
 
 func NewStreamDecoder() *StreamDecoder {
-	return &StreamDecoder{toolOpenIdx: -1, nextBlock: 1}
+	return &StreamDecoder{openTools: map[int]int{}, nextBlock: 1}
 }
 
 // Decode consumes one SSE data payload (without "data: " prefix).
@@ -31,10 +31,7 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
 			d.textOpen = false
 		}
-		if d.toolOpenIdx >= 0 {
-			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.toolBlock})
-			d.toolOpenIdx = -1
-		}
+		evs = append(evs, d.closeAllTools()...)
 		evs = append(evs, &translate.StreamEvent{Type: "message_stop"})
 		return evs, nil
 	}
@@ -91,25 +88,31 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 				evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
 				d.textOpen = false
 			}
-			if d.toolOpenIdx >= 0 {
-				evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.toolBlock})
+			// if a tool with the same OpenAI index is already open, close it first
+			if blockIdx, ok := d.openTools[tc.Index]; ok {
+				evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: blockIdx})
+				delete(d.openTools, tc.Index)
 			}
-			d.toolOpenIdx = tcIndex(tc) // OpenAI tool_calls index (0-based)
-			d.toolBlock = d.nextBlock
+			newBlock := d.nextBlock
 			d.nextBlock++
+			d.openTools[tc.Index] = newBlock
 			evs = append(evs, &translate.StreamEvent{
 				Type:  "content_block_start",
-				Index: d.toolBlock,
+				Index: newBlock,
 				Block: &translate.ContentBlock{
 					Type:    "tool_use",
 					ToolUse: &translate.ToolUse{ID: tc.ID, Name: tc.Function.Name, Input: json.RawMessage("{}")},
 				},
 			})
-		} else if d.toolOpenIdx >= 0 {
-			// argument fragment
+		} else {
+			// argument fragment: route to the IR block for this OpenAI tool index
+			blockIdx, ok := d.openTools[tc.Index]
+			if !ok {
+				continue
+			}
 			evs = append(evs, &translate.StreamEvent{
 				Type:  "content_block_delta",
-				Index: d.toolBlock,
+				Index: blockIdx,
 				Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: tc.Function.Arguments},
 			})
 		}
@@ -121,10 +124,7 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
 			d.textOpen = false
 		}
-		if d.toolOpenIdx >= 0 {
-			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.toolBlock})
-			d.toolOpenIdx = -1
-		}
+		evs = append(evs, d.closeAllTools()...)
 		md := &translate.StreamEvent{
 			Type:       "message_delta",
 			StopReason: mapStopReasonFromOpenAI(*c.FinishReason),
@@ -141,10 +141,24 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 	return evs, nil
 }
 
-// tcIndex extracts the OpenAI tool_calls array index from a delta entry.
-// The raw struct doesn't carry index; it is the position in the slice.
-// We rely on the caller having one tool call per chunk for the "new" case.
-func tcIndex(tc rawToolCall) int { return 0 }
+// closeAllTools emits content_block_stop for every open tool block in
+// ascending IR block index order, then clears the open-tool tracking.
+func (d *StreamDecoder) closeAllTools() []*translate.StreamEvent {
+	if len(d.openTools) == 0 {
+		return nil
+	}
+	var idxs []int
+	for _, blockIdx := range d.openTools {
+		idxs = append(idxs, blockIdx)
+	}
+	sort.Ints(idxs)
+	var evs []*translate.StreamEvent
+	for _, blockIdx := range idxs {
+		evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: blockIdx})
+	}
+	d.openTools = map[int]int{}
+	return evs
+}
 
 type StreamEncoder struct {
 	model    string

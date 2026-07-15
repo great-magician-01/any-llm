@@ -7,10 +7,16 @@ import (
 	"github.com/great-magician-01/any-llm/internal/translate"
 )
 
+const defaultMaxTokens = 4096
+
 func EncodeRequest(req *translate.Request) ([]byte, error) {
+	mt := req.MaxTokens
+	if mt <= 0 {
+		mt = defaultMaxTokens
+	}
 	out := map[string]any{
 		"model":      req.Model,
-		"max_tokens": req.MaxTokens,
+		"max_tokens": mt,
 	}
 	// system
 	if len(req.System) > 0 {

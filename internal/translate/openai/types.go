@@ -23,6 +23,7 @@ type rawMessage struct {
 }
 
 type rawToolCall struct {
+	Index    int             `json:"index,omitempty"`
 	ID       string          `json:"id"`
 	Type     string          `json:"type"`
 	Function rawToolFunction `json:"function"`

@@ -118,7 +118,7 @@ func TestDecodeResponse_TextAndToolUse(t *testing.T) {
 	if resp.Content[1].Type != "tool_use" || resp.Content[1].ToolUse.Name != "get_weather" {
 		t.Fatalf("tool_use=%+v", resp.Content[1])
 	}
-	if resp.StopReason != "end_turn" {
+	if resp.StopReason != "stop" {
 		t.Fatalf("stop=%q", resp.StopReason)
 	}
 	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 8 {

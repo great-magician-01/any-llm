@@ -111,6 +111,23 @@ func TestEncodeRequest_ExtraMerged(t *testing.T) {
 	}
 }
 
+func TestEncodeRequest_MaxTokensDefaultWhenUnset(t *testing.T) {
+	req := &translate.Request{
+		Model:     "claude-3-5",
+		Messages:  []translate.Message{},
+		MaxTokens: 0,
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["max_tokens"] != float64(4096) {
+		t.Fatalf("max_tokens=%v want 4096", got["max_tokens"])
+	}
+}
+
 func TestEncodeResponse_TextAndToolUse(t *testing.T) {
 	resp := &translate.Response{
 		ID:    "msg_1",

@@ -69,7 +69,7 @@ type Response struct {
 	ID         string
 	Model      string
 	Content    []ContentBlock
-	StopReason string
+	StopReason string // canonical IR vocabulary: "stop" | "max_tokens" | "tool_calls" | "content_filter"
 	Usage      Usage
 	Extra      map[string]any
 }

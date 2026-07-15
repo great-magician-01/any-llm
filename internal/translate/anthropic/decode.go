@@ -172,7 +172,7 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 	resp := &translate.Response{
 		ID:         rr.ID,
 		Model:      rr.Model,
-		StopReason: rr.StopReason,
+		StopReason: mapStopReasonFromAnthropic(rr.StopReason),
 		Usage: translate.Usage{
 			InputTokens:  rr.Usage.InputTokens,
 			OutputTokens: rr.Usage.OutputTokens,
@@ -193,4 +193,18 @@ func arrayToRaw(parts []json.RawMessage) json.RawMessage {
 	}
 	b, _ := json.Marshal(parts)
 	return b
+}
+
+func mapStopReasonFromAnthropic(reason string) string {
+	switch reason {
+	case "end_turn":
+		return "stop"
+	case "tool_use":
+		return "tool_calls"
+	case "max_tokens":
+		return "max_tokens"
+	case "content_filter":
+		return "content_filter"
+	}
+	return reason
 }

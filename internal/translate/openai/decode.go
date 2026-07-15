@@ -159,7 +159,7 @@ func decodeStop(raw json.RawMessage) []string {
 var knownRequestKeys = map[string]bool{
 	"model": true, "messages": true, "tools": true, "tool_choice": true,
 	"max_tokens": true, "temperature": true, "top_p": true, "stream": true,
-	"stop": true, "stream_options": true,
+	"stop": true,
 }
 
 func extractExtra(all map[string]any) map[string]any {

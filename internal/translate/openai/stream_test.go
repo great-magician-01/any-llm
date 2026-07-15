@@ -102,6 +102,52 @@ func TestStreamDecode_ToolUseFlow(t *testing.T) {
 	}
 }
 
+func TestStreamDecode_ParallelToolCalls(t *testing.T) {
+	d := NewStreamDecoder()
+	var got []*translate.StreamEvent
+	dec := func(s string) {
+		evs, err := d.Decode([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, evs...)
+	}
+	dec(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"get_time","arguments":""}}]}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"SF\"}"}}]}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"tz\":\"PST\"}"}}]}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}`)
+	dec("[DONE]")
+
+	blockStarts := map[int]string{}
+	type deltaInfo struct {
+		Index int
+		JSON  string
+	}
+	var deltas []deltaInfo
+	for _, e := range got {
+		if e.Type == "content_block_start" && e.Block != nil && e.Block.Type == "tool_use" {
+			blockStarts[e.Index] = e.Block.ToolUse.ID
+		}
+		if e.Type == "content_block_delta" && e.Delta != nil && e.Delta.Type == "input_json_delta" {
+			deltas = append(deltas, deltaInfo{Index: e.Index, JSON: e.Delta.PartialJSON})
+		}
+	}
+	if blockStarts[1] != "call_1" || blockStarts[2] != "call_2" {
+		t.Fatalf("block starts=%+v", blockStarts)
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("deltas=%+v", deltas)
+	}
+	if deltas[0].Index != 1 || deltas[0].JSON != `{"city":"SF"}` {
+		t.Fatalf("delta[0]=%+v want block 1 {\"city\":\"SF\"}", deltas[0])
+	}
+	if deltas[1].Index != 2 || deltas[1].JSON != `{"tz":"PST"}` {
+		t.Fatalf("delta[1]=%+v want block 2 {\"tz\":\"PST\"}", deltas[1])
+	}
+}
+
 func TestStreamEncode_TextFlow(t *testing.T) {
 	e := NewStreamEncoder("gpt-4o")
 	var lines []string
