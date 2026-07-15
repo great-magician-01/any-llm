@@ -177,3 +177,57 @@ func extractExtra(all map[string]any) map[string]any {
 	}
 	return extra
 }
+
+func DecodeResponse(body []byte) (*translate.Response, error) {
+	var rr rawResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, fmt.Errorf("openai decode response: %w", err)
+	}
+	resp := &translate.Response{
+		ID:         rr.ID,
+		Model:      rr.Model,
+		StopReason: mapStopReasonFromOpenAI(firstFinishReason(rr.Choices)),
+	}
+	if len(rr.Choices) > 0 {
+		msg := rr.Choices[0].Message
+		if msg.Content != "" {
+			resp.Content = append(resp.Content, translate.ContentBlock{Type: "text", Text: msg.Content})
+		}
+		for _, tc := range msg.ToolCalls {
+			resp.Content = append(resp.Content, translate.ContentBlock{
+				Type: "tool_use",
+				ToolUse: &translate.ToolUse{
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: json.RawMessage(tc.Function.Arguments),
+				},
+			})
+		}
+	}
+	if rr.Usage != nil {
+		resp.Usage.InputTokens = rr.Usage.PromptTokens
+		resp.Usage.OutputTokens = rr.Usage.CompletionTokens
+	}
+	return resp, nil
+}
+
+func firstFinishReason(choices []rawChoice) string {
+	if len(choices) == 0 {
+		return ""
+	}
+	return choices[0].FinishReason
+}
+
+func mapStopReasonFromOpenAI(reason string) string {
+	switch reason {
+	case "stop":
+		return "stop"
+	case "length":
+		return "max_tokens"
+	case "tool_calls":
+		return "tool_calls"
+	case "content_filter":
+		return "content_filter"
+	}
+	return reason
+}

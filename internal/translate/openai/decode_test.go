@@ -120,3 +120,50 @@ func TestDecodeRequest_ExtraFields(t *testing.T) {
 }
 
 func _useTranslate() { _ = translate.Request{} }
+
+func TestDecodeResponse_TextAndUsage(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-1","model":"gpt-4o",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "chatcmpl-1" || resp.Model != "gpt-4o" {
+		t.Fatalf("id/model=%+v", resp)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" || resp.Content[0].Text != "Hi" {
+		t.Fatalf("content=%+v", resp.Content)
+	}
+	if resp.StopReason != "stop" {
+		t.Fatalf("stop_reason=%q", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 5 {
+		t.Fatalf("usage=%+v", resp.Usage)
+	}
+}
+
+func TestDecodeResponse_ToolCalls(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-2","model":"gpt-4o",
+		"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}
+		]},"finish_reason":"tool_calls"}],
+		"usage":{"prompt_tokens":8,"completion_tokens":12,"total_tokens":20}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StopReason != "tool_calls" {
+		t.Fatalf("stop_reason=%q", resp.StopReason)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "tool_use" || resp.Content[0].ToolUse.Name != "get_weather" {
+		t.Fatalf("content=%+v", resp.Content)
+	}
+	if resp.Usage.OutputTokens != 12 {
+		t.Fatalf("usage=%+v", resp.Usage)
+	}
+}
