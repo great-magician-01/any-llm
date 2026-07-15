@@ -163,3 +163,34 @@ func extractExtra(all map[string]any) map[string]any {
 	}
 	return extra
 }
+
+func DecodeResponse(body []byte) (*translate.Response, error) {
+	var rr rawResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, fmt.Errorf("anthropic decode response: %w", err)
+	}
+	resp := &translate.Response{
+		ID:         rr.ID,
+		Model:      rr.Model,
+		StopReason: rr.StopReason,
+		Usage: translate.Usage{
+			InputTokens:  rr.Usage.InputTokens,
+			OutputTokens: rr.Usage.OutputTokens,
+		},
+	}
+	blocks, err := decodeBlocks(arrayToRaw(rr.Content))
+	if err != nil {
+		return nil, err
+	}
+	resp.Content = blocks
+	return resp, nil
+}
+
+// arrayToRaw re-serializes a slice of RawMessage into a single JSON array RawMessage.
+func arrayToRaw(parts []json.RawMessage) json.RawMessage {
+	if len(parts) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(parts)
+	return b
+}

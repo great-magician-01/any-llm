@@ -91,3 +91,37 @@ func TestDecodeRequest_ExtraFields(t *testing.T) {
 }
 
 func _useT() { _ = translate.Request{} }
+
+func TestDecodeResponse_TextAndToolUse(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","model":"claude-3-5",
+		"content":[
+			{"type":"text","text":"Hi"},
+			{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}}
+		],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":10,"output_tokens":8}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "msg_1" || resp.Model != "claude-3-5" {
+		t.Fatalf("id/model=%+v", resp)
+	}
+	if len(resp.Content) != 2 {
+		t.Fatalf("content len=%d", len(resp.Content))
+	}
+	if resp.Content[0].Type != "text" || resp.Content[0].Text != "Hi" {
+		t.Fatalf("text=%+v", resp.Content[0])
+	}
+	if resp.Content[1].Type != "tool_use" || resp.Content[1].ToolUse.Name != "get_weather" {
+		t.Fatalf("tool_use=%+v", resp.Content[1])
+	}
+	if resp.StopReason != "end_turn" {
+		t.Fatalf("stop=%q", resp.StopReason)
+	}
+	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 8 {
+		t.Fatalf("usage=%+v", resp.Usage)
+	}
+}
