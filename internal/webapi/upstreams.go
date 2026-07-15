@@ -1,0 +1,181 @@
+package webapi
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/upstream"
+)
+
+func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
+	list, err := model.ListUpstreams(a.db)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	for i := range list {
+		list[i].APIKey = mask(list[i].APIKey)
+	}
+	writeJSON(w, 200, map[string]any{"data": list})
+}
+
+func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		BaseURL     string `json:"base_url"`
+		APIKey      string `json:"api_key"`
+		Format      string `json:"format"`
+		FetchModels bool   `json:"fetch_models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if req.Format != "openai" && req.Format != "anthropic" {
+		writeJSON(w, 400, map[string]any{"error": "format must be openai or anthropic"})
+		return
+	}
+	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format}
+	id, err := model.CreateUpstream(a.db, u)
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.FetchModels && a.client != nil {
+		u.ID = id
+		names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
+		if err == nil {
+			model.ReplaceModels(a.db, id, names)
+		}
+	}
+	u, _ = model.GetUpstreamByID(a.db, id)
+	u.APIKey = mask(u.APIKey)
+	writeJSON(w, 200, u)
+}
+
+func (a *API) getUpstream(w http.ResponseWriter, r *http.Request, id int64) {
+	u, err := model.GetUpstreamByID(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	u.APIKey = mask(u.APIKey)
+	writeJSON(w, 200, u)
+}
+
+func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
+	u, err := model.GetUpstreamByID(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	var req struct {
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if req.Name != "" {
+		u.Name = req.Name
+	}
+	if req.BaseURL != "" {
+		u.BaseURL = req.BaseURL
+	}
+	if req.APIKey != "" {
+		u.APIKey = req.APIKey
+	}
+	if req.Format != "" {
+		u.Format = req.Format
+	}
+	if err := model.UpdateUpstream(a.db, u); err != nil {
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
+	u.APIKey = mask(u.APIKey)
+	writeJSON(w, 200, u)
+}
+
+func (a *API) deleteUpstream(w http.ResponseWriter, r *http.Request, id int64) {
+	if err := model.DeleteUpstream(a.db, id); err != nil {
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (a *API) fetchModels(w http.ResponseWriter, r *http.Request, id int64) {
+	u, err := model.GetUpstreamByID(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	if a.client == nil {
+		writeJSON(w, 500, map[string]any{"error": "upstream client not configured"})
+		return
+	}
+	names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
+	if err != nil {
+		writeJSON(w, 502, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := model.ReplaceModels(a.db, id, names); err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"models": names})
+}
+
+func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID int64, rest []string) {
+	if len(rest) == 0 {
+		switch r.Method {
+		case "GET":
+			models, err := model.ListModels(a.db, upstreamID)
+			if err != nil {
+				writeJSON(w, 500, map[string]any{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"data": models})
+		case "POST":
+			var req struct {
+				ModelName string `json:"model_name"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			if err := model.AddModel(a.db, upstreamID, req.ModelName, true); err != nil {
+				writeJSON(w, 400, map[string]any{"error": err.Error()})
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true})
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
+		return
+	}
+	if rest[0] != "" && r.Method == "DELETE" {
+		mid := parseID(rest[0])
+		if err := model.DeleteModel(a.db, mid); err != nil {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func mask(s string) string {
+	if len(s) <= 8 {
+		return "****"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
+}
