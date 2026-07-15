@@ -9,16 +9,21 @@ import (
 
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
+	"github.com/great-magician-01/any-llm/internal/usage"
 )
 
 type Gateway struct {
-	db     *sql.DB
-	client *upstream.Client
+	db       *sql.DB
+	client   *upstream.Client
+	recorder *usage.Recorder
 }
 
-func New(db *sql.DB, client *upstream.Client) *Gateway {
-	return &Gateway{db: db, client: client}
+func New(db *sql.DB, client *upstream.Client, recorder *usage.Recorder) *Gateway {
+	return &Gateway{db: db, client: client, recorder: recorder}
 }
+
+func (g *Gateway) Start() { g.recorder.Start() }
+func (g *Gateway) Stop()  { g.recorder.Stop() }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {

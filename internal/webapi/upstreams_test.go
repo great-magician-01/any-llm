@@ -37,7 +37,7 @@ func TestCreateUpstream(t *testing.T) {
 	}
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["Name"] != "test" {
+	if resp["name"] != "test" {
 		t.Fatalf("resp=%+v", resp)
 	}
 }

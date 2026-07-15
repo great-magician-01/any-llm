@@ -9,6 +9,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/gateway"
 	"github.com/great-magician-01/any-llm/internal/upstream"
+	"github.com/great-magician-01/any-llm/internal/usage"
 	"github.com/great-magician-01/any-llm/internal/webapi"
 )
 
@@ -25,7 +26,10 @@ func main() {
 	defer d.Close()
 
 	client := upstream.NewClient(nil)
-	gw := gateway.New(d, client)
+	recorder := usage.NewRecorder(d, 256)
+	recorder.Start()
+	defer recorder.Stop()
+	gw := gateway.New(d, client, recorder)
 	api := webapi.NewAPI(d, client)
 
 	mux := http.NewServeMux()

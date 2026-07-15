@@ -1,5 +1,9 @@
 package config
 
+// Package config loads application configuration from environment variables.
+// YAML config file support (e.g. config.yaml) is not yet implemented; all
+// settings are sourced from env vars only for now.
+
 import (
 	"crypto/rand"
 	"encoding/hex"

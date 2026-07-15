@@ -45,7 +45,7 @@ func TestListKeysMasked(t *testing.T) {
 	if len(resp.Data) != 1 {
 		t.Fatalf("len=%d", len(resp.Data))
 	}
-	key, _ := resp.Data[0]["Key"].(string)
+	key, _ := resp.Data[0]["key"].(string)
 	if !strings.Contains(key, "****") {
 		t.Fatalf("key not masked: %q", key)
 	}

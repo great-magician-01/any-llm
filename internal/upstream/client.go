@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,10 +30,11 @@ func NewClient(httpClient *http.Client) *Client {
 }
 
 type Result struct {
-	Response *translate.Response
-	Stream   <-chan *translate.StreamEvent
-	usage    translate.Usage
-	usageMux sync.Mutex
+	Response  *translate.Response
+	Stream    <-chan *translate.StreamEvent
+	usage     translate.Usage
+	usageMux  sync.Mutex
+	streamErr error
 }
 
 func (r *Result) Usage() translate.Usage {
@@ -40,6 +42,8 @@ func (r *Result) Usage() translate.Usage {
 	defer r.usageMux.Unlock()
 	return r.usage
 }
+
+func (r *Result) StreamErr() error { return r.streamErr }
 
 func (r *Result) setUsage(u translate.Usage) {
 	r.usageMux.Lock()
@@ -157,6 +161,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 		case "openai":
 			events, err := oaiDec.Decode([]byte(data))
 			if err != nil {
+				log.Printf("stream decode error: %v", err)
 				continue
 			}
 			for _, ev := range events {
@@ -187,6 +192,9 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				return
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		result.streamErr = fmt.Errorf("stream scan error: %w", err)
 	}
 }
 

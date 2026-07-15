@@ -19,7 +19,7 @@ func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
-	g := New(d, nil)
+	g := New(d, nil, nil)
 	return g, d
 }
 

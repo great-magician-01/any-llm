@@ -96,7 +96,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, inFormat string, result *u
 	}
 
 	usage := result.Usage()
-	g.recordUsage(key, u, realModel, inFormat, usage.InputTokens, usage.OutputTokens, true, "ok")
+	status := "ok"
+	if err := result.StreamErr(); err != nil {
+		status = "error"
+	}
+	g.recordUsage(key, u, realModel, inFormat, usage.InputTokens, usage.OutputTokens, true, status)
 }
 
 func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
@@ -129,5 +133,9 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 		uid := u.ID
 		rec.UpstreamID = &uid
 	}
-	model.InsertUsage(g.db, rec)
+	if g.recorder != nil {
+		g.recorder.Record(rec)
+	} else {
+		model.InsertUsage(g.db, rec)
+	}
 }
