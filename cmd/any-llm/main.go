@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -14,7 +15,6 @@ import (
 	"github.com/great-magician-01/any-llm/internal/gateway"
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/upstream"
-	"github.com/great-magician-01/any-llm/internal/usage"
 	"github.com/great-magician-01/any-llm/internal/webapi"
 )
 
@@ -33,25 +33,38 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Close()
-	logger.Info("any-llm starting", "host", cfg.Host, "port", cfg.Port, "db", cfg.DBPath, "log_file", cfg.LogFile, "log_level", cfg.LogLevel.String())
+	logger.Info("any-llm starting", "host", cfg.Host, "port", cfg.Port, "db_type", cfg.DBType, "log_file", cfg.LogFile, "log_level", cfg.LogLevel.String())
 
-	d, err := db.Open(cfg.DBPath)
+	var d *sql.DB
+	switch cfg.DBType {
+	case "postgres":
+		logger.Info("opening postgres", "host", cfg.DBHost, "port", cfg.DBPort, "db", cfg.DBName, "schema", cfg.DBSchema)
+		d, err = db.OpenPG(db.PGConfig{
+			Host:     cfg.DBHost,
+			Port:     cfg.DBPort,
+			User:     cfg.DBUser,
+			Password: cfg.DBPassword,
+			DBName:   cfg.DBName,
+			Schema:   cfg.DBSchema,
+		})
+	default:
+		logger.Info("opening sqlite", "path", cfg.DBPath)
+		d, err = db.OpenSQLite(cfg.DBPath)
+	}
 	if err != nil {
-		logger.Error("open db failed", "err", err, "path", cfg.DBPath)
+		logger.Error("open db failed", "err", err, "db_type", cfg.DBType)
 		os.Exit(1)
 	}
 	defer d.Close()
 
-	rec := usage.NewRecorder(d, 256)
-	rec.Start()
-	defer rec.Stop()
+	writer := db.NewWriter(d, 512)
+	writer.Start()
+	defer writer.Stop()
 
 	client := upstream.NewClient(nil)
-	gw := gateway.New(d, client, rec)
-	gw.Start()
-	defer gw.Stop()
+	gw := gateway.New(writer.DB, writer, client)
 
-	api := webapi.NewAPI(d, client)
+	api := webapi.NewAPI(writer.DB, writer, client)
 	authM := auth.NewMiddleware(cfg.SessionSecret, cfg.MasterPassword)
 	adminHandler := authM.Wrap(api.Handler())
 

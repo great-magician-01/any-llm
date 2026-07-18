@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/great-magician-01/any-llm/internal/db"
 )
 
 type UsageSummary struct {
@@ -17,15 +19,15 @@ type UsageSummary struct {
 	ErrorCount       int    `json:"error_count"`
 }
 
-func InsertUsage(db *sql.DB, r *UsageRecord) error {
+func InsertUsage(d *sql.DB, r *UsageRecord) error {
 	stream := 0
 	if r.Stream {
 		stream = 1
 	}
-	_, err := db.Exec(`INSERT INTO usage_records
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO usage_records
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		 prompt_tokens, completion_tokens, total_tokens, stream, status, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status, time.Now())
 	if err != nil {
@@ -34,11 +36,11 @@ func InsertUsage(db *sql.DB, r *UsageRecord) error {
 	return nil
 }
 
-func UsageSummaryByGroup(db *sql.DB, groupBy, from, to string) ([]UsageSummary, error) {
+func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, error) {
 	var groupCol string
 	switch groupBy {
 	case "key":
-		groupCol = "COALESCE(ext_key_id, 0)"
+		groupCol = "COALESCE(CAST(ext_key_id AS TEXT), '0')"
 	case "model":
 		groupCol = "model"
 	case "upstream":
@@ -63,7 +65,7 @@ func UsageSummaryByGroup(db *sql.DB, groupBy, from, to string) ([]UsageSummary, 
 		q += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	q += fmt.Sprintf(" GROUP BY %s ORDER BY gk", groupCol)
-	rows, err := db.Query(q, args...)
+	rows, err := d.Query(db.Rebind(d, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("usage summary: %w", err)
 	}
@@ -80,7 +82,7 @@ func UsageSummaryByGroup(db *sql.DB, groupBy, from, to string) ([]UsageSummary, 
 	return out, nil
 }
 
-func UsageRecordsList(db *sql.DB, page, size int) ([]UsageRecord, int, error) {
+func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -88,13 +90,13 @@ func UsageRecordsList(db *sql.DB, page, size int) ([]UsageRecord, int, error) {
 		size = 50
 	}
 	var total int
-	if err := db.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&total); err != nil {
+	if err := d.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count usage: %w", err)
 	}
 	offset := (page - 1) * size
-	rows, err := db.Query(`SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
+	rows, err := d.Query(db.Rebind(d, `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		prompt_tokens, completion_tokens, total_tokens, stream, status, created_at
-		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`, size, offset)
+		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list usage: %w", err)
 	}

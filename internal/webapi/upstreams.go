@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -38,16 +39,20 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format}
-	id, err := model.CreateUpstream(a.db, u)
-	if err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	var id int64
+	if err := a.writeSync(func(d *sql.DB) error {
+		var e error
+		id, e = model.CreateUpstream(d, u)
+		return e
+	}); err != nil {
+		writeSyncErr(w, 400, err)
 		return
 	}
 	if req.FetchModels && a.client != nil {
 		u.ID = id
 		names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
 		if err == nil {
-			model.ReplaceModels(a.db, id, names)
+			a.writeSync(func(d *sql.DB) error { return model.ReplaceModels(d, id, names) })
 		}
 	}
 	u, _ = model.GetUpstreamByID(a.db, id)
@@ -98,8 +103,8 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if req.Format != "" {
 		u.Format = req.Format
 	}
-	if err := model.UpdateUpstream(a.db, u); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
+		writeSyncErr(w, 400, err)
 		return
 	}
 	u.APIKey = mask(u.APIKey)
@@ -107,8 +112,8 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 func (a *API) deleteUpstream(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := model.DeleteUpstream(a.db, id); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteUpstream(d, id) }); err != nil {
+		writeSyncErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -129,8 +134,8 @@ func (a *API) fetchModels(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := model.ReplaceModels(a.db, id, names); err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+	if err := a.writeSync(func(d *sql.DB) error { return model.ReplaceModels(d, id, names) }); err != nil {
+		writeSyncErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"models": names})
@@ -151,8 +156,8 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID in
 				ModelName string `json:"model_name"`
 			}
 			json.NewDecoder(r.Body).Decode(&req)
-			if err := model.AddModel(a.db, upstreamID, req.ModelName, true); err != nil {
-				writeJSON(w, 400, map[string]any{"error": err.Error()})
+			if err := a.writeSync(func(d *sql.DB) error { return model.AddModel(d, upstreamID, req.ModelName, true) }); err != nil {
+				writeSyncErr(w, 400, err)
 				return
 			}
 			writeJSON(w, 200, map[string]any{"ok": true})
@@ -163,8 +168,8 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID in
 	}
 	if rest[0] != "" && r.Method == "DELETE" {
 		mid := parseID(rest[0])
-		if err := model.DeleteModel(a.db, mid); err != nil {
-			writeJSON(w, 400, map[string]any{"error": err.Error()})
+		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteModel(d, mid) }); err != nil {
+			writeSyncErr(w, 400, err)
 			return
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})

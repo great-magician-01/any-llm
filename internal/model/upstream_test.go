@@ -10,7 +10,7 @@ import (
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

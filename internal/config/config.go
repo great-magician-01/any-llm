@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 )
@@ -17,7 +18,14 @@ import (
 type Config struct {
 	Host           string
 	Port           int
+	DBType         string
 	DBPath         string
+	DBHost         string
+	DBPort         int
+	DBUser         string
+	DBPassword     string
+	DBName         string
+	DBSchema       string
 	MasterPassword string
 	SessionSecret  string
 	LogFile        string
@@ -33,12 +41,20 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Host:           envStr("ANY_LLM_HOST", "0.0.0.0"),
 		Port:           envInt("ANY_LLM_PORT", 6718),
+		DBType:         envStr("DB_TYPE", "sqlite"),
 		DBPath:         envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
+		DBHost:         envStr("DB_HOST", "localhost"),
+		DBPort:         envInt("DB_PORT", 5432),
+		DBUser:         envStr("DB_USER", "postgres"),
+		DBPassword:     envStr("DB_PASSWORD", ""),
+		DBName:         envStr("DB_NAME", "amanuensis"),
+		DBSchema:       envStr("DB_SCHEMA", "public"),
 		MasterPassword: envStr("ANY_LLM_MASTER_PASSWORD", "admin"),
 		SessionSecret:  envStr("ANY_LLM_SESSION_SECRET", ""),
 		LogFile:        envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
 		LogLevel:       logLevel,
 	}
+	cfg.DBType = normalizeDBType(cfg.DBType)
 	if cfg.MasterPassword == "admin" {
 		fmt.Fprintln(os.Stderr, "WARNING: using default master password 'admin'. Set ANY_LLM_MASTER_PASSWORD to change it.")
 	}
@@ -67,4 +83,13 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func normalizeDBType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "postgres", "postgresql", "pg":
+		return "postgres"
+	default:
+		return "sqlite"
+	}
 }

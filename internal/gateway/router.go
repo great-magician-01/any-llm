@@ -7,30 +7,19 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
-	"github.com/great-magician-01/any-llm/internal/usage"
 )
 
 type Gateway struct {
-	db       *sql.DB
-	client   *upstream.Client
-	recorder *usage.Recorder
+	db     *sql.DB
+	writer *db.Writer
+	client *upstream.Client
 }
 
-func New(db *sql.DB, client *upstream.Client, recorder *usage.Recorder) *Gateway {
-	return &Gateway{db: db, client: client, recorder: recorder}
-}
-
-func (g *Gateway) Start() {
-	if g.recorder != nil {
-		g.recorder.Start()
-	}
-}
-func (g *Gateway) Stop() {
-	if g.recorder != nil {
-		g.recorder.Stop()
-	}
+func New(db *sql.DB, writer *db.Writer, client *upstream.Client) *Gateway {
+	return &Gateway{db: db, writer: writer, client: client}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +79,11 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		WriteError(w, 401, inFormat, "invalid API key", "authentication_error")
 		return
 	}
-	model.TouchExtKey(g.db, k.ID)
+	if g.writer != nil {
+		g.writer.DoAsync(func(d *sql.DB) error { return model.TouchExtKey(d, k.ID) })
+	} else {
+		model.TouchExtKey(g.db, k.ID)
+	}
 
 	body, err := readBody(r)
 	if err != nil {

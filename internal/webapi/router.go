@@ -2,20 +2,23 @@ package webapi
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
 type API struct {
 	db     *sql.DB
+	writer *db.Writer
 	client *upstream.Client
 }
 
-func NewAPI(db *sql.DB, client *upstream.Client) *API {
-	return &API{db: db, client: client}
+func NewAPI(db *sql.DB, writer *db.Writer, client *upstream.Client) *API {
+	return &API{db: db, writer: writer, client: client}
 }
 
 func (a *API) Handler() http.Handler {
@@ -82,4 +85,23 @@ func parseID(s string) int64 {
 	var id int64
 	fmt.Sscanf(s, "%d", &id)
 	return id
+}
+
+func (a *API) writeSync(fn db.WriteFunc) error {
+	if a.writer != nil {
+		return a.writer.DoSync(fn)
+	}
+	return fn(a.db)
+}
+
+// writeSyncErr writes an HTTP error response for a writeSync error. A writer
+// that is shutting down (ErrWriterStopped) yields 503; other errors use the
+// caller-supplied default status (typically 400 for client-caused DB errors
+// such as constraint violations, 500 for internal failures).
+func writeSyncErr(w http.ResponseWriter, status int, err error) {
+	if errors.Is(err, db.ErrWriterStopped) {
+		writeJSON(w, 503, map[string]any{"error": "server is shutting down"})
+		return
+	}
+	writeJSON(w, status, map[string]any{"error": err.Error()})
 }

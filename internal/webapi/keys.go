@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -35,8 +36,8 @@ func (a *API) handleKeyItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if err := model.DeleteExtKey(a.db, id); err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
+		writeSyncErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -56,9 +57,13 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		Label string `json:"label"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	k, err := model.CreateExtKey(a.db, req.Label)
-	if err != nil {
-		writeJSON(w, 400, map[string]any{"error": err.Error()})
+	var k *model.ExtKey
+	if err := a.writeSync(func(d *sql.DB) error {
+		var e error
+		k, e = model.CreateExtKey(d, req.Label)
+		return e
+	}); err != nil {
+		writeSyncErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{

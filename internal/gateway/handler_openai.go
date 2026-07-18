@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -326,8 +327,8 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 		uid := u.ID
 		rec.UpstreamID = &uid
 	}
-	if g.recorder != nil {
-		g.recorder.Record(rec)
+	if g.writer != nil {
+		g.writer.DoAsync(func(d *sql.DB) error { return model.InsertUsage(d, rec) })
 	} else {
 		model.InsertUsage(g.db, rec)
 	}

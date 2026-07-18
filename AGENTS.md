@@ -5,10 +5,10 @@
 - **Monorepo**: Go backend (root, module `github.com/great-magician-01/any-llm`) + Vue 3 SPA frontend (`web/`)
 - **Backend**: single-binary Go app with embedded frontend via `//go:embed web/dist` (relative to `cmd/any-llm/`)
 - **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite
-- **DB**: SQLite via `modernc.org/sqlite` (pure Go, no CGO), tables auto-created on startup via `db.Open`
+- **DB**: SQLite (`modernc.org/sqlite`, pure Go, no CGO) or PostgreSQL (`jackc/pgx/v5`); selected via `DB_TYPE`. Tables auto-created on startup via `db.OpenSQLite` / `db.OpenPG`
 - **No frameworks** on backend: stdlib `net/http` only
 - **Translation layer**: requests flow through an IR (`internal/translate/`) — OpenAI/Anthropic in/out, any upstream format
-- **10 internal packages**: `auth`, `config`, `db`, `gateway`, `logger`, `model`, `translate`, `upstream`, `usage`, `webapi`
+- **9 internal packages**: `auth`, `config`, `db`, `gateway`, `logger`, `model`, `translate`, `upstream`, `webapi`
 
 ## Build & Run
 
@@ -46,7 +46,14 @@ All settings load from environment variables. A `.env` file in the working direc
 |----------|---------|-------|
 | `ANY_LLM_HOST` | `0.0.0.0` | |
 | `ANY_LLM_PORT` | `6718` | `.env.example` shows `8080` but code default is `6718` |
-| `ANY_LLM_DB_PATH` | `./any-llm.db` | |
+| `DB_TYPE` | `sqlite` | `sqlite` / `postgres` / `postgresql` / `pg` (case-insensitive) |
+| `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite path (used when `DB_TYPE=sqlite`) |
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_USER` | `postgres` | PostgreSQL user |
+| `DB_PASSWORD` | (empty) | PostgreSQL password |
+| `DB_NAME` | `amanuensis` | PostgreSQL database |
+| `DB_SCHEMA` | `public` | PostgreSQL schema (created if missing; validated as identifier) |
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | warns on default at startup |
 | `ANY_LLM_SESSION_SECRET` | auto-gen | **sessions lost on restart unless set**; use 64-char hex |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging |
@@ -76,6 +83,7 @@ All settings load from environment variables. A `.env` file in the working direc
 - **`web/dist/` must exist somewhere** when compiling the Go binary — `npm run build` handles this by copying into `cmd/any-llm/web/dist/`
 - **Ext key format**: `all-sk-` prefix + 32 base62 chars
 - **Session auth**: HMAC-SHA256, 24h expiry; secret changes on restart unless `ANY_LLM_SESSION_SECRET` is set
-- **Usage recorder**: async buffered channel (capacity 256); silently drops records on overflow
+- **DB writer**: `internal/db.Writer` serializes all writes through a single goroutine (buffered channel, capacity 512). `DoAsync` is fire-and-forget (silently drops on full buffer / after Stop); `DoSync` blocks for the result and returns `ErrWriterStopped` (mapped to HTTP 503) if the server is shutting down. `Stop` waits for in-flight sync calls to finish before draining and exiting, so concurrent shutdown cannot deadlock or orphan in-flight admin writes.
+- **Dialect abstraction**: `db.Rebind(d, q)` rewrites `?` placeholders to `$N` for PostgreSQL, inferred from the `*sql.DB` driver (no global state). String literals (`'...'`, with `''` escape) and SQL comments (`--`, `/* */`) are skipped so `?` inside them is preserved. Migrations are split into `migrationSQLite` / `migrationPG`; PG uses `BIGSERIAL` + `TIMESTAMP(0)`, SQLite uses `INTEGER PRIMARY KEY AUTOINCREMENT` + `DATETIME`.
 - **Streaming**: always injects `stream_options: {include_usage: true}` into OpenAI upstream requests
 - **No rate limiting, no CORS middleware**

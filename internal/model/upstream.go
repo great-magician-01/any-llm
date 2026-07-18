@@ -3,47 +3,42 @@ package model
 import (
 	"database/sql"
 	"fmt"
-	"time"
+
+	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-func CreateUpstream(db *sql.DB, u *Upstream) (int64, error) {
-	res, err := db.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`,
-		u.Name, u.BaseURL, u.APIKey, u.Format)
+func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
+	var id int64
+	err := d.QueryRow(db.Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`),
+		u.Name, u.BaseURL, u.APIKey, u.Format).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	return id, nil
 }
 
-func GetUpstreamByID(db *sql.DB, id int64) (*Upstream, error) {
+func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
-	var createdAt, updatedAt string
-	err := db.QueryRow(`SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE id=?`, id).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &createdAt, &updatedAt)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE id=?`), id).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
 	}
-	u.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-	u.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
 	return u, nil
 }
 
-func GetUpstreamByName(db *sql.DB, name string) (*Upstream, error) {
+func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
-	var createdAt, updatedAt string
-	err := db.QueryRow(`SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=?`, name).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &createdAt, &updatedAt)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=?`), name).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
-	u.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-	u.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
 	return u, nil
 }
 
-func ListUpstreams(db *sql.DB) ([]Upstream, error) {
-	rows, err := db.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.created_at, u.updated_at,
+func ListUpstreams(d *sql.DB) ([]Upstream, error) {
+	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.created_at, u.updated_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id) AS model_count
 		FROM upstreams u ORDER BY u.id`)
 	if err != nil {
@@ -53,19 +48,16 @@ func ListUpstreams(db *sql.DB) ([]Upstream, error) {
 	out := make([]Upstream, 0)
 	for rows.Next() {
 		var u Upstream
-		var createdAt, updatedAt string
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &createdAt, &updatedAt, &u.ModelCount); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
 			return nil, err
 		}
-		u.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-		u.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
 		out = append(out, u)
 	}
 	return out, nil
 }
 
-func UpdateUpstream(db *sql.DB, u *Upstream) error {
-	_, err := db.Exec(`UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+func UpdateUpstream(d *sql.DB, u *Upstream) error {
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`),
 		u.Name, u.BaseURL, u.APIKey, u.Format, u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
@@ -73,16 +65,16 @@ func UpdateUpstream(db *sql.DB, u *Upstream) error {
 	return nil
 }
 
-func DeleteUpstream(db *sql.DB, id int64) error {
-	_, err := db.Exec(`DELETE FROM upstreams WHERE id=?`, id)
+func DeleteUpstream(d *sql.DB, id int64) error {
+	_, err := d.Exec(db.Rebind(d, `DELETE FROM upstreams WHERE id=?`), id)
 	if err != nil {
 		return fmt.Errorf("delete upstream %d: %w", id, err)
 	}
 	return nil
 }
 
-func ListModels(db *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
-	rows, err := db.Query(`SELECT id, upstream_id, model_name, manual FROM upstream_models WHERE upstream_id=? ORDER BY model_name`, upstreamID)
+func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
+	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual FROM upstream_models WHERE upstream_id=? ORDER BY model_name`), upstreamID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -100,38 +92,38 @@ func ListModels(db *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 	return out, nil
 }
 
-func AddModel(db *sql.DB, upstreamID int64, modelName string, manual bool) error {
+func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool) error {
 	m := 0
 	if manual {
 		m = 1
 	}
-	_, err := db.Exec(`INSERT OR IGNORE INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?)`, upstreamID, modelName, m)
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`),
+		upstreamID, modelName, m)
 	if err != nil {
 		return fmt.Errorf("add model: %w", err)
 	}
 	return nil
 }
 
-func DeleteModel(db *sql.DB, id int64) error {
-	_, err := db.Exec(`DELETE FROM upstream_models WHERE id=?`, id)
+func DeleteModel(d *sql.DB, id int64) error {
+	_, err := d.Exec(db.Rebind(d, `DELETE FROM upstream_models WHERE id=?`), id)
 	if err != nil {
 		return fmt.Errorf("delete model: %w", err)
 	}
 	return nil
 }
 
-func ReplaceModels(db *sql.DB, upstreamID int64, names []string) error {
-	tx, err := db.Begin()
+func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
+	tx, err := d.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	// delete non-manual models
-	if _, err := tx.Exec(`DELETE FROM upstream_models WHERE upstream_id=? AND manual=0`, upstreamID); err != nil {
+	if _, err := tx.Exec(db.Rebind(d, `DELETE FROM upstream_models WHERE upstream_id=? AND manual=0`), upstreamID); err != nil {
 		return fmt.Errorf("delete non-manual: %w", err)
 	}
 	for _, n := range names {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0)`, upstreamID, n); err != nil {
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) DO NOTHING`), upstreamID, n); err != nil {
 			return fmt.Errorf("insert model %s: %w", n, err)
 		}
 	}

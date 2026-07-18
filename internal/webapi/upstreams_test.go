@@ -17,12 +17,12 @@ import (
 
 func setupAPI(t *testing.T) (*API, *sql.DB) {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
-	a := NewAPI(d, nil)
+	a := NewAPI(d, nil, nil)
 	return a, d
 }
 
