@@ -9,7 +9,8 @@
 - **协议转换**：请求经过内部 IR 层翻译，OpenAI/Anthropic 格式随意互转
 - **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用
 - **用量统计**：按 Key 维度记录 Token 用量
-- **单二进制**：Go 后端，内嵌 Vue 前端，SQLite 存储，零依赖运行
+- **灵活存储**：支持 SQLite（默认，纯 Go）和 PostgreSQL
+- **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
 
 ## 快速开始
 
@@ -63,6 +64,13 @@ docker logs -f any-llm
 | `ANY_LLM_SESSION_SECRET` | 随机生成 | 会话密钥，重启后丢失登录状态 |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}`；留空仅输出到 stdout |
 | `ANY_LLM_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
+| `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` 或 `postgres`（不区分大小写） |
+| `DB_HOST` | `localhost` | PostgreSQL 主机（`DB_TYPE=postgres` 时生效） |
+| `DB_PORT` | `5432` | PostgreSQL 端口 |
+| `DB_USER` | `postgres` | PostgreSQL 用户名 |
+| `DB_PASSWORD` | （空） | PostgreSQL 密码 |
+| `DB_NAME` | `amanuensis` | PostgreSQL 数据库名 |
+| `DB_SCHEMA` | `public` | PostgreSQL schema（不存在则自动创建） |
 
 复制 `.env.example` 为 `.env` 并修改后重启服务即可。
 
@@ -125,13 +133,12 @@ cmd/any-llm/          # 入口，嵌入前端 dist
 internal/
   auth/               # 会话认证（HMAC-SHA256）
   config/             # 环境变量加载
-  db/                 # SQLite 初始化与迁移
+  db/                 # 数据库初始化与迁移（SQLite / PostgreSQL）
   gateway/            # 公开 API 网关路由
   logger/             # slog 日志封装
   model/              # 数据模型与 CRUD
   translate/          # OpenAI ↔ Anthropic 格式翻译（IR 层）
   upstream/           # 上游 HTTP 客户端
-  usage/              # 异步用量记录
   webapi/             # 管理后台 API
 web/                  # Vue 3 前端（Naive UI + Vite）
 ```
