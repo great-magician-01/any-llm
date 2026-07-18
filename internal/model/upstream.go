@@ -43,16 +43,18 @@ func GetUpstreamByName(db *sql.DB, name string) (*Upstream, error) {
 }
 
 func ListUpstreams(db *sql.DB) ([]Upstream, error) {
-	rows, err := db.Query(`SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams ORDER BY id`)
+	rows, err := db.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.created_at, u.updated_at,
+		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id) AS model_count
+		FROM upstreams u ORDER BY u.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list upstreams: %w", err)
 	}
 	defer rows.Close()
-	var out []Upstream
+	out := make([]Upstream, 0)
 	for rows.Next() {
 		var u Upstream
 		var createdAt, updatedAt string
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &createdAt, &updatedAt, &u.ModelCount); err != nil {
 			return nil, err
 		}
 		u.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
@@ -85,7 +87,7 @@ func ListModels(db *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
 	defer rows.Close()
-	var out []UpstreamModel
+	out := make([]UpstreamModel, 0)
 	for rows.Next() {
 		var m UpstreamModel
 		var manual int

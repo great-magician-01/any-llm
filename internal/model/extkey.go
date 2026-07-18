@@ -63,7 +63,7 @@ func ListExtKeys(db *sql.DB) ([]ExtKey, error) {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
 	defer rows.Close()
-	var out []ExtKey
+	out := make([]ExtKey, 0)
 	for rows.Next() {
 		var k ExtKey
 		var enabled int

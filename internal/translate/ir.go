@@ -29,8 +29,10 @@ type Message struct {
 
 // ContentBlock is a discriminated union; Type selects the populated field.
 type ContentBlock struct {
-	Type       string // "text" | "image" | "tool_use" | "tool_result"
+	Type       string // "text" | "image" | "tool_use" | "tool_result" | "thinking"
 	Text       string
+	Thinking   string // thinking block content (Type == "thinking")
+	Signature  string // thinking block signature (Type == "thinking")
 	Image      *Image
 	ToolUse    *ToolUse
 	ToolResult *ToolResult
@@ -93,7 +95,9 @@ type StreamEvent struct {
 }
 
 type Delta struct {
-	Type        string // "text_delta" | "input_json_delta"
+	Type        string // "text_delta" | "input_json_delta" | "thinking_delta"
 	Text        string // text_delta
 	PartialJSON string // input_json_delta
+	Thinking    string // thinking_delta
+	Signature   string // signature_delta (used by some upstreams)
 }

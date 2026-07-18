@@ -3,6 +3,7 @@ package webapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
@@ -86,7 +87,12 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if req.BaseURL != "" {
 		u.BaseURL = req.BaseURL
 	}
-	if req.APIKey != "" {
+	// Skip API key update when:
+	//   - the client sent an empty value (standard "no change" signal), or
+	//   - the client sent back the masked placeholder returned by listUpstreams
+	//     (e.g. "sk-y****T5qX"). Without this guard, editing an upstream in the
+	//     admin UI would overwrite the real key with the masked display string.
+	if req.APIKey != "" && !isMaskedKey(req.APIKey) {
 		u.APIKey = req.APIKey
 	}
 	if req.Format != "" {
@@ -178,4 +184,13 @@ func mask(s string) string {
 		return "****"
 	}
 	return s[:4] + "****" + s[len(s)-4:]
+}
+
+// isMaskedKey reports whether s looks like a value produced by mask() —
+// i.e. the placeholder echoed back by a UI that displayed the masked key
+// rather than the real secret. We treat any string containing the literal
+// "****" segment as masked, which covers both the short-key form ("****")
+// and the long-key form ("abcd****wxyz").
+func isMaskedKey(s string) bool {
+	return strings.Contains(s, "****")
 }

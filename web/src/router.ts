@@ -19,7 +19,9 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from) => {
-  const hasSession = document.cookie.includes('s=')
+  // Session cookie is HttpOnly, so JS cannot read it; use a localStorage flag
+  // set on login as a UI hint. Real auth is still enforced by the API (401).
+  const hasSession = localStorage.getItem('authed') === '1'
   if (to.name !== 'login' && !hasSession) {
     return { name: 'login' }
   }

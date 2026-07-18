@@ -10,6 +10,7 @@ client.interceptors.response.use(
   (r) => r,
   (err) => {
     if (err.response?.status === 401 && window.location.hash !== '#/login') {
+      localStorage.removeItem('authed')
       window.location.hash = '#/login'
     }
     return Promise.reject(err)

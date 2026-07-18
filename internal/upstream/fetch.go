@@ -8,13 +8,24 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
 func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream) ([]string, error) {
-	url := strings.TrimRight(u.BaseURL, "/") + "/models"
+	var url string
+	switch u.Format {
+	case "anthropic":
+		// Anthropic's models endpoint is /v1/models (base_url typically without /v1).
+		// Some providers (e.g. DeepSeek) do not expose a models listing on their
+		// anthropic-compat path; fetch will simply 404 there.
+		url = strings.TrimRight(u.BaseURL, "/") + "/v1/models"
+	default:
+		url = strings.TrimRight(u.BaseURL, "/") + "/models"
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		logger.Error("fetch models: create request", "url", url, "err", err)
 		return nil, fmt.Errorf("create fetch request: %w", err)
 	}
 	switch u.Format {
@@ -28,11 +39,18 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		logger.Error("fetch models: request failed", "url", url, "upstream", u.Name, "err", err)
 		return nil, fmt.Errorf("fetch models: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
+		logger.Error("fetch models: upstream error",
+			"url", url,
+			"upstream", u.Name,
+			"status", resp.StatusCode,
+			"body", truncateFetch(string(body), 512),
+		)
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
 	}
 	var result struct {
@@ -41,11 +59,20 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		logger.Error("fetch models: decode failed", "url", url, "upstream", u.Name, "err", err)
 		return nil, fmt.Errorf("decode models response: %w", err)
 	}
 	out := make([]string, 0, len(result.Data))
 	for _, m := range result.Data {
 		out = append(out, m.ID)
 	}
+	logger.Info("fetched models", "upstream", u.Name, "count", len(out))
 	return out, nil
+}
+
+func truncateFetch(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }

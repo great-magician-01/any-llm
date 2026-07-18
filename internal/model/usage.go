@@ -8,13 +8,13 @@ import (
 )
 
 type UsageSummary struct {
-	GroupKey         string
-	RequestCount     int
-	TotalTokens      int
-	PromptTokens     int
-	CompletionTokens int
-	OkCount          int
-	ErrorCount       int
+	GroupKey         string `json:"group_key"`
+	RequestCount     int    `json:"request_count"`
+	TotalTokens      int    `json:"total_tokens"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	OkCount          int    `json:"ok_count"`
+	ErrorCount       int    `json:"error_count"`
 }
 
 func InsertUsage(db *sql.DB, r *UsageRecord) error {
@@ -24,10 +24,10 @@ func InsertUsage(db *sql.DB, r *UsageRecord) error {
 	}
 	_, err := db.Exec(`INSERT INTO usage_records
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
-		 prompt_tokens, completion_tokens, total_tokens, stream, status)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		 prompt_tokens, completion_tokens, total_tokens, stream, status, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
-		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status)
+		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status, time.Now())
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}
@@ -68,7 +68,7 @@ func UsageSummaryByGroup(db *sql.DB, groupBy, from, to string) ([]UsageSummary, 
 		return nil, fmt.Errorf("usage summary: %w", err)
 	}
 	defer rows.Close()
-	var out []UsageSummary
+	out := make([]UsageSummary, 0)
 	for rows.Next() {
 		var s UsageSummary
 		if err := rows.Scan(&s.GroupKey, &s.RequestCount, &s.TotalTokens, &s.PromptTokens,
@@ -99,16 +99,15 @@ func UsageRecordsList(db *sql.DB, page, size int) ([]UsageRecord, int, error) {
 		return nil, 0, fmt.Errorf("list usage: %w", err)
 	}
 	defer rows.Close()
-	var out []UsageRecord
+	out := make([]UsageRecord, 0)
 	for rows.Next() {
 		var r UsageRecord
 		var stream int
-		var createdAt string
 		var extKeyID sql.NullInt64
 		var upstreamID sql.NullInt64
 		if err := rows.Scan(&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
 			&r.InFormat, &r.UpFormat, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
-			&stream, &r.Status, &createdAt); err != nil {
+			&stream, &r.Status, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		if extKeyID.Valid {
@@ -120,7 +119,6 @@ func UsageRecordsList(db *sql.DB, page, size int) ([]UsageRecord, int, error) {
 			r.UpstreamID = &id
 		}
 		r.Stream = stream != 0
-		r.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
 		out = append(out, r)
 	}
 	return out, total, nil

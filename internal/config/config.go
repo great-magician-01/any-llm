@@ -10,21 +10,34 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 type Config struct {
+	Host           string
 	Port           int
 	DBPath         string
 	MasterPassword string
 	SessionSecret  string
+	LogFile        string
+	LogLevel       logger.Level
 }
 
 func Load() (*Config, error) {
+	_ = loadDotEnv(".env")
+	logLevel, err := logger.LevelFromString(envStr("ANY_LLM_LOG_LEVEL", "info"))
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
-		Port:           envInt("ANY_LLM_PORT", 8080),
+		Host:           envStr("ANY_LLM_HOST", "0.0.0.0"),
+		Port:           envInt("ANY_LLM_PORT", 6718),
 		DBPath:         envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
 		MasterPassword: envStr("ANY_LLM_MASTER_PASSWORD", "admin"),
 		SessionSecret:  envStr("ANY_LLM_SESSION_SECRET", ""),
+		LogFile:        envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
+		LogLevel:       logLevel,
 	}
 	if cfg.MasterPassword == "admin" {
 		fmt.Fprintln(os.Stderr, "WARNING: using default master password 'admin'. Set ANY_LLM_MASTER_PASSWORD to change it.")

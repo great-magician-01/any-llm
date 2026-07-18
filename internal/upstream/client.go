@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
@@ -98,12 +98,18 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
+		logger.Error("upstream call failed", "url", url, "err", err)
 		return nil, fmt.Errorf("call upstream: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		errBody, _ := io.ReadAll(resp.Body)
+		logger.Error("upstream returned error",
+			"url", url,
+			"status", resp.StatusCode,
+			"body", truncateUpstream(string(errBody), 512),
+		)
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Format: u.Format}
 	}
 
@@ -161,7 +167,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 		case "openai":
 			events, err := oaiDec.Decode([]byte(data))
 			if err != nil {
-				log.Printf("stream decode error: %v", err)
+				logger.Warn("stream decode error", "format", "openai", "err", err, "data", truncateUpstream(data, 256))
 				continue
 			}
 			for _, ev := range events {
@@ -176,8 +182,13 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				}
 			}
 		case "anthropic":
+			logger.Info("raw upstream SSE", "format", "anthropic", "data", truncateUpstream(data, 256))
 			ev, err := anthropic.DecodeStreamEvent([]byte(data))
-			if err != nil || ev == nil {
+			if err != nil {
+				logger.Warn("stream decode error", "format", "anthropic", "err", err, "data", truncateUpstream(data, 256))
+				continue
+			}
+			if ev == nil {
 				continue
 			}
 			if ev.Type == "message_start" {
@@ -195,6 +206,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 	}
 	if err := scanner.Err(); err != nil {
 		result.streamErr = fmt.Errorf("stream scan error: %w", err)
+		logger.Warn("stream scan error", "format", format, "err", err)
 	}
 }
 
@@ -219,4 +231,41 @@ type UpstreamError struct {
 
 func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream returned %d: %s", e.StatusCode, string(e.Body))
+}
+
+// Message extracts a human-readable error message from the upstream response
+// body. Handles both OpenAI ({"error":{"message":"..."}}) and Anthropic
+// ({"type":"error","error":{"message":"..."}}) error shapes. Falls back to the
+// raw body when parsing fails or the message is empty.
+func (e *UpstreamError) Message() string {
+	if msg := e.parseError().Message; msg != "" {
+		return msg
+	}
+	return string(e.Body)
+}
+
+// ErrorType extracts the upstream error type string if present.
+func (e *UpstreamError) ErrorType() string {
+	return e.parseError().Type
+}
+
+func (e *UpstreamError) parseError() struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+} {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(e.Body, &parsed)
+	return parsed.Error
+}
+
+func truncateUpstream(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }

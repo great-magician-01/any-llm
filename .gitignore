@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Runtime artifacts
+logs/
+any-llm.db
+
+# Go build outputs
+*.exe
+*.test
+*.out
+
+# Embedded frontend dist (auto-copied on build)
+cmd/any-llm/web/dist/
+
+# SDD tooling artifacts
+.superpowers/
+
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

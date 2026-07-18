@@ -2,6 +2,7 @@ import client from './client'
 
 export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
+  model_count?: number
   created_at?: string; updated_at?: string
 }
 

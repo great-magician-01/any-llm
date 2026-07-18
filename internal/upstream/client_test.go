@@ -139,3 +139,48 @@ func TestCall_InjectsStreamOptionsForOpenAI(t *testing.T) {
 		t.Fatalf("stream_options not injected: %s", gotBody)
 	}
 }
+
+func TestUpstreamError_Message(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+		wantTyp string
+	}{
+		{
+			name:    "openai shape",
+			body:    `{"error":{"message":"rate limited","type":"rate_limit_error"}}`,
+			wantMsg: "rate limited",
+			wantTyp: "rate_limit_error",
+		},
+		{
+			name:    "anthropic shape",
+			body:    `{"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}`,
+			wantMsg: "Invalid API key.",
+			wantTyp: "AuthError",
+		},
+		{
+			name:    "missing message falls back to raw body",
+			body:    `{"error":{"type":"oops"}}`,
+			wantMsg: `{"error":{"type":"oops"}}`,
+			wantTyp: "oops",
+		},
+		{
+			name:    "non-json falls back to raw body",
+			body:    `plain text error`,
+			wantMsg: `plain text error`,
+			wantTyp: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ue := &UpstreamError{StatusCode: 400, Body: []byte(tc.body), Format: "openai"}
+			if got := ue.Message(); got != tc.wantMsg {
+				t.Fatalf("Message()=%q want %q", got, tc.wantMsg)
+			}
+			if got := ue.ErrorType(); got != tc.wantTyp {
+				t.Fatalf("ErrorType()=%q want %q", got, tc.wantTyp)
+			}
+		})
+	}
+}

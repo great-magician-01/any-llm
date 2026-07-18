@@ -97,3 +97,90 @@ func TestFetchModels(t *testing.T) {
 		t.Fatalf("models=%d", len(models))
 	}
 }
+
+// TestUpdateUpstream_MaskedKeyNotOverwritten verifies that when the client
+// sends back the masked API key placeholder (as the admin UI does when a user
+// edits an upstream without re-entering the secret), the gateway must NOT
+// overwrite the stored key with the masked string.
+func TestUpdateUpstream_MaskedKeyNotOverwritten(t *testing.T) {
+	a, d := setupAPI(t)
+	const realKey = "sk-abcdefghijklmno1234567890qrstuvwxyz"
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: realKey, Format: "openai"})
+
+	// Simulate the UI echoing back the masked key as returned by the
+	// listUpstreams HTTP endpoint (model layer returns raw, webapi masks).
+	masked := realKey[:4] + "****" + realKey[len(realKey)-4:]
+
+	body, _ := json.Marshal(map[string]any{
+		"name":     "u",
+		"base_url": "https://example.com",
+		"api_key":  masked,
+		"format":   "openai",
+	})
+	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Verify the actual stored key was NOT replaced with the masked string.
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.APIKey != realKey {
+		t.Fatalf("stored key got overwritten: got=%q want=%q", u.APIKey, realKey)
+	}
+}
+
+// TestUpdateUpstream_EmptyKeyPreserved verifies that sending an empty api_key
+// keeps the existing stored value (the standard "no change" signal).
+func TestUpdateUpstream_EmptyKeyPreserved(t *testing.T) {
+	a, d := setupAPI(t)
+	const realKey = "sk-realsecret123"
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: realKey, Format: "openai"})
+
+	body, _ := json.Marshal(map[string]any{
+		"name":    "u-renamed",
+		"base_url": "https://example.com",
+		"api_key": "",
+		"format":  "openai",
+	})
+	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.APIKey != realKey {
+		t.Fatalf("stored key changed: got=%q want=%q", u.APIKey, realKey)
+	}
+	if u.Name != "u-renamed" {
+		t.Fatalf("name not updated: %q", u.Name)
+	}
+}
+
+// TestUpdateUpstream_NewKeyApplied verifies that a real (non-masked) key
+// still overwrites the stored value.
+func TestUpdateUpstream_NewKeyApplied(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: "sk-old", Format: "openai"})
+
+	body, _ := json.Marshal(map[string]any{
+		"name":    "u",
+		"base_url": "https://example.com",
+		"api_key": "sk-new-real-key",
+		"format":  "openai",
+	})
+	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.APIKey != "sk-new-real-key" {
+		t.Fatalf("stored key not updated: got=%q", u.APIKey)
+	}
+}
