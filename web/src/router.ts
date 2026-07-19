@@ -30,4 +30,23 @@ router.beforeEach((to, _from) => {
   }
 })
 
+// A stale index.html (cached by the browser) may reference chunk files with
+// old hashes that no longer exist on the server. Vue Router surfaces the
+// failed dynamic import as a navigation error; reload once to fetch the
+// fresh index.html. The sessionStorage flag prevents a reload loop when the
+// chunk is genuinely missing.
+router.onError((error) => {
+  if (error?.message?.includes('Failed to fetch dynamically imported module')) {
+    const flag = 'reloaded-on-import-fail'
+    if (!sessionStorage.getItem(flag)) {
+      sessionStorage.setItem(flag, '1')
+      window.location.reload()
+    }
+  }
+})
+
+router.afterEach(() => {
+  sessionStorage.removeItem('reloaded-on-import-fail')
+})
+
 export default router

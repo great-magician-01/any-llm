@@ -167,32 +167,72 @@ async function del(id: number) {
   }
 }
 
-function copyKey(key: string) {
-  try {
-    const ok = execCopy(key)
-    if (ok) {
+async function copyKey(key: string, evt?: MouseEvent) {
+  // prefer the modern async clipboard API (HTTPS / localhost only)
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(key)
       message.success('已复制到剪贴板')
-    } else {
-      message.error('复制失败，请手动选择复制')
+      return
+    } catch {
+      // permission denied or non-secure context — fall through
     }
+  }
+  // legacy fallback for HTTP non-localhost:
+  // the temp textarea must live INSIDE the modal (otherwise naive-ui's focus
+  // trap steals focus and clears the selection before execCommand runs).
+  // We also intercept the copy event to force the correct data in, in case
+  // the selection is still lost.
+  const anchor = (evt?.currentTarget as HTMLElement | undefined) || (document.activeElement as HTMLElement) || document.body
+  let ok = false
+  try {
+    ok = execCopy(key, anchor)
   } catch {
+    ok = false
+  }
+  if (ok) {
+    message.success('已复制到剪贴板')
+  } else {
     message.error('复制失败，请手动选择复制')
   }
 }
 
-function execCopy(text: string): boolean {
+function execCopy(text: string, anchor: HTMLElement): boolean {
+  // mount the textarea inside the same modal/card as the clicked button
+  // so the modal's focus trap does not steal focus from it.
+  const container = anchor.parentElement || document.body
   const ta = document.createElement('textarea')
   ta.setAttribute('readonly', '')
   ta.value = text
   ta.style.position = 'absolute'
   ta.style.left = '-9999px'
-  ta.style.top = (window.pageYOffset || document.documentElement.scrollTop) + 'px'
-  document.body.appendChild(ta)
-  ta.focus()
-  ta.select()
-  ta.setSelectionRange(0, 99999)
-  const ok = document.execCommand('copy')
-  document.body.removeChild(ta)
+  ta.style.top = '0'
+  ta.style.width = '1px'
+  ta.style.height = '1px'
+  ta.style.opacity = '0'
+  container.appendChild(ta)
+
+  let ok = false
+  // safety net: force the clipboard payload even if the selection is cleared
+  const onCopy = (e: ClipboardEvent) => {
+    try {
+      e.preventDefault()
+      e.clipboardData?.setData('text/plain', text)
+      ok = true
+    } catch {
+      // ignore
+    }
+  }
+  document.addEventListener('copy', onCopy)
+  try {
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    document.execCommand('copy')
+  } finally {
+    document.removeEventListener('copy', onCopy)
+    try { container.removeChild(ta) } catch { /* already removed */ }
+  }
   return ok
 }
 
@@ -214,7 +254,7 @@ onMounted(load)
         <n-input-group v-for="ep in endpoints" :key="ep.url">
           <n-tag :bordered="false" type="info" style="min-width: 64px; justify-content: center">{{ ep.method }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
-          <n-button type="primary" @click="copyKey(ep.url)">复制</n-button>
+          <n-button type="primary" @click="copyKey(ep.url, $event)">复制</n-button>
         </n-input-group>
       </n-space>
     </n-card>
@@ -247,7 +287,7 @@ onMounted(load)
           </n-alert>
           <n-input-group>
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
-            <n-button type="primary" @click="copyKey(newlyCreatedKey)">复制</n-button>
+            <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
           </n-input-group>
         </template>
         <template #footer>

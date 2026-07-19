@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -98,14 +99,33 @@ func run() int {
 			http.NotFound(w, r)
 			return
 		}
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path != "" {
-			if f, err := frontendFS.Open(path); err != nil {
-				r.URL.Path = "/"
-			} else {
+		rel := strings.TrimPrefix(r.URL.Path, "/")
+		if rel != "" {
+			if f, err := frontendFS.Open(rel); err == nil {
 				f.Close()
+				// Hashed assets under /assets/ are content-addressed and
+				// safe to cache aggressively.
+				if strings.HasPrefix(rel, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
+				spa.ServeHTTP(w, r)
+				return
+			}
+			// Missing file with a file extension looks like a stale asset
+			// reference (e.g. an old build hash still referenced by a
+			// cached index.html). Return 404 instead of index.html so the
+			// browser sees a clear error rather than HTML-where-JS-was-
+			// expected (which surfaces as a misleading "Failed to fetch
+			// dynamically imported module").
+			if path.Ext(rel) != "" {
+				http.NotFound(w, r)
+				return
 			}
 		}
+		// SPA client-side route — always revalidate so the browser picks
+		// up fresh chunk hashes on every navigation.
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		r.URL.Path = "/"
 		spa.ServeHTTP(w, r)
 	})
 

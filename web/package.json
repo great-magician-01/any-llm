@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build && node -e \"require('fs').cpSync('dist', '../cmd/any-llm/web/dist', {recursive: true})\"",
+    "build": "vue-tsc -b && vite build && node -e \"const fs=require('fs');const t='../cmd/any-llm/web/dist';fs.rmSync(t,{force:true,recursive:true});fs.mkdirSync(t,{recursive:true});fs.cpSync('dist',t,{recursive:true})\"",
     "preview": "vite preview",
     "test": "vitest run"
   },
