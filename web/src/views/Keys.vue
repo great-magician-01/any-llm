@@ -7,11 +7,12 @@ import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, ty
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
-const label = ref('')
-const dailyLimit = ref(0)
-const monthlyLimit = ref(0)
+
+// create modal: 'form' = filling form, 'done' = showing generated key
+const showCreateModal = ref(false)
+const createModalState = ref<'form' | 'done'>('form')
+const createForm = ref({ label: '', daily_token_limit: 0, monthly_token_limit: 0 })
 const newlyCreatedKey = ref('')
-const showNewKeyModal = ref(false)
 
 // edit modal
 const showEditModal = ref(false)
@@ -98,16 +99,33 @@ async function load() {
   })
 }
 
-async function add() {
-  if (label.value.trim()) {
-    const k = await createKey(label.value.trim(), dailyLimit.value, monthlyLimit.value)
-    newlyCreatedKey.value = k.key
-    showNewKeyModal.value = true
-    label.value = ''
-    dailyLimit.value = 0
-    monthlyLimit.value = 0
-    await load()
+function openCreate() {
+  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0 }
+  newlyCreatedKey.value = ''
+  createModalState.value = 'form'
+  showCreateModal.value = true
+}
+
+async function saveCreate() {
+  const label = createForm.value.label.trim()
+  if (!label) {
+    message.warning('请填写备注')
+    return
   }
+  try {
+    const k = await createKey(label, createForm.value.daily_token_limit, createForm.value.monthly_token_limit)
+    newlyCreatedKey.value = k.key
+    createModalState.value = 'done'
+    await load()
+  } catch (e: any) {
+    message.error('创建失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  }
+}
+
+function resetCreateForm() {
+  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0 }
+  newlyCreatedKey.value = ''
+  createModalState.value = 'form'
 }
 
 function openEdit(row: ExtKey) {
@@ -202,48 +220,46 @@ onMounted(load)
     </n-card>
 
     <n-card title="密钥列表" class="panel">
-      <div class="toolbar" style="flex-wrap: wrap; gap: 8px">
-        <n-input
-          v-model:value="label"
-          placeholder="备注，如：我的应用"
-          style="width: 200px"
-          @keyup.enter="add"
-        />
-        <n-input-number
-          v-model:value="dailyLimit"
-          :min="0"
-          :step="1000"
-          placeholder="单日 token 上限"
-          style="width: 170px"
-        >
-          <template #prefix>日限</template>
-        </n-input-number>
-        <n-input-number
-          v-model:value="monthlyLimit"
-          :min="0"
-          :step="10000"
-          placeholder="单月 token 上限"
-          style="width: 170px"
-        >
-          <template #prefix>月限</template>
-        </n-input-number>
-        <n-button type="primary" @click="add">生成 Key</n-button>
-      </div>
+      <template #header-extra>
+        <n-button type="primary" size="small" @click="openCreate">新增密钥</n-button>
+      </template>
       <n-data-table :bordered="false" :columns="columns" :data="keys" />
     </n-card>
 
-    <n-modal :show="showNewKeyModal" @update:show="(s: boolean) => showNewKeyModal = s">
-      <n-card title="密钥已生成" :bordered="false" style="width:560px" role="dialog" aria-modal="true">
-        <n-alert type="warning" style="margin-bottom: 12px">
-          请立即复制保存此密钥。出于安全考虑，关闭后将无法再次完整查看。
-        </n-alert>
-        <n-input-group>
-          <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
-          <n-button type="primary" @click="copyKey(newlyCreatedKey)">复制</n-button>
-        </n-input-group>
+    <n-modal :show="showCreateModal" @update:show="(s: boolean) => { showCreateModal = s }">
+      <n-card :title="createModalState === 'form' ? '新增密钥' : '密钥已生成'" :bordered="false" style="width:560px" role="dialog" aria-modal="true">
+        <template v-if="createModalState === 'form'">
+          <n-form label-placement="top">
+            <n-form-item label="备注">
+              <n-input v-model:value="createForm.label" placeholder="备注，如：我的应用" />
+            </n-form-item>
+            <n-form-item label="单日 token 上限（0 = 不限）">
+              <n-input-number v-model:value="createForm.daily_token_limit" :min="0" :step="1000" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="单月 token 上限（0 = 不限）">
+              <n-input-number v-model:value="createForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
+            </n-form-item>
+          </n-form>
+        </template>
+        <template v-else>
+          <n-alert type="warning" style="margin-bottom: 12px">
+            请立即复制保存此密钥。出于安全考虑，关闭后将无法再次完整查看。
+          </n-alert>
+          <n-input-group>
+            <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
+            <n-button type="primary" @click="copyKey(newlyCreatedKey)">复制</n-button>
+          </n-input-group>
+        </template>
         <template #footer>
           <div style="text-align: right">
-            <n-button @click="showNewKeyModal = false">我已保存</n-button>
+            <template v-if="createModalState === 'form'">
+              <n-button @click="showCreateModal = false" style="margin-right: 8px">取消</n-button>
+              <n-button type="primary" @click="saveCreate">保存</n-button>
+            </template>
+            <template v-else>
+              <n-button @click="showCreateModal = false" style="margin-right: 8px">关闭</n-button>
+              <n-button type="primary" @click="resetCreateForm">再新增</n-button>
+            </template>
           </div>
         </template>
       </n-card>
