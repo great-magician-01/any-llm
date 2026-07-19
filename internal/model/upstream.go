@@ -3,14 +3,16 @@ package model
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 	var id int64
-	err := d.QueryRow(db.Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`),
-		u.Name, u.BaseURL, u.APIKey, u.Format).Scan(&id)
+	now := time.Now()
+	err := d.QueryRow(db.Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?) RETURNING id`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, now, now).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
@@ -19,8 +21,8 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 
 func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE id=?`), id).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE id=?`), id).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
 	}
@@ -29,8 +31,8 @@ func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=?`), name).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE name=?`), name).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
@@ -38,7 +40,7 @@ func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 }
 
 func ListUpstreams(d *sql.DB) ([]Upstream, error) {
-	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.created_at, u.updated_at,
+	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id) AS model_count
 		FROM upstreams u ORDER BY u.id`)
 	if err != nil {
@@ -48,7 +50,7 @@ func ListUpstreams(d *sql.DB) ([]Upstream, error) {
 	out := make([]Upstream, 0)
 	for rows.Next() {
 		var u Upstream
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -57,8 +59,8 @@ func ListUpstreams(d *sql.DB) ([]Upstream, error) {
 }
 
 func UpdateUpstream(d *sql.DB, u *Upstream) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.ID)
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, daily_token_limit=?, monthly_token_limit=?, updated_at=? WHERE id=?`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, time.Now(), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}

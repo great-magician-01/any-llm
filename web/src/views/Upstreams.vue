@@ -7,7 +7,7 @@ import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchMod
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true })
 const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
@@ -59,7 +59,7 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', fetch_models: true } }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true } }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
@@ -150,6 +150,18 @@ const columns: DataTableColumns<Upstream> = [
   { title: '地址', key: 'base_url', ellipsis: { tooltip: true } },
   { title: '格式', key: 'format', width: 100 },
   { title: '模型数', key: 'model_count', width: 90 },
+  {
+    title: '日 token 上限',
+    key: 'daily_token_limit',
+    width: 130,
+    render: (row) => row.daily_token_limit > 0 ? String(row.daily_token_limit) : '不限',
+  },
+  {
+    title: '月 token 上限',
+    key: 'monthly_token_limit',
+    width: 130,
+    render: (row) => row.monthly_token_limit > 0 ? String(row.monthly_token_limit) : '不限',
+  },
   { title: '操作', key: 'actions', width: 200, render: (row) => h(NSpace, { size: 8 }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
@@ -208,6 +220,24 @@ onMounted(load)
               <n-radio value="openai">OpenAI</n-radio>
               <n-radio value="anthropic">Anthropic</n-radio>
             </n-radio-group>
+          </n-form-item>
+          <n-form-item label="单日 token 上限">
+            <n-input-number
+              v-model:value="form.daily_token_limit"
+              :min="0"
+              :step="1000"
+              placeholder="0 表示不限"
+              style="width: 100%"
+            />
+          </n-form-item>
+          <n-form-item label="单月 token 上限">
+            <n-input-number
+              v-model:value="form.monthly_token_limit"
+              :min="0"
+              :step="10000"
+              placeholder="0 表示不限"
+              style="width: 100%"
+            />
           </n-form-item>
           <n-button type="primary" block @click="save">{{ editing ? '保存' : '添加' }}</n-button>
         </n-form>

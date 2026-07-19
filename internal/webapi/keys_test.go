@@ -30,7 +30,7 @@ func TestCreateKey(t *testing.T) {
 
 func TestListKeysMasked(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l")
+	k, _ := model.CreateExtKey(d, "l", 0, 0)
 	_ = k
 	req := httptest.NewRequest("GET", "/api/admin/keys", nil)
 	w := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestListKeysMasked(t *testing.T) {
 
 func TestDeleteKey(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l")
+	k, _ := model.CreateExtKey(d, "l", 0, 0)
 	req := httptest.NewRequest("DELETE", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -63,5 +63,65 @@ func TestDeleteKey(t *testing.T) {
 	list, _ := model.ListExtKeys(d)
 	if len(list) != 0 {
 		t.Fatalf("after delete len=%d", len(list))
+	}
+}
+
+func TestUpdateKeyLimits(t *testing.T) {
+	a, d := setupAPI(t)
+	k, _ := model.CreateExtKey(d, "l", 0, 0)
+	body, _ := json.Marshal(map[string]any{
+		"daily_token_limit":   1000,
+		"monthly_token_limit": 50000,
+		"label":               "renamed",
+	})
+	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := model.GetExtKeyByID(d, k.ID)
+	if got.DailyTokenLimit != 1000 || got.MonthlyTokenLimit != 50000 {
+		t.Fatalf("limits not persisted: %+v", got)
+	}
+	if got.Label != "renamed" {
+		t.Fatalf("label=%q want renamed", got.Label)
+	}
+}
+
+func TestUpdateKeyNegativeLimitRejected(t *testing.T) {
+	a, d := setupAPI(t)
+	k, _ := model.CreateExtKey(d, "l", 100, 200)
+	body, _ := json.Marshal(map[string]any{"daily_token_limit": -5})
+	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status=%d want 400", w.Code)
+	}
+	// existing limits unchanged
+	got, _ := model.GetExtKeyByID(d, k.ID)
+	if got.DailyTokenLimit != 100 || got.MonthlyTokenLimit != 200 {
+		t.Fatalf("limits changed on rejected update: %+v", got)
+	}
+}
+
+func TestUpdateKeyPartialNoChange(t *testing.T) {
+	a, d := setupAPI(t)
+	k, _ := model.CreateExtKey(d, "l", 100, 200)
+	// Only send label; limits must be preserved
+	body, _ := json.Marshal(map[string]any{"label": "only-label"})
+	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := model.GetExtKeyByID(d, k.ID)
+	if got.DailyTokenLimit != 100 || got.MonthlyTokenLimit != 200 {
+		t.Fatalf("limits changed on partial update: %+v", got)
+	}
+	if got.Label != "only-label" {
+		t.Fatalf("label=%q want only-label", got.Label)
 	}
 }

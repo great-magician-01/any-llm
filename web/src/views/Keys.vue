@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { useMessage, NPopconfirm, NButton } from 'naive-ui'
-import { listKeys, createKey, deleteKey, type ExtKey } from '../api/keys'
+import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert } from 'naive-ui'
+import type { DataTableColumns } from 'naive-ui'
+import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
+const usageByKey = ref<Record<number, UsageTotals>>({})
 const label = ref('')
+const dailyLimit = ref(0)
+const monthlyLimit = ref(0)
 const newlyCreatedKey = ref('')
 const showNewKeyModal = ref(false)
+
+// edit modal
+const showEditModal = ref(false)
+const editing = ref<ExtKey | null>(null)
+const editForm = ref({ label: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 })
 
 const origin = computed(() => window.location.origin)
 const endpoints = computed(() => [
@@ -16,39 +25,120 @@ const endpoints = computed(() => [
   { label: 'Anthropic - Messages', method: 'POST', url: `${origin.value}/v1/messages` },
 ])
 
-const columns = computed(() => [
+const columns = computed<DataTableColumns<ExtKey>>(() => [
   { title: '备注', key: 'label' },
   { title: 'Key', key: 'key' },
   {
+    title: '状态',
+    key: 'enabled',
+    width: 80,
+    render: (row) => h(NTag, { type: row.enabled ? 'success' : 'default', bordered: false }, { default: () => row.enabled ? '启用' : '禁用' }),
+  },
+  {
+    title: '日 token 上限',
+    key: 'daily_token_limit',
+    width: 130,
+    render: (row) => row.daily_token_limit > 0 ? String(row.daily_token_limit) : '不限',
+  },
+  {
+    title: '月 token 上限',
+    key: 'monthly_token_limit',
+    width: 130,
+    render: (row) => row.monthly_token_limit > 0 ? String(row.monthly_token_limit) : '不限',
+  },
+  {
+    title: '今日 / 本月用量',
+    key: 'usage',
+    width: 180,
+    render: (row) => {
+      const u = usageByKey.value[row.id]
+      if (!u) return h('span', { style: 'color: var(--text-3)' }, '—')
+      const daily = u.daily_tokens
+      const monthly = u.monthly_tokens
+      const dailyS = row.daily_token_limit > 0 ? `${daily} / ${row.daily_token_limit}` : String(daily)
+      const monthlyS = row.monthly_token_limit > 0 ? `${monthly} / ${row.monthly_token_limit}` : String(monthly)
+      return h(NSpace, { vertical: true, size: 0 }, {
+        default: () => [
+          h('span', { style: 'font-size: 12px' }, '日: ' + dailyS),
+          h('span', { style: 'font-size: 12px' }, '月: ' + monthlyS),
+        ],
+      })
+    },
+  },
+  {
     title: '操作',
     key: 'actions',
-    width: 100,
-    render(row: ExtKey) {
-      return h(
-        NPopconfirm,
-        {
-          onPositiveClick: () => { del(row.id) },
-        },
-        {
-          trigger: () =>
-            h(NButton, { size: 'small', type: 'error', quaternary: true }, { default: () => '删除' }),
-          default: () => '确定删除此 key？删除后该 key 不可用。',
-        },
-      )
+    width: 140,
+    render(row) {
+      return h(NSpace, { size: 4 }, {
+        default: () => [
+          h(NButton, { size: 'small', onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(
+            NPopconfirm,
+            { onPositiveClick: () => { del(row.id) } },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', type: 'error', quaternary: true }, { default: () => '删除' }),
+              default: () => '确定删除此 key？删除后该 key 不可用。',
+            },
+          ),
+        ],
+      })
     },
   },
 ])
 
-async function load() { keys.value = await listKeys() }
+async function load() {
+  keys.value = await listKeys()
+  // load usage in parallel
+  const results = await Promise.all(keys.value.map(k => getKeyUsage(k.id).catch(() => null)))
+  usageByKey.value = {}
+  keys.value.forEach((k, i) => {
+    if (results[i]) usageByKey.value[k.id] = results[i] as UsageTotals
+  })
+}
+
 async function add() {
   if (label.value.trim()) {
-    const k = await createKey(label.value.trim())
+    const k = await createKey(label.value.trim(), dailyLimit.value, monthlyLimit.value)
     newlyCreatedKey.value = k.key
     showNewKeyModal.value = true
     label.value = ''
+    dailyLimit.value = 0
+    monthlyLimit.value = 0
     await load()
   }
 }
+
+function openEdit(row: ExtKey) {
+  editing.value = row
+  editForm.value = {
+    label: row.label,
+    enabled: row.enabled,
+    daily_token_limit: row.daily_token_limit,
+    monthly_token_limit: row.monthly_token_limit,
+  }
+  showEditModal.value = true
+}
+
+async function saveEdit() {
+  if (!editing.value) return
+  try {
+    await updateKey(editing.value.id, {
+      label: editForm.value.label,
+      enabled: editForm.value.enabled,
+      daily_token_limit: editForm.value.daily_token_limit,
+      monthly_token_limit: editForm.value.monthly_token_limit,
+    })
+    showEditModal.value = false
+    editing.value = null
+    await load()
+    message.success('已保存')
+  } catch (e: any) {
+    message.error('保存失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  }
+}
+
 async function del(id: number) {
   try {
     await deleteKey(id)
@@ -58,6 +148,7 @@ async function del(id: number) {
     message.error('删除失败')
   }
 }
+
 function copyKey(key: string) {
   try {
     const ok = execCopy(key)
@@ -111,13 +202,31 @@ onMounted(load)
     </n-card>
 
     <n-card title="密钥列表" class="panel">
-      <div class="toolbar">
+      <div class="toolbar" style="flex-wrap: wrap; gap: 8px">
         <n-input
           v-model:value="label"
           placeholder="备注，如：我的应用"
-          style="width: 240px"
+          style="width: 200px"
           @keyup.enter="add"
         />
+        <n-input-number
+          v-model:value="dailyLimit"
+          :min="0"
+          :step="1000"
+          placeholder="单日 token 上限"
+          style="width: 170px"
+        >
+          <template #prefix>日限</template>
+        </n-input-number>
+        <n-input-number
+          v-model:value="monthlyLimit"
+          :min="0"
+          :step="10000"
+          placeholder="单月 token 上限"
+          style="width: 170px"
+        >
+          <template #prefix>月限</template>
+        </n-input-number>
         <n-button type="primary" @click="add">生成 Key</n-button>
       </div>
       <n-data-table :bordered="false" :columns="columns" :data="keys" />
@@ -137,6 +246,26 @@ onMounted(load)
             <n-button @click="showNewKeyModal = false">我已保存</n-button>
           </div>
         </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal :show="showEditModal" @update:show="(s: boolean) => { if (!s) showEditModal = false }">
+      <n-card title="编辑密钥" :bordered="false" style="width:500px">
+        <n-form label-placement="top">
+          <n-form-item label="备注">
+            <n-input v-model:value="editForm.label" />
+          </n-form-item>
+          <n-form-item label="启用">
+            <n-switch v-model:value="editForm.enabled" />
+          </n-form-item>
+          <n-form-item label="单日 token 上限（0 = 不限）">
+            <n-input-number v-model:value="editForm.daily_token_limit" :min="0" :step="1000" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="单月 token 上限（0 = 不限）">
+            <n-input-number v-model:value="editForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
+          </n-form-item>
+          <n-button type="primary" block @click="saveEdit">保存</n-button>
+        </n-form>
       </n-card>
     </n-modal>
   </div>

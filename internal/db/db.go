@@ -37,6 +37,10 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
+	if err := migrateTokenLimits(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("migrate token limits: %w", err)
+	}
 	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
@@ -82,6 +86,10 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 	if _, err := d.Exec(migrationPG); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+	if err := migrateTokenLimits(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("migrate token limits: %w", err)
 	}
 	return d, nil
 }

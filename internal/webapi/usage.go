@@ -3,6 +3,8 @@ package webapi
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/model"
 )
@@ -31,5 +33,49 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": records, "total": total})
 		return
 	}
+	// GET /api/admin/usage/key/:id    — daily/monthly token totals for an ext key
+	// GET /api/admin/usage/upstream/:id — daily/monthly token totals for an upstream
+	if r.Method == "GET" {
+		if strings.HasPrefix(r.URL.Path, "/api/admin/usage/key/") {
+			id := parseID(strings.TrimPrefix(r.URL.Path, "/api/admin/usage/key/"))
+			if id == 0 {
+				http.NotFound(w, r)
+				return
+			}
+			writeUsageTotals(w, a, &id, nil)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/admin/usage/upstream/") {
+			id := parseID(strings.TrimPrefix(r.URL.Path, "/api/admin/usage/upstream/"))
+			if id == 0 {
+				http.NotFound(w, r)
+				return
+			}
+			writeUsageTotals(w, a, nil, &id)
+			return
+		}
+	}
 	http.NotFound(w, r)
+}
+
+func writeUsageTotals(w http.ResponseWriter, a *API, extKeyID, upstreamID *int64) {
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+	daily, err := model.SumTokens(a.db, extKeyID, upstreamID, dayStart, dayEnd)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	monthly, err := model.SumTokens(a.db, extKeyID, upstreamID, monthStart, monthEnd)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"daily_tokens":   daily,
+		"monthly_tokens": monthly,
+	})
 }

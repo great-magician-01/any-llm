@@ -15,17 +15,18 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-func CreateExtKey(d *sql.DB, label string) (*ExtKey, error) {
+func CreateExtKey(d *sql.DB, label string, dailyLimit, monthlyLimit int) (*ExtKey, error) {
 	key, err := generateKey()
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	var id int64
-	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
+	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, daily_token_limit, monthly_token_limit, created_at) VALUES (?,?,?,?,?) RETURNING id`), key, label, dailyLimit, monthlyLimit, now).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
-	return &ExtKey{ID: id, Key: key, Label: label, Enabled: true, CreatedAt: time.Now()}, nil
+	return &ExtKey{ID: id, Key: key, Label: label, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, CreatedAt: now}, nil
 }
 
 func generateKey() (string, error) {
@@ -44,8 +45,8 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	k := &ExtKey{}
 	var enabled int
 	var lastUsed sql.NullTime
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
-		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.CreatedAt, &lastUsed)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
 	}
@@ -57,8 +58,25 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	return k, nil
 }
 
+func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
+	k := &ExtKey{}
+	var enabled int
+	var lastUsed sql.NullTime
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE id=?`), id).
+		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &k.CreatedAt, &lastUsed)
+	if err != nil {
+		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
+	}
+	k.Enabled = enabled != 0
+	if lastUsed.Valid {
+		t := lastUsed.Time
+		k.LastUsedAt = &t
+	}
+	return k, nil
+}
+
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
@@ -68,7 +86,7 @@ func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
 		var k ExtKey
 		var enabled int
 		var lastUsed sql.NullTime
-		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.CreatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &k.CreatedAt, &lastUsed); err != nil {
 			return nil, err
 		}
 		k.Enabled = enabled != 0
@@ -90,6 +108,19 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 	return nil
 }
 
+func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, monthlyLimit int) error {
+	en := 0
+	if enabled {
+		en = 1
+	}
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=?`),
+		label, en, dailyLimit, monthlyLimit, id)
+	if err != nil {
+		return fmt.Errorf("update ext key %d: %w", id, err)
+	}
+	return nil
+}
+
 func MaskKey(key string) string {
 	if len(key) < 16 {
 		return key + "****"
@@ -98,7 +129,7 @@ func MaskKey(key string) string {
 }
 
 func TouchExtKey(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?`), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=?`), time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("touch ext key: %w", err)
 	}

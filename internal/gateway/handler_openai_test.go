@@ -21,7 +21,7 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false)
-	k, _ := model.CreateExtKey(d, "test")
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -64,7 +64,7 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false)
-	k, _ := model.CreateExtKey(d, "test")
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -103,7 +103,7 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false)
-	k, _ := model.CreateExtKey(d, "test")
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`))
@@ -136,7 +136,7 @@ func TestCompletion_UpstreamError(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false)
-	k, _ := model.CreateExtKey(d, "test")
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -171,7 +171,7 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false)
-	k, _ := model.CreateExtKey(d, "test")
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`))

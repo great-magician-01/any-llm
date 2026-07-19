@@ -3,14 +3,16 @@ package model
 import "time"
 
 type Upstream struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	BaseURL    string    `json:"base_url"`
-	APIKey     string    `json:"api_key"`
-	Format     string    `json:"format"`
-	ModelCount int       `json:"model_count"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	Name              string    `json:"name"`
+	BaseURL           string    `json:"base_url"`
+	APIKey            string    `json:"api_key"`
+	Format            string    `json:"format"`
+	DailyTokenLimit   int       `json:"daily_token_limit"`
+	MonthlyTokenLimit int       `json:"monthly_token_limit"`
+	ModelCount        int       `json:"model_count"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type UpstreamModel struct {
@@ -21,12 +23,14 @@ type UpstreamModel struct {
 }
 
 type ExtKey struct {
-	ID         int64      `json:"id"`
-	Key        string     `json:"key"`
-	Label      string     `json:"label"`
-	Enabled    bool       `json:"enabled"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
+	ID                int64      `json:"id"`
+	Key               string     `json:"key"`
+	Label             string     `json:"label"`
+	Enabled           bool       `json:"enabled"`
+	DailyTokenLimit   int        `json:"daily_token_limit"`
+	MonthlyTokenLimit int        `json:"monthly_token_limit"`
+	CreatedAt         time.Time  `json:"created_at"`
+	LastUsedAt        *time.Time `json:"last_used_at"`
 }
 
 type UsageRecord struct {

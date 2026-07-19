@@ -19,17 +19,45 @@ type UsageSummary struct {
 	ErrorCount       int    `json:"error_count"`
 }
 
+// SumTokens returns the total tokens consumed in the half-open time window
+// [from, to) for the given ext key or upstream. Pass a non-nil extKeyID to
+// aggregate by ext key, or a non-nil upstreamID to aggregate by upstream.
+// If both are nil the function returns 0.
+func SumTokens(d *sql.DB, extKeyID, upstreamID *int64, from, to time.Time) (int, error) {
+	if extKeyID == nil && upstreamID == nil {
+		return 0, nil
+	}
+	q := `SELECT COALESCE(SUM(total_tokens), 0) FROM usage_records WHERE created_at >= ? AND created_at < ?`
+	args := []any{from, to}
+	if extKeyID != nil {
+		q += ` AND ext_key_id = ?`
+		args = append(args, *extKeyID)
+	} else {
+		q += ` AND upstream_id = ?`
+		args = append(args, *upstreamID)
+	}
+	var sum int
+	if err := d.QueryRow(db.Rebind(d, q), args...).Scan(&sum); err != nil {
+		return 0, fmt.Errorf("sum tokens: %w", err)
+	}
+	return sum, nil
+}
+
 func InsertUsage(d *sql.DB, r *UsageRecord) error {
 	stream := 0
 	if r.Stream {
 		stream = 1
+	}
+	ts := r.CreatedAt
+	if ts.IsZero() {
+		ts = time.Now()
 	}
 	_, err := d.Exec(db.Rebind(d, `INSERT INTO usage_records
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		 prompt_tokens, completion_tokens, total_tokens, stream, status, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
-		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status, time.Now())
+		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status, ts)
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}

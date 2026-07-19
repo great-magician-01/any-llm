@@ -2,6 +2,7 @@ import client from './client'
 
 export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
+  daily_token_limit: number; monthly_token_limit: number
   model_count?: number
   created_at?: string; updated_at?: string
 }
@@ -45,4 +46,11 @@ export async function addModel(upstreamId: number, model_name: string) {
 
 export async function deleteModel(modelId: number) {
   await client.delete(`/upstreams/${modelId}/models`)
+}
+
+export interface UsageTotals { daily_tokens: number; monthly_tokens: number }
+
+export async function getUpstreamUsage(id: number) {
+  const { data } = await client.get(`/usage/upstream/${id}`)
+  return data as UsageTotals
 }

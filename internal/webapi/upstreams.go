@@ -24,11 +24,13 @@ func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		BaseURL     string `json:"base_url"`
-		APIKey      string `json:"api_key"`
-		Format      string `json:"format"`
-		FetchModels bool   `json:"fetch_models"`
+		Name              string `json:"name"`
+		BaseURL           string `json:"base_url"`
+		APIKey            string `json:"api_key"`
+		Format            string `json:"format"`
+		DailyTokenLimit   int    `json:"daily_token_limit"`
+		MonthlyTokenLimit int    `json:"monthly_token_limit"`
+		FetchModels       bool   `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
@@ -38,7 +40,12 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "format must be openai or anthropic"})
 		return
 	}
-	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format}
+	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
+		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
+		return
+	}
+	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format,
+		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit}
 	var id int64
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
@@ -77,13 +84,23 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	var req struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Format  string `json:"format"`
+		Name              string `json:"name"`
+		BaseURL           string `json:"base_url"`
+		APIKey            string `json:"api_key"`
+		Format            string `json:"format"`
+		DailyTokenLimit   *int   `json:"daily_token_limit"`
+		MonthlyTokenLimit *int   `json:"monthly_token_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if req.DailyTokenLimit != nil && *req.DailyTokenLimit < 0 {
+		writeJSON(w, 400, map[string]any{"error": "daily_token_limit must be >= 0"})
+		return
+	}
+	if req.MonthlyTokenLimit != nil && *req.MonthlyTokenLimit < 0 {
+		writeJSON(w, 400, map[string]any{"error": "monthly_token_limit must be >= 0"})
 		return
 	}
 	if req.Name != "" {
@@ -102,6 +119,12 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	if req.Format != "" {
 		u.Format = req.Format
+	}
+	if req.DailyTokenLimit != nil {
+		u.DailyTokenLimit = *req.DailyTokenLimit
+	}
+	if req.MonthlyTokenLimit != nil {
+		u.MonthlyTokenLimit = *req.MonthlyTokenLimit
 	}
 	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
 		writeSyncErr(w, 400, err)

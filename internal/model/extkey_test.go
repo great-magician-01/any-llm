@@ -7,7 +7,7 @@ import (
 
 func TestCreateExtKeyFormat(t *testing.T) {
 	d := testDB(t)
-	k, err := CreateExtKey(d, "test-label")
+	k, err := CreateExtKey(d, "test-label", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +27,8 @@ func TestCreateExtKeyFormat(t *testing.T) {
 
 func TestCreateExtKeysUnique(t *testing.T) {
 	d := testDB(t)
-	k1, _ := CreateExtKey(d, "a")
-	k2, _ := CreateExtKey(d, "b")
+	k1, _ := CreateExtKey(d, "a", 0, 0)
+	k2, _ := CreateExtKey(d, "b", 0, 0)
 	if k1.Key == k2.Key {
 		t.Fatal("duplicate keys generated")
 	}
@@ -36,7 +36,7 @@ func TestCreateExtKeysUnique(t *testing.T) {
 
 func TestGetExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l")
+	k, _ := CreateExtKey(d, "l", 0, 0)
 	got, err := GetExtKey(d, k.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestMaskKey(t *testing.T) {
 
 func TestListExtKeysMasked(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l")
+	k, _ := CreateExtKey(d, "l", 0, 0)
 	list, err := ListExtKeys(d)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestListExtKeysMasked(t *testing.T) {
 
 func TestDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l")
+	k, _ := CreateExtKey(d, "l", 0, 0)
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestDeleteExtKey(t *testing.T) {
 
 func TestTouchExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l")
+	k, _ := CreateExtKey(d, "l", 0, 0)
 	if err := TouchExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}

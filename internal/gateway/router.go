@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
@@ -111,7 +113,86 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
+	if err := g.checkTokenLimits(k, u); err != nil {
+		if le, ok := err.(*limitError); ok {
+			WriteError(w, 429, inFormat, le.message, "rate_limit_error")
+			logger.Info("token limit exceeded",
+				"key_id", k.ID, "key_label", k.Label,
+				"upstream", u.Name, "scope", le.scope,
+				"used", le.used, "limit", le.limit,
+			)
+			return
+		}
+		WriteError(w, 500, inFormat, "failed to check token limits: "+err.Error(), "internal_error")
+		return
+	}
+
 	g.dispatch(w, r, inFormat, k, u, realModel, body)
+}
+
+// limitError indicates an ext key or upstream has exceeded its daily or
+// monthly token quota. Callers should map it to HTTP 429.
+type limitError struct {
+	scope   string // "ext_key_daily" | "ext_key_monthly" | "upstream_daily" | "upstream_monthly"
+	used    int
+	limit   int
+	message string
+}
+
+func (e *limitError) Error() string { return e.message }
+
+// checkTokenLimits verifies the ext key and upstream are within their daily
+// and monthly token quotas, based on usage_records aggregated over local-day /
+// local-month windows ending at the current time. A limit of 0 means unbounded.
+// Returns a *limitError when exceeded, or a wrapped error on DB failure.
+func (g *Gateway) checkTokenLimits(k *model.ExtKey, u *model.Upstream) error {
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	if k.DailyTokenLimit > 0 {
+		used, err := model.SumTokens(g.db, &k.ID, nil, dayStart, dayEnd)
+		if err != nil {
+			return err
+		}
+		if used >= k.DailyTokenLimit {
+			return &limitError{scope: "ext_key_daily", used: used, limit: k.DailyTokenLimit,
+				message: "daily token limit exceeded for API key"}
+		}
+	}
+	if k.MonthlyTokenLimit > 0 {
+		used, err := model.SumTokens(g.db, &k.ID, nil, monthStart, monthEnd)
+		if err != nil {
+			return err
+		}
+		if used >= k.MonthlyTokenLimit {
+			return &limitError{scope: "ext_key_monthly", used: used, limit: k.MonthlyTokenLimit,
+				message: "monthly token limit exceeded for API key"}
+		}
+	}
+	if u.DailyTokenLimit > 0 {
+		used, err := model.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)
+		if err != nil {
+			return err
+		}
+		if used >= u.DailyTokenLimit {
+			return &limitError{scope: "upstream_daily", used: used, limit: u.DailyTokenLimit,
+				message: "daily token limit exceeded for upstream"}
+		}
+	}
+	if u.MonthlyTokenLimit > 0 {
+		used, err := model.SumTokens(g.db, nil, &u.ID, monthStart, monthEnd)
+		if err != nil {
+			return err
+		}
+		if used >= u.MonthlyTokenLimit {
+			return &limitError{scope: "upstream_monthly", used: used, limit: u.MonthlyTokenLimit,
+				message: "monthly token limit exceeded for upstream"}
+		}
+	}
+	return nil
 }
 
 func extractKey(r *http.Request) string {
