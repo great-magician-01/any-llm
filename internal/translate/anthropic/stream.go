@@ -42,11 +42,11 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 	case "content_block_delta":
 		evt := &translate.StreamEvent{Type: "content_block_delta", Index: raw.Index}
 		var d struct {
-			Type      string `json:"type"`
-			Text      string `json:"text,omitempty"`
+			Type        string `json:"type"`
+			Text        string `json:"text,omitempty"`
 			PartialJSON string `json:"partial_json,omitempty"`
-			Thinking  string `json:"thinking,omitempty"`
-			Signature string `json:"signature,omitempty"`
+			Thinking    string `json:"thinking,omitempty"`
+			Signature   string `json:"signature,omitempty"`
 		}
 		_ = json.Unmarshal(raw.Delta, &d)
 		evt.Delta = &translate.Delta{
@@ -162,7 +162,9 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	var head struct{ Type string `json:"type"` }
+	var head struct {
+		Type string `json:"type"`
+	}
 	if err := json.Unmarshal(raw, &head); err != nil {
 		return nil, fmt.Errorf("anthropic stream content_block: %w", err)
 	}

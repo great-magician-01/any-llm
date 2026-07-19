@@ -27,7 +27,7 @@ func TestCall_NonStreamOpenAI(t *testing.T) {
 	c := NewClient(http.DefaultClient)
 	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: false,
-		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Messages:  []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 100}
 	res, err := c.Call(context.Background(), u, irReq)
 	if err != nil {

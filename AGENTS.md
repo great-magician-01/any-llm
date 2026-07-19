@@ -35,8 +35,9 @@ go test ./internal/gateway -v            # single package with verbose
 ```
 
 - Backend tests use stdlib `testing`, in-memory SQLite via `t.TempDir()`
-- **No frontend tests exist** (no vitest/jest configured)
-- **No lint/formatter config, no CI**
+- Frontend tests: vitest + happy-dom (`cd web && npm run test`), covering the router auth guard and the axios 401 interceptor
+- **CI**: `.github/workflows/ci.yml` runs gofmt check, `go vet`, `go test`, `go build` (with a stub `cmd/any-llm/web/dist/`), plus `npm run test` and `npm run build`
+- No golangci-lint/staticcheck config — linting is gofmt + go vet only
 
 ## Config (env vars)
 
@@ -45,7 +46,7 @@ All settings load from environment variables. A `.env` file in the working direc
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `ANY_LLM_HOST` | `0.0.0.0` | |
-| `ANY_LLM_PORT` | `6718` | `.env.example` shows `8080` but code default is `6718` |
+| `ANY_LLM_PORT` | `6718` | |
 | `DB_TYPE` | `sqlite` | `sqlite` / `postgres` / `postgresql` / `pg` (case-insensitive) |
 | `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite path (used when `DB_TYPE=sqlite`) |
 | `DB_HOST` | `localhost` | PostgreSQL host |
@@ -55,7 +56,8 @@ All settings load from environment variables. A `.env` file in the working direc
 | `DB_NAME` | `amanuensis` | PostgreSQL database |
 | `DB_SCHEMA` | `public` | PostgreSQL schema (created if missing; validated as identifier) |
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | warns on default at startup |
-| `ANY_LLM_SESSION_SECRET` | auto-gen | **sessions lost on restart unless set**; use 64-char hex |
+| `ANY_LLM_SESSION_SECRET` | auto-gen | if unset, a random secret is generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` so sessions survive restarts; falls back to ephemeral (with warning) if the file is unwritable |
+| `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | where the auto-generated session secret is persisted (0600); only used when `ANY_LLM_SESSION_SECRET` is unset |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
@@ -79,10 +81,10 @@ All settings load from environment variables. A `.env` file in the working direc
 
 ## Gotchas
 
-- **`.gitignore` is minimal** (only `.env` and `logs/`) — `any-llm.db`, `any-llm.exe`, `web/dist/`, and `web/node_modules/` are all committed
-- **`web/dist/` must exist somewhere** when compiling the Go binary — `npm run build` handles this by copying into `cmd/any-llm/web/dist/`
+- **Graceful shutdown**: `main.go` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain, then force-close). Deferred cleanup runs LIFO: `writer.Stop` (drains queued usage writes) → `db.Close` → `logger.Close`. Server sets `ReadHeaderTimeout` (10s) but **no WriteTimeout** — SSE streams are long-lived.
+- **`cmd/any-llm/web/dist/` must exist** when compiling the Go binary (`//go:embed web/dist`) — `npm run build` copies it there; CI stubs it with an empty `index.html`
 - **Ext key format**: `all-sk-` prefix + 32 base62 chars
-- **Session auth**: HMAC-SHA256, 24h expiry; secret changes on restart unless `ANY_LLM_SESSION_SECRET` is set
+- **Session auth**: HMAC-SHA256, 24h expiry; secret persisted in `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`, gitignored) when env unset
 - **DB writer**: `internal/db.Writer` serializes all writes through a single goroutine (buffered channel, capacity 512). `DoAsync` is fire-and-forget (silently drops on full buffer / after Stop); `DoSync` blocks for the result and returns `ErrWriterStopped` (mapped to HTTP 503) if the server is shutting down. `Stop` waits for in-flight sync calls to finish before draining and exiting, so concurrent shutdown cannot deadlock or orphan in-flight admin writes.
 - **Dialect abstraction**: `db.Rebind(d, q)` rewrites `?` placeholders to `$N` for PostgreSQL, inferred from the `*sql.DB` driver (no global state). String literals (`'...'`, with `''` escape) and SQL comments (`--`, `/* */`) are skipped so `?` inside them is preserved. Migrations are split into `migrationSQLite` / `migrationPG`; PG uses `BIGSERIAL` + `TIMESTAMP(0)`, SQLite uses `INTEGER PRIMARY KEY AUTOINCREMENT` + `DATETIME`.
 - **Streaming**: always injects `stream_options: {include_usage: true}` into OpenAI upstream requests

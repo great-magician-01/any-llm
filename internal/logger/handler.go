@@ -44,11 +44,11 @@ type output struct {
 }
 
 type handler struct {
-	level      slog.Level
-	mu         sync.Mutex
-	outputs    []output
-	preAttrs   []slog.Attr
-	group      string
+	level    slog.Level
+	mu       sync.Mutex
+	outputs  []output
+	preAttrs []slog.Attr
+	group    string
 }
 
 func newHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group string) *handler {

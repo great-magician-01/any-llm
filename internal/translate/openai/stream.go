@@ -11,10 +11,10 @@ import (
 
 type StreamDecoder struct {
 	started     bool
-	textOpen    bool          // a text block at index 0 is open
+	textOpen    bool // a text block at index 0 is open
 	textIndex   int
-	openTools   map[int]int   // OpenAI tool_calls index -> IR block index
-	nextBlock   int           // next IR block index to allocate
+	openTools   map[int]int // OpenAI tool_calls index -> IR block index
+	nextBlock   int         // next IR block index to allocate
 	inputTokens int
 }
 
@@ -232,7 +232,7 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 				"id": e.id, "object": "chat.completion.chunk",
 				"choices": []map[string]any{{"index": 0, "delta": map[string]any{
 					"tool_calls": []map[string]any{{
-						"index": idx,
+						"index":    idx,
 						"function": map[string]any{"arguments": evt.Delta.PartialJSON},
 					}},
 				}}},

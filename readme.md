@@ -35,7 +35,7 @@ go build -o any-llm ./cmd/any-llm/
 # 构建镜像
 docker build -t any-llm .
 
-# 运行（数据库和日志持久化到宿主机）
+# 运行（数据库、日志和会话密钥持久化到宿主机）
 docker run -d \
   -p 6718:6718 \
   -v $PWD/data:/data \
@@ -43,7 +43,7 @@ docker run -d \
   -e ANY_LLM_DB_PATH=/data/any-llm.db \
   -e ANY_LLM_LOG_FILE=/data/logs/any-llm.log \
   -e ANY_LLM_MASTER_PASSWORD=your-password \
-  -e ANY_LLM_SESSION_SECRET=$(openssl rand -hex 32) \
+  -e ANY_LLM_SESSION_SECRET_FILE=/data/.session-secret \
   --name any-llm \
   any-llm
 
@@ -61,7 +61,8 @@ docker logs -f any-llm
 | `ANY_LLM_PORT` | `6718` | 监听端口 |
 | `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite 数据库路径 |
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | 管理员密码 |
-| `ANY_LLM_SESSION_SECRET` | 随机生成 | 会话密钥，重启后丢失登录状态 |
+| `ANY_LLM_SESSION_SECRET` | 见说明 | 会话密钥。留空时自动生成并保存到 `ANY_LLM_SESSION_SECRET_FILE` 指定的文件，重启后登录状态不丢失 |
+| `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成的会话密钥的保存路径（仅 `ANY_LLM_SESSION_SECRET` 为空时生效） |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}`；留空仅输出到 stdout |
 | `ANY_LLM_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` 或 `postgres`（不区分大小写） |

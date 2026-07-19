@@ -16,20 +16,21 @@ import (
 )
 
 type Config struct {
-	Host           string
-	Port           int
-	DBType         string
-	DBPath         string
-	DBHost         string
-	DBPort         int
-	DBUser         string
-	DBPassword     string
-	DBName         string
-	DBSchema       string
-	MasterPassword string
-	SessionSecret  string
-	LogFile        string
-	LogLevel       logger.Level
+	Host              string
+	Port              int
+	DBType            string
+	DBPath            string
+	DBHost            string
+	DBPort            int
+	DBUser            string
+	DBPassword        string
+	DBName            string
+	DBSchema          string
+	MasterPassword    string
+	SessionSecret     string
+	SessionSecretFile string
+	LogFile           string
+	LogLevel          logger.Level
 }
 
 func Load() (*Config, error) {
@@ -39,34 +40,61 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		Host:           envStr("ANY_LLM_HOST", "0.0.0.0"),
-		Port:           envInt("ANY_LLM_PORT", 6718),
-		DBType:         envStr("DB_TYPE", "sqlite"),
-		DBPath:         envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
-		DBHost:         envStr("DB_HOST", "localhost"),
-		DBPort:         envInt("DB_PORT", 5432),
-		DBUser:         envStr("DB_USER", "postgres"),
-		DBPassword:     envStr("DB_PASSWORD", ""),
-		DBName:         envStr("DB_NAME", "amanuensis"),
-		DBSchema:       envStr("DB_SCHEMA", "public"),
-		MasterPassword: envStr("ANY_LLM_MASTER_PASSWORD", "admin"),
-		SessionSecret:  envStr("ANY_LLM_SESSION_SECRET", ""),
-		LogFile:        envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
-		LogLevel:       logLevel,
+		Host:              envStr("ANY_LLM_HOST", "0.0.0.0"),
+		Port:              envInt("ANY_LLM_PORT", 6718),
+		DBType:            envStr("DB_TYPE", "sqlite"),
+		DBPath:            envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
+		DBHost:            envStr("DB_HOST", "localhost"),
+		DBPort:            envInt("DB_PORT", 5432),
+		DBUser:            envStr("DB_USER", "postgres"),
+		DBPassword:        envStr("DB_PASSWORD", ""),
+		DBName:            envStr("DB_NAME", "amanuensis"),
+		DBSchema:          envStr("DB_SCHEMA", "public"),
+		MasterPassword:    envStr("ANY_LLM_MASTER_PASSWORD", "admin"),
+		SessionSecret:     envStr("ANY_LLM_SESSION_SECRET", ""),
+		SessionSecretFile: envStr("ANY_LLM_SESSION_SECRET_FILE", "./.session-secret"),
+		LogFile:           envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
+		LogLevel:          logLevel,
 	}
 	cfg.DBType = normalizeDBType(cfg.DBType)
 	if cfg.MasterPassword == "admin" {
 		fmt.Fprintln(os.Stderr, "WARNING: using default master password 'admin'. Set ANY_LLM_MASTER_PASSWORD to change it.")
 	}
 	if cfg.SessionSecret == "" {
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			return nil, fmt.Errorf("generate session secret: %w", err)
+		secret, err := loadOrCreateSecret(cfg.SessionSecretFile)
+		if err != nil {
+			return nil, fmt.Errorf("session secret: %w", err)
 		}
-		cfg.SessionSecret = hex.EncodeToString(b)
-		fmt.Fprintln(os.Stderr, "WARNING: ANY_LLM_SESSION_SECRET not set; generated random secret (will not survive restart).")
+		cfg.SessionSecret = secret
 	}
 	return cfg, nil
+}
+
+// loadOrCreateSecret reads the session secret from path, generating and
+// persisting a new one (mode 0600) when the file is missing or empty.
+// Persisting the secret lets admin sessions survive restarts without
+// requiring ANY_LLM_SESSION_SECRET to be set explicitly. If the file cannot
+// be read or written, a fresh ephemeral secret is returned with a warning so
+// the service stays available (sessions just won't survive restart).
+func loadOrCreateSecret(path string) (string, error) {
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, nil
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "WARNING: cannot read session secret file %s: %v\n", path, err)
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate session secret: %w", err)
+	}
+	s := hex.EncodeToString(b)
+	if err := os.WriteFile(path, []byte(s+"\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: ANY_LLM_SESSION_SECRET not set and cannot persist generated secret to %s (%v); sessions will not survive restart.\n", path, err)
+		return s, nil
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: ANY_LLM_SESSION_SECRET not set; generated random secret saved to %s\n", path)
+	return s, nil
 }
 
 func envStr(key, def string) string {

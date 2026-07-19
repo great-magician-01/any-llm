@@ -324,13 +324,13 @@ type usageRecord struct {
 }
 
 type summaryRow struct {
-	groupKey       string
-	requestCount   int
-	totalTokens    int
-	promptTokens   int
-	completionTok  int
-	okCount        int
-	errorCount     int
+	groupKey      string
+	requestCount  int
+	totalTokens   int
+	promptTokens  int
+	completionTok int
+	okCount       int
+	errorCount    int
 }
 
 func createUpstreamE2E(d *sql.DB, name, baseURL, apiKey, format string) (int64, error) {
@@ -341,14 +341,14 @@ func createUpstreamE2E(d *sql.DB, name, baseURL, apiKey, format string) (int64, 
 }
 
 func getUpstreamByNameE2E(d *sql.DB, name string) (struct {
-	ID, ModelCount                                            int64
-	Name, BaseURL, APIKey, Format                             string
-	CreatedAt, UpdatedAt                                      time.Time
+	ID, ModelCount                int64
+	Name, BaseURL, APIKey, Format string
+	CreatedAt, UpdatedAt          time.Time
 }, error) {
 	var u struct {
-		ID, ModelCount                                            int64
-		Name, BaseURL, APIKey, Format                             string
-		CreatedAt, UpdatedAt                                      time.Time
+		ID, ModelCount                int64
+		Name, BaseURL, APIKey, Format string
+		CreatedAt, UpdatedAt          time.Time
 	}
 	err := d.QueryRow(Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=?`), name).
 		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
@@ -484,20 +484,20 @@ func createExtKeyE2E(d *sql.DB, label string) (struct {
 }
 
 func getExtKeyE2E(d *sql.DB, key string) (struct {
-	ID         int64
-	Key        string
-	Label      string
-	Enabled    int
-	CreatedAt  time.Time
-	LastUsed   sql.NullTime
+	ID        int64
+	Key       string
+	Label     string
+	Enabled   int
+	CreatedAt time.Time
+	LastUsed  sql.NullTime
 }, error) {
 	var k struct {
-		ID         int64
-		Key        string
-		Label      string
-		Enabled    int
-		CreatedAt  time.Time
-		LastUsed   sql.NullTime
+		ID        int64
+		Key       string
+		Label     string
+		Enabled   int
+		CreatedAt time.Time
+		LastUsed  sql.NullTime
 	}
 	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
 		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
@@ -505,10 +505,10 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 }
 
 func listExtKeysE2E(d *sql.DB) ([]struct {
-	ID        int64
-	Key       string
-	Label     string
-	Enabled   int
+	ID      int64
+	Key     string
+	Label   string
+	Enabled int
 }, error) {
 	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys ORDER BY id DESC`)
 	if err != nil {
@@ -516,17 +516,17 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	}
 	defer rows.Close()
 	var out []struct {
-		ID        int64
-		Key       string
-		Label     string
-		Enabled   int
+		ID      int64
+		Key     string
+		Label   string
+		Enabled int
 	}
 	for rows.Next() {
 		var k struct {
-			ID        int64
-			Key       string
-			Label     string
-			Enabled   int
+			ID      int64
+			Key     string
+			Label   string
+			Enabled int
 		}
 		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Enabled); err != nil {
 			return nil, err

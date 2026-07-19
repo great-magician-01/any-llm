@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/auth"
 	"github.com/great-magician-01/any-llm/internal/config"
@@ -21,16 +26,24 @@ import (
 //go:embed web/dist
 var frontend embed.FS
 
+// shutdownTimeout bounds how long the server waits for in-flight requests
+// (including SSE streams) to finish before connections are force-closed.
+const shutdownTimeout = 30 * time.Second
+
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load config:", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := logger.Init(logger.Options{Level: cfg.LogLevel, FilePath: cfg.LogFile}); err != nil {
 		fmt.Fprintln(os.Stderr, "init logger:", err)
-		os.Exit(1)
+		return 1
 	}
 	defer logger.Close()
 	logger.Info("any-llm starting", "host", cfg.Host, "port", cfg.Port, "db_type", cfg.DBType, "log_file", cfg.LogFile, "log_level", cfg.LogLevel.String())
@@ -53,12 +66,14 @@ func main() {
 	}
 	if err != nil {
 		logger.Error("open db failed", "err", err, "db_type", cfg.DBType)
-		os.Exit(1)
+		return 1
 	}
 	defer d.Close()
 
 	writer := db.NewWriter(d, 512)
 	writer.Start()
+	// Deferred calls run LIFO on return: writer.Stop (drains queued writes)
+	// → d.Close → logger.Close.
 	defer writer.Stop()
 
 	client := upstream.NewClient(nil)
@@ -71,7 +86,7 @@ func main() {
 	frontendFS, err := fs.Sub(frontend, "web/dist")
 	if err != nil {
 		logger.Error("frontend fs failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	spa := http.FileServer(http.FS(frontendFS))
 
@@ -94,9 +109,44 @@ func main() {
 		spa.ServeHTTP(w, r)
 	})
 
-	logger.Infof("any-llm listening on %s:%d", cfg.Host, cfg.Port)
-	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), mux); err != nil {
-		logger.Errorf("server failed: %v", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler: mux,
+		// Guards against slowloris; no WriteTimeout because SSE streams are
+		// long-lived by design.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+	logger.Infof("any-llm listening on %s:%d", cfg.Host, cfg.Port)
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return 0
+		}
+		logger.Errorf("server failed: %v", err)
+		return 1
+	case <-ctx.Done():
+		// A second signal now forces an immediate exit.
+		stop()
+	}
+
+	logger.Info("shutdown signal received, draining connections", "timeout", shutdownTimeout.String())
+	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		// Shutdown only fails when the drain deadline passes (e.g. long-lived
+		// streams still open); force-close and exit cleanly.
+		logger.Warn("graceful drain timed out, force-closing connections", "err", err)
+		_ = srv.Close()
+	}
+	logger.Info("server stopped")
+	return 0
 }

@@ -85,7 +85,9 @@ func decodeBlocks(raw json.RawMessage) ([]translate.ContentBlock, error) {
 	}
 	var out []translate.ContentBlock
 	for _, p := range parts {
-		var head struct{ Type string `json:"type"` }
+		var head struct {
+			Type string `json:"type"`
+		}
 		if err := json.Unmarshal(p, &head); err != nil {
 			return nil, err
 		}

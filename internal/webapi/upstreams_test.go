@@ -139,10 +139,10 @@ func TestUpdateUpstream_EmptyKeyPreserved(t *testing.T) {
 	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: realKey, Format: "openai"})
 
 	body, _ := json.Marshal(map[string]any{
-		"name":    "u-renamed",
+		"name":     "u-renamed",
 		"base_url": "https://example.com",
-		"api_key": "",
-		"format":  "openai",
+		"api_key":  "",
+		"format":   "openai",
 	})
 	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -167,10 +167,10 @@ func TestUpdateUpstream_NewKeyApplied(t *testing.T) {
 	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: "sk-old", Format: "openai"})
 
 	body, _ := json.Marshal(map[string]any{
-		"name":    "u",
+		"name":     "u",
 		"base_url": "https://example.com",
-		"api_key": "sk-new-real-key",
-		"format":  "openai",
+		"api_key":  "sk-new-real-key",
+		"format":   "openai",
 	})
 	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
 	w := httptest.NewRecorder()

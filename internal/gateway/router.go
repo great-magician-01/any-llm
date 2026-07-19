@@ -140,5 +140,3 @@ func readBody(r *http.Request) ([]byte, error) {
 func readAll(r io.Reader) ([]byte, error) {
 	return io.ReadAll(r)
 }
-
-

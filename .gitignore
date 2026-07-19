@@ -1,14 +1,22 @@
 # Secrets
 .env
+.session-secret
 
 # Runtime artifacts
 logs/
 any-llm.db
+any-llm.db-shm
+any-llm.db-wal
 
 # Go build outputs
+/any-llm
 *.exe
 *.test
 *.out
+
+# Frontend
+web/node_modules/
+web/dist/
 
 # Embedded frontend dist (auto-copied on build)
 cmd/any-llm/web/dist/
