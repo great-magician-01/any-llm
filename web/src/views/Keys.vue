@@ -34,7 +34,20 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: 'Key',
     key: 'key',
-    render: (row) => h('code', { class: 'mono key-chip' }, row.key),
+    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px' }, [
+      h('code', { class: 'mono key-chip' }, row.key),
+      h(
+        NTooltip,
+        { trigger: 'hover' },
+        {
+          trigger: () =>
+            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyKey(row.key, e) }, {
+              icon: () => h(AppIcon, { name: 'copy', size: 13 }),
+            }),
+          default: () => '复制 Key',
+        },
+      ),
+    ]),
   },
   {
     title: '状态',
@@ -199,13 +212,16 @@ async function del(id: number) {
 // the models map so the copied JSON works out of the box.
 async function buildOpencodeConfig(apiKey: string): Promise<string> {
   const ups = await listUpstreams()
-  const models: Record<string, { name: string }> = {}
+  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
   await Promise.all(ups.map(async (u) => {
     if (u.id == null) return
     const ms = await listModels(u.id).catch(() => [])
     for (const m of ms) {
       const id = `${u.name}/${m.model_name}`
-      models[id] = { name: id }
+      models[id] = {
+        name: id,
+        limit: { context: m.context_length, output: m.max_output_length },
+      }
     }
   }))
   const cfg: Record<string, unknown> = {
@@ -222,8 +238,6 @@ async function buildOpencodeConfig(apiKey: string): Promise<string> {
       },
     },
   }
-  const firstModel = Object.keys(models)[0]
-  if (firstModel) cfg.model = `any-llm/${firstModel}`
   return JSON.stringify(cfg, null, 2)
 }
 
@@ -364,8 +378,8 @@ onMounted(load)
           </n-form>
         </template>
         <template v-else>
-          <n-alert type="warning" style="margin-bottom: 12px">
-            请立即复制保存此密钥。出于安全考虑，关闭后将无法再次完整查看。
+          <n-alert type="info" style="margin-bottom: 12px">
+            密钥已生成，之后也可以随时在列表中查看和复制。
           </n-alert>
           <n-input-group>
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />

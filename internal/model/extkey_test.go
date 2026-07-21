@@ -50,21 +50,7 @@ func TestGetExtKey(t *testing.T) {
 	}
 }
 
-func TestMaskKey(t *testing.T) {
-	key := "all-sk-abcdefghijklmnopqrstuvwxyz123456"
-	masked := MaskKey(key)
-	if !strings.HasPrefix(masked, "all-sk-abcde") {
-		t.Fatalf("prefix wrong: %q", masked)
-	}
-	if !strings.HasSuffix(masked, "3456") {
-		t.Fatalf("suffix wrong: %q", masked)
-	}
-	if !strings.Contains(masked, "****") {
-		t.Fatalf("no stars: %q", masked)
-	}
-}
-
-func TestListExtKeysMasked(t *testing.T) {
+func TestListExtKeysFullKey(t *testing.T) {
 	d := testDB(t)
 	k, _ := CreateExtKey(d, "l", 0, 0)
 	list, err := ListExtKeys(d)
@@ -74,11 +60,8 @@ func TestListExtKeysMasked(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("len=%d", len(list))
 	}
-	if list[0].Key == k.Key {
-		t.Fatal("list returned unmasked key")
-	}
-	if !strings.HasPrefix(list[0].Key, "all-sk-") {
-		t.Fatalf("masked key lost prefix: %q", list[0].Key)
+	if list[0].Key != k.Key {
+		t.Fatalf("list key=%q want full key %q", list[0].Key, k.Key)
 	}
 }
 

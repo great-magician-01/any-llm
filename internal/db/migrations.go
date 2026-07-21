@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS upstream_models (
     upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
     model_name TEXT NOT NULL,
     manual INTEGER NOT NULL DEFAULT 0,
+    context_length INTEGER NOT NULL DEFAULT 200000,
+    max_output_length INTEGER NOT NULL DEFAULT 200000,
     UNIQUE(upstream_id, model_name)
 );
 
@@ -76,6 +78,8 @@ CREATE TABLE IF NOT EXISTS upstream_models (
     upstream_id BIGINT NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
     model_name TEXT NOT NULL,
     manual INTEGER NOT NULL DEFAULT 0,
+    context_length INTEGER NOT NULL DEFAULT 200000,
+    max_output_length INTEGER NOT NULL DEFAULT 200000,
     UNIQUE(upstream_id, model_name)
 );
 
@@ -111,33 +115,37 @@ CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id);
 `
 
-// tokenLimitCols lists the (table, column) pairs added by the token-limit
-// feature. Existing databases created before this feature need these columns
-// backfilled; fresh databases get them from the CREATE TABLE statements above.
-var tokenLimitCols = [][2]string{
-	{"upstreams", "daily_token_limit"},
-	{"upstreams", "monthly_token_limit"},
-	{"ext_keys", "daily_token_limit"},
-	{"ext_keys", "monthly_token_limit"},
+// extraCols lists the columns added after the initial schema, together with
+// their ALTER TABLE defaults. Existing databases created before these columns
+// existed need them backfilled; fresh databases get them from the CREATE TABLE
+// statements above.
+var extraCols = []struct {
+	table, column, def string
+}{
+	{"upstreams", "daily_token_limit", "0"},
+	{"upstreams", "monthly_token_limit", "0"},
+	{"ext_keys", "daily_token_limit", "0"},
+	{"ext_keys", "monthly_token_limit", "0"},
+	{"upstream_models", "context_length", "200000"},
+	{"upstream_models", "max_output_length", "200000"},
 }
 
-// migrateTokenLimits ensures the token-limit columns exist on older databases.
-// It is idempotent: columns present are skipped. Must be called after the main
-// migration script has run so the tables exist.
-func migrateTokenLimits(d *sql.DB) error {
+// migrateExtraCols ensures columns added after the initial schema exist on
+// older databases. It is idempotent: columns present are skipped. Must be
+// called after the main migration script has run so the tables exist.
+func migrateExtraCols(d *sql.DB) error {
 	dialect := DialectOf(d)
-	for _, tc := range tokenLimitCols {
-		table, col := tc[0], tc[1]
-		exists, err := columnExists(d, dialect, table, col)
+	for _, ec := range extraCols {
+		exists, err := columnExists(d, dialect, ec.table, ec.column)
 		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", table, col, err)
+			return fmt.Errorf("check column %s.%s: %w", ec.table, ec.column, err)
 		}
 		if exists {
 			continue
 		}
-		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s INTEGER NOT NULL DEFAULT 0`, table, col)
+		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s INTEGER NOT NULL DEFAULT %s`, ec.table, ec.column, ec.def)
 		if _, err := d.Exec(stmt); err != nil {
-			return fmt.Errorf("add column %s.%s: %w", table, col, err)
+			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
 		}
 	}
 	return nil

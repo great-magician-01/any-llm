@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NButton, NSpace, NTag, NPopconfirm, NInput, NText, useMessage } from 'naive-ui'
+import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, deleteModel, type Upstream, type UpstreamModel } from '../api/upstreams'
+import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
 import { formatInt } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -14,7 +14,28 @@ const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
 const newModelByUpstream = ref<Record<number, string>>({})
+const newModelOpts = ref<Record<number, { context_length: number; max_output_length: number }>>({})
+const showModelForm = ref(false)
+const modelFormUpstreamId = ref(0)
+const modelForm = ref<UpstreamModel | null>(null)
 const fetchingId = ref<number | null>(null)
+
+function modelOptsFor(id: number) {
+  if (!newModelOpts.value[id]) {
+    newModelOpts.value[id] = { context_length: DEFAULT_MODEL_LENGTH, max_output_length: DEFAULT_MODEL_LENGTH }
+  }
+  return newModelOpts.value[id]
+}
+
+function fmtK(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+}
+
+const CTX_PRESETS = [
+  { label: '200k', value: 200000 },
+  { label: '400k', value: 400000 },
+  { label: '1M', value: 1000000 },
+]
 
 function errMsg(e: any): string {
   const r = e?.response
@@ -104,13 +125,32 @@ async function onExpand(keys: number[]) {
 async function addM(id: number) {
   const name = (newModelByUpstream.value[id] || '').trim()
   if (!name) return
-  await addModel(id, name)
+  const opts = modelOptsFor(id)
+  await addModel(id, name, opts.context_length, opts.max_output_length)
   newModelByUpstream.value[id] = ''
   await loadModels(id)
   await load()
 }
+function openModelEdit(upstreamId: number, m: UpstreamModel) {
+  modelFormUpstreamId.value = upstreamId
+  modelForm.value = { ...m }
+  showModelForm.value = true
+}
+async function saveModel() {
+  const m = modelForm.value
+  if (!m) return
+  try {
+    await updateModel(modelFormUpstreamId.value, m.id, m.context_length, m.max_output_length)
+    showModelForm.value = false
+    modelForm.value = null
+    await loadModels(modelFormUpstreamId.value)
+    message.success('已保存')
+  } catch (e) {
+    message.error('保存失败：' + errMsg(e))
+  }
+}
 async function delM(id: number, mid: number) {
-  await deleteModel(mid)
+  await deleteModel(id, mid)
   await loadModels(id)
   await load()
 }
@@ -119,14 +159,39 @@ const columns: DataTableColumns<Upstream> = [
   { type: 'expand', expandable: () => true, renderExpand: (row) => {
     const id = row.id as number
     const models = modelsByUpstream.value[id] || []
+    const opts = modelOptsFor(id)
     return h('div', { style: 'padding: 8px 0 16px 24px' }, [
-      h('div', { class: 'toolbar', style: 'margin-bottom: 8px' }, [
+      h('div', { class: 'toolbar', style: 'margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap' }, [
         h(NInput, {
           value: newModelByUpstream.value[id] || '',
           'onUpdate:value': (v: string) => { newModelByUpstream.value[id] = v },
           placeholder: '模型名，如 gpt-4o',
           style: 'width: 240px',
           onKeyup: (e: KeyboardEvent) => { if (e.key === 'Enter') addM(id) },
+        }),
+        h('div', { style: 'display: flex; align-items: center; gap: 4px' }, [
+          h(NInputNumber, {
+            value: opts.context_length,
+            'onUpdate:value': (v: number | null) => { opts.context_length = v ?? DEFAULT_MODEL_LENGTH },
+            min: 0,
+            step: 1000,
+            placeholder: '上下文长度',
+            style: 'width: 150px',
+          }),
+          ...CTX_PRESETS.map(p => h(NButton, {
+            size: 'tiny',
+            quaternary: true,
+            type: opts.context_length === p.value ? 'primary' : 'default',
+            onClick: () => { opts.context_length = p.value },
+          }, { default: () => p.label })),
+        ]),
+        h(NInputNumber, {
+          value: opts.max_output_length,
+          'onUpdate:value': (v: number | null) => { opts.max_output_length = v ?? DEFAULT_MODEL_LENGTH },
+          min: 0,
+          step: 1000,
+          placeholder: '最大输出长度',
+          style: 'width: 150px',
         }),
         h(NButton, { type: 'primary', size: 'small', onClick: () => addM(id) }, { default: () => '添加' }),
         h(NButton, {
@@ -143,8 +208,16 @@ const columns: DataTableColumns<Upstream> = [
               type: m.manual ? 'default' : 'info',
               bordered: false,
               closable: true,
+              style: 'cursor: pointer',
+              onClick: (e: MouseEvent) => {
+                if ((e.target as HTMLElement).closest('.n-tag__close')) return
+                openModelEdit(id, m)
+              },
               onClose: () => delM(id, m.id),
-            }, { default: () => m.model_name + (m.manual ? '（手动）' : '') }))
+            }, { default: () => [
+              m.model_name + (m.manual ? '（手动）' : ''),
+              h('span', { style: 'opacity: 0.6; font-size: 11px; margin-left: 6px' }, `${fmtK(m.context_length)} / ${fmtK(m.max_output_length)}`),
+            ] }))
           ),
     ])
   }},
@@ -266,6 +339,31 @@ onMounted(load)
             />
           </n-form-item>
           <n-button type="primary" block @click="save">{{ editing ? '保存' : '添加' }}</n-button>
+        </n-form>
+      </n-card>
+    </n-modal>
+    <n-modal :show="showModelForm" @update:show="(show: boolean) => { if (!show) showModelForm = false }">
+      <n-card :title="`配置模型：${modelForm?.model_name ?? ''}`" :bordered="false" style="width:440px">
+        <n-form label-placement="top" v-if="modelForm">
+          <n-form-item label="上下文长度（tokens）">
+            <div style="width: 100%">
+              <n-input-number v-model:value="modelForm.context_length" :min="0" :step="1000" style="width: 100%" />
+              <n-space :size="6" style="margin-top: 6px">
+                <n-button
+                  v-for="p in CTX_PRESETS"
+                  :key="p.value"
+                  size="tiny"
+                  :type="modelForm.context_length === p.value ? 'primary' : 'default'"
+                  quaternary
+                  @click="modelForm.context_length = p.value"
+                >{{ p.label }}</n-button>
+              </n-space>
+            </div>
+          </n-form-item>
+          <n-form-item label="最大输出长度（tokens）">
+            <n-input-number v-model:value="modelForm.max_output_length" :min="0" :step="1000" style="width: 100%" />
+          </n-form-item>
+          <n-button type="primary" block @click="saveModel">保存</n-button>
         </n-form>
       </n-card>
     </n-modal>

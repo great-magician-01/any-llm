@@ -75,8 +75,11 @@ func DeleteUpstream(d *sql.DB, id int64) error {
 	return nil
 }
 
+const DefaultModelContextLength = 200000
+const DefaultModelMaxOutputLength = 200000
+
 func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
-	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual FROM upstream_models WHERE upstream_id=? ORDER BY model_name`), upstreamID)
+	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual, context_length, max_output_length FROM upstream_models WHERE upstream_id=? ORDER BY model_name`), upstreamID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -85,7 +88,7 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 	for rows.Next() {
 		var m UpstreamModel
 		var manual int
-		if err := rows.Scan(&m.ID, &m.UpstreamID, &m.ModelName, &manual); err != nil {
+		if err := rows.Scan(&m.ID, &m.UpstreamID, &m.ModelName, &manual, &m.ContextLength, &m.MaxOutputLength); err != nil {
 			return nil, err
 		}
 		m.Manual = manual != 0
@@ -94,15 +97,36 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 	return out, nil
 }
 
-func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool) error {
+func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contextLength, maxOutputLength int) error {
 	m := 0
 	if manual {
 		m = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`),
-		upstreamID, modelName, m)
+	if contextLength <= 0 {
+		contextLength = DefaultModelContextLength
+	}
+	if maxOutputLength <= 0 {
+		maxOutputLength = DefaultModelMaxOutputLength
+	}
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`),
+		upstreamID, modelName, m, contextLength, maxOutputLength)
 	if err != nil {
 		return fmt.Errorf("add model: %w", err)
+	}
+	return nil
+}
+
+func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int) error {
+	if contextLength <= 0 {
+		contextLength = DefaultModelContextLength
+	}
+	if maxOutputLength <= 0 {
+		maxOutputLength = DefaultModelMaxOutputLength
+	}
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=? WHERE id=?`),
+		contextLength, maxOutputLength, id)
+	if err != nil {
+		return fmt.Errorf("update model: %w", err)
 	}
 	return nil
 }
@@ -121,11 +145,32 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+	// Preserve user-configured lengths across re-fetch: snapshot the current
+	// non-manual rows before deleting them.
+	prev := make(map[string][2]int)
+	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length FROM upstream_models WHERE upstream_id=?`), upstreamID)
+	if err != nil {
+		return fmt.Errorf("snapshot models: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		var cl, ml int
+		if err := rows.Scan(&name, &cl, &ml); err != nil {
+			rows.Close()
+			return fmt.Errorf("snapshot models: %w", err)
+		}
+		prev[name] = [2]int{cl, ml}
+	}
+	rows.Close()
 	if _, err := tx.Exec(db.Rebind(d, `DELETE FROM upstream_models WHERE upstream_id=? AND manual=0`), upstreamID); err != nil {
 		return fmt.Errorf("delete non-manual: %w", err)
 	}
 	for _, n := range names {
-		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) DO NOTHING`), upstreamID, n); err != nil {
+		cl, ml := DefaultModelContextLength, DefaultModelMaxOutputLength
+		if p, ok := prev[n]; ok {
+			cl, ml = p[0], p[1]
+		}
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,0,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`), upstreamID, n, cl, ml); err != nil {
 			return fmt.Errorf("insert model %s: %w", n, err)
 		}
 	}

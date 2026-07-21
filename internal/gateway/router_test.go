@@ -28,8 +28,8 @@ func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 func TestModelsEndpoint(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
-	model.AddModel(d, uid, "gpt-4o-mini", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -105,7 +105,7 @@ func TestRouteInvalidModelFormat(t *testing.T) {
 func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	// key with daily limit of 100, already used 100
 	k, _ := model.CreateExtKey(d, "l", 100, 0)
 	model.InsertUsage(d, &model.UsageRecord{
@@ -127,7 +127,7 @@ func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "l", 0, 50)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
@@ -145,7 +145,7 @@ func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 func TestUpstreamDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai", DailyTokenLimit: 100})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "l", 0, 0)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
@@ -169,7 +169,7 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai", DailyTokenLimit: 1000})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "l", 1000, 5000)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
