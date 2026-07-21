@@ -21,14 +21,18 @@ const (
 )
 
 var (
-	mu          sync.Mutex
-	logger      *slog.Logger
-	closer      io.Closer
-	logFilePath string
+	mu             sync.Mutex
+	logger         *slog.Logger
+	currentHandler *handler
+	fileOnlyLogger *slog.Logger
+	closer         io.Closer
+	logFilePath    string
 )
 
 func init() {
-	logger = slog.New(newHandler(LevelInfo, []output{{w: io.Discard, color: false}}, nil, ""))
+	currentHandler = newHandler(LevelInfo, []output{{w: io.Discard, color: false}}, nil, "")
+	logger = slog.New(currentHandler)
+	fileOnlyLogger = slog.New(newFileOnlyHandler(currentHandler.level, currentHandler.outputs, nil, ""))
 }
 
 func Default() *slog.Logger {
@@ -41,6 +45,20 @@ func SetDefault(l *slog.Logger) {
 	mu.Lock()
 	defer mu.Unlock()
 	logger = l
+	if h, ok := l.Handler().(*handler); ok {
+		currentHandler = h
+		fileOnlyLogger = slog.New(newFileOnlyHandler(h.level, h.outputs, nil, ""))
+	}
+}
+
+// FileOnly returns a *slog.Logger that writes only to file outputs,
+// skipping console (stdout) outputs. If no file output is configured,
+// records are discarded. Useful for chatty streaming logs that would
+// flood the console but are still useful in the log file.
+func FileOnly() *slog.Logger {
+	mu.Lock()
+	defer mu.Unlock()
+	return fileOnlyLogger
 }
 
 func Close() error {
@@ -81,7 +99,7 @@ func Init(opts Options) error {
 	defer mu.Unlock()
 
 	level := opts.Level
-	outputs := []output{{w: os.Stdout, color: true}}
+	outputs := []output{{w: os.Stdout, color: true, console: true}}
 
 	if opts.FilePath != "" {
 		dir := filepath.Dir(opts.FilePath)
@@ -96,13 +114,15 @@ func Init(opts Options) error {
 		if err != nil {
 			return fmt.Errorf("open log file: %w", err)
 		}
-		outputs = append(outputs, output{w: f, color: false})
+		outputs = append(outputs, output{w: f, color: false, console: false})
 		closer = f
 		logFilePath = actualPath
 	}
 
 	h := newHandler(level, outputs, nil, "")
+	currentHandler = h
 	logger = slog.New(h)
+	fileOnlyLogger = slog.New(newFileOnlyHandler(h.level, h.outputs, nil, ""))
 	slog.SetDefault(logger)
 	log.SetFlags(0)
 	log.SetOutput(io.Discard)

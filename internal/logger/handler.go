@@ -39,8 +39,9 @@ const colorReset = "\033[0m"
 const colorGray = "\033[90m"
 
 type output struct {
-	w     io.Writer
-	color bool
+	w       io.Writer
+	color   bool
+	console bool
 }
 
 type handler struct {
@@ -49,6 +50,7 @@ type handler struct {
 	outputs  []output
 	preAttrs []slog.Attr
 	group    string
+	fileOnly bool
 }
 
 func newHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group string) *handler {
@@ -57,6 +59,16 @@ func newHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group 
 		outputs:  outputs,
 		preAttrs: preAttrs,
 		group:    group,
+	}
+}
+
+func newFileOnlyHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group string) *handler {
+	return &handler{
+		level:    level,
+		outputs:  outputs,
+		preAttrs: preAttrs,
+		group:    group,
+		fileOnly: true,
 	}
 }
 
@@ -82,6 +94,10 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 	attrBytes := attrBuf.Bytes()
 
 	for _, out := range h.outputs {
+		if h.fileOnly && out.console {
+			continue
+		}
+
 		var buf bytes.Buffer
 
 		if out.color {
@@ -189,6 +205,7 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		level:    h.level,
 		outputs:  h.outputs,
 		preAttrs: newAttrs,
+		fileOnly: h.fileOnly,
 	}
 }
 
@@ -198,5 +215,6 @@ func (h *handler) WithGroup(name string) slog.Handler {
 		outputs:  h.outputs,
 		preAttrs: h.preAttrs,
 		group:    name,
+		fileOnly: h.fileOnly,
 	}
 }

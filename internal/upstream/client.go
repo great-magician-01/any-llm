@@ -53,7 +53,7 @@ func (r *Result) setUsage(u translate.Usage) {
 
 func (c *Client) HTTP() *http.Client { return c.http }
 
-func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.Request) (*Result, error) {
+func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.Request, clientHeaders http.Header) (*Result, error) {
 	var body []byte
 	var err error
 	var path, contentType string
@@ -78,10 +78,7 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 		}
 		path = "/messages"
 		contentType = "application/json"
-		reqHeaders = map[string]string{
-			"x-api-key":         u.APIKey,
-			"anthropic-version": "2023-06-01",
-		}
+		reqHeaders = map[string]string{"x-api-key": u.APIKey}
 	default:
 		return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
 	}
@@ -91,9 +88,18 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	// Forward inbound client headers verbatim so custom metadata (e.g.
+	// anthropic-beta, trace ids, user-agent) reaches the upstream. Hop-by-hop
+	// headers and those the gateway manages (auth, content-type, content-length,
+	// host, accept-encoding) are skipped and set explicitly below, so the
+	// upstream's own credentials and transport always take precedence.
+	copyForwardableHeaders(httpReq.Header, clientHeaders)
 	httpReq.Header.Set("Content-Type", contentType)
 	for k, v := range reqHeaders {
 		httpReq.Header.Set(k, v)
+	}
+	if u.Format == "anthropic" && httpReq.Header.Get("anthropic-version") == "" {
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
 	resp, err := c.http.Do(httpReq)
@@ -182,7 +188,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				}
 			}
 		case "anthropic":
-			logger.Info("raw upstream SSE", "format", "anthropic", "data", truncateUpstream(data, 256))
+			logger.FileOnly().Info("raw upstream SSE", "format", "anthropic", "data", truncateUpstream(data, 256))
 			ev, err := anthropic.DecodeStreamEvent([]byte(data))
 			if err != nil {
 				logger.Warn("stream decode error", "format", "anthropic", "err", err, "data", truncateUpstream(data, 256))
@@ -268,4 +274,32 @@ func truncateUpstream(s string, n int) string {
 		return s
 	}
 	return s[:n] + "...(truncated)"
+}
+
+// copyForwardableHeaders copies inbound client request headers onto the
+// upstream request, skipping hop-by-hop headers and those the gateway manages
+// (auth, content-type, content-length, host, accept-encoding). Managed
+// headers are set by Call afterwards, so they always override any
+// client-supplied value. All values of a repeated header are preserved.
+func copyForwardableHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if isManagedHeader(k) {
+			continue
+		}
+		dst[k] = append([]string(nil), vs...)
+	}
+}
+
+// isManagedHeader reports whether key is a hop-by-hop header or one the
+// gateway sets explicitly on the upstream request, and therefore must not be
+// forwarded from the client.
+func isManagedHeader(key string) bool {
+	switch http.CanonicalHeaderKey(key) {
+	case "Authorization", "X-Api-Key", "Content-Type", "Content-Length", "Host",
+		"Accept-Encoding",
+		"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+		"Te", "Trailers", "Transfer-Encoding", "Upgrade":
+		return true
+	}
+	return false
 }

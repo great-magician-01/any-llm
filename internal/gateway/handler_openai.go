@@ -37,7 +37,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		return
 	}
 
-	result, err := g.client.Call(r.Context(), u, irReq)
+	result, err := g.client.Call(r.Context(), u, irReq, r.Header)
 	if err != nil {
 		if ue, ok := err.(*upstream.UpstreamError); ok {
 			WriteError(w, ue.StatusCode, inFormat, ue.Message(), mapErrorType(inFormat, ue.StatusCode, ue.ErrorType()))
@@ -129,7 +129,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 	callCh := make(chan callRet, 1)
 	go func() {
-		result, err := g.client.Call(r.Context(), u, irReq)
+		result, err := g.client.Call(r.Context(), u, irReq, r.Header)
 		callCh <- callRet{result, err}
 	}()
 

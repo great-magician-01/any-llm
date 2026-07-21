@@ -29,7 +29,7 @@ func TestCall_NonStreamOpenAI(t *testing.T) {
 	irReq := &translate.Request{Model: "gpt-4o", Stream: false,
 		Messages:  []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 100}
-	res, err := c.Call(context.Background(), u, irReq)
+	res, err := c.Call(context.Background(), u, irReq, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestCall_NonStreamAnthropic(t *testing.T) {
 	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"}
 	irReq := &translate.Request{Model: "claude", Stream: false, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
-	res, err := c.Call(context.Background(), u, irReq)
+	res, err := c.Call(context.Background(), u, irReq, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestCall_StreamOpenAI(t *testing.T) {
 	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: true, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
-	res, err := c.Call(context.Background(), u, irReq)
+	res, err := c.Call(context.Background(), u, irReq, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,13 +131,110 @@ func TestCall_InjectsStreamOptionsForOpenAI(t *testing.T) {
 	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: true, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
-	_, err := c.Call(context.Background(), u, irReq)
+	_, err := c.Call(context.Background(), u, irReq, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(gotBody, "include_usage") {
 		t.Fatalf("stream_options not injected: %s", gotBody)
 	}
+}
+
+func TestCall_ForwardsClientHeaders(t *testing.T) {
+	type want struct {
+		key, val string
+	}
+	cases := []struct {
+		name    string
+		format  string
+		client  http.Header
+		wantSet []want
+	}{
+		{
+			name:   "openai forwards custom + overrides auth",
+			format: "openai",
+			client: http.Header{
+				"Authorization":   {"Bearer all-sk-clientkey"},
+				"Content-Type":    {"text/plain"},
+				"Accept-Encoding": {"br"},
+				"User-Agent":      {"my-sdk/1.0"},
+				"Anthropic-Beta":  {"tools-2024-05-16"},
+				"X-Request-Id":    {"abc-123"},
+			},
+			wantSet: []want{
+				{"Authorization", "Bearer sk-test"},
+				{"Content-Type", "application/json"},
+				{"User-Agent", "my-sdk/1.0"},
+				{"Anthropic-Beta", "tools-2024-05-16"},
+				{"X-Request-Id", "abc-123"},
+				// Accept-Encoding is managed: client's "br" must NOT be
+				// forwarded; Go's transport re-adds its default "gzip".
+				{"Accept-Encoding", "gzip"},
+			},
+		},
+		{
+			name:   "anthropic defaults version when client omits",
+			format: "anthropic",
+			client: http.Header{
+				"X-Api-Key": {"all-sk-clientkey"},
+			},
+			wantSet: []want{
+				{"X-Api-Key", "sk-ant"},
+				{"Anthropic-Version", "2023-06-01"},
+			},
+		},
+		{
+			name:   "anthropic preserves client version",
+			format: "anthropic",
+			client: http.Header{
+				"Anthropic-Version": {"2024-10-22"},
+			},
+			wantSet: []want{
+				{"X-Api-Key", "sk-ant"},
+				{"Anthropic-Version", "2024-10-22"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got http.Header
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = cloneHeader(r.Header)
+				w.Header().Set("Content-Type", "application/json")
+				if tc.format == "anthropic" {
+					w.Write([]byte(`{"id":"msg_1","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+				} else {
+					w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+				}
+			}))
+			defer srv.Close()
+
+			c := NewClient(http.DefaultClient)
+			apiKey := "sk-test"
+			if tc.format == "anthropic" {
+				apiKey = "sk-ant"
+			}
+			u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: apiKey, Format: tc.format}
+			irReq := &translate.Request{Model: "m", Stream: false, MaxTokens: 10,
+				Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
+			if _, err := c.Call(context.Background(), u, irReq, tc.client); err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range tc.wantSet {
+				if got := got.Get(w.key); got != w.val {
+					t.Errorf("header %s=%q want %q", w.key, got, w.val)
+				}
+			}
+		})
+	}
+}
+
+func cloneHeader(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for k, vs := range h {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
 }
 
 func TestUpstreamError_Message(t *testing.T) {
