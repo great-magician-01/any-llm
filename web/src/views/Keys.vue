@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert } from 'naive-ui'
+import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
+import { formatInt } from '../utils/format'
+import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
@@ -27,8 +29,12 @@ const endpoints = computed(() => [
 ])
 
 const columns = computed<DataTableColumns<ExtKey>>(() => [
-  { title: '备注', key: 'label' },
-  { title: 'Key', key: 'key' },
+  { title: '备注', key: 'label', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
+  {
+    title: 'Key',
+    key: 'key',
+    render: (row) => h('code', { class: 'mono key-chip' }, row.key),
+  },
   {
     title: '状态',
     key: 'enabled',
@@ -39,31 +45,43 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
     title: '日 token 上限',
     key: 'daily_token_limit',
     width: 130,
-    render: (row) => row.daily_token_limit > 0 ? String(row.daily_token_limit) : '不限',
+    render: (row) => row.daily_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
     width: 130,
-    render: (row) => row.monthly_token_limit > 0 ? String(row.monthly_token_limit) : '不限',
+    render: (row) => row.monthly_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
   {
     title: '今日 / 本月用量',
     key: 'usage',
-    width: 180,
+    width: 200,
     render: (row) => {
       const u = usageByKey.value[row.id]
-      if (!u) return h('span', { style: 'color: var(--text-3)' }, '—')
-      const daily = u.daily_tokens
-      const monthly = u.monthly_tokens
-      const dailyS = row.daily_token_limit > 0 ? `${daily} / ${row.daily_token_limit}` : String(daily)
-      const monthlyS = row.monthly_token_limit > 0 ? `${monthly} / ${row.monthly_token_limit}` : String(monthly)
-      return h(NSpace, { vertical: true, size: 0 }, {
-        default: () => [
-          h('span', { style: 'font-size: 12px' }, '日: ' + dailyS),
-          h('span', { style: 'font-size: 12px' }, '月: ' + monthlyS),
-        ],
-      })
+      if (!u) return h('span', { style: 'color: var(--text-4)' }, '—')
+      const line = (label: string, used: number, limit: number) =>
+        h('div', { class: 'quota-line' }, [
+          h('span', { class: 'quota-text mono' }, `${label} ${formatInt(used)}${limit > 0 ? ' / ' + formatInt(limit) : ''}`),
+          limit > 0
+            ? h(NProgress, {
+                type: 'line',
+                percentage: Math.min(100, Math.round((used / limit) * 100)),
+                status: used >= limit ? 'error' : used / limit >= 0.8 ? 'warning' : 'success',
+                height: 5,
+                showIndicator: false,
+                borderRadius: '3px',
+              })
+            : null,
+        ])
+      return h('div', { class: 'quota-cell' }, [
+        line('日', u.daily_tokens, row.daily_token_limit),
+        line('月', u.monthly_tokens, row.monthly_token_limit),
+      ])
     },
   },
   {
@@ -242,26 +260,39 @@ onMounted(load)
 <template>
   <div>
     <header class="page-header">
-      <h1>API 密钥</h1>
-      <p>对外访问网关使用的 Key，请求时通过 Authorization: Bearer 携带</p>
+      <div>
+        <h1>API 密钥</h1>
+        <p>对外访问网关使用的 Key，请求时通过 Authorization: Bearer 携带</p>
+      </div>
+      <div class="page-header-side">
+        <n-button quaternary circle @click="load">
+          <template #icon><AppIcon name="refresh" :size="16" /></template>
+        </n-button>
+      </div>
     </header>
 
     <n-card title="访问端点" class="panel">
       <p style="margin: 0 0 12px; color: var(--text-3); font-size: 13px">
-        可直接复制以下 URL 作为客户端 base_url，模型名格式：<code>upstream-name/model-name</code>
+        可直接复制以下 URL 作为客户端 base_url，模型名格式：<code class="mono code-chip">upstream-name/model-name</code>
       </p>
       <n-space vertical :size="10">
         <n-input-group v-for="ep in endpoints" :key="ep.url">
-          <n-tag :bordered="false" type="info" style="min-width: 64px; justify-content: center">{{ ep.method }}</n-tag>
+          <n-tag :bordered="false" :type="ep.method === 'POST' ? 'success' : 'info'" class="mono" style="min-width: 64px; justify-content: center">{{ ep.method }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
-          <n-button type="primary" @click="copyKey(ep.url, $event)">复制</n-button>
+          <n-button type="primary" @click="copyKey(ep.url, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制
+          </n-button>
         </n-input-group>
       </n-space>
     </n-card>
 
     <n-card title="密钥列表" class="panel">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="openCreate">新增密钥</n-button>
+        <n-button type="primary" size="small" @click="openCreate">
+          <template #icon><AppIcon name="plus" :size="14" /></template>
+          新增密钥
+        </n-button>
       </template>
       <n-data-table :bordered="false" :columns="columns" :data="keys" />
     </n-card>
@@ -326,3 +357,36 @@ onMounted(load)
     </n-modal>
   </div>
 </template>
+
+<style scoped>
+.key-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.code-chip {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.quota-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+}
+.quota-line {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.quota-text {
+  font-size: 12px;
+  color: var(--text-3);
+}
+</style>

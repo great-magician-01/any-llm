@@ -13,8 +13,8 @@ withDefaults(defineProps<{ size?: number }>(), { size: 32 })
   >
     <defs>
       <linearGradient id="brand-bg" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#3b82f6" />
-        <stop offset="1" stop-color="#2563eb" />
+        <stop offset="0" stop-color="#5b8cff" />
+        <stop offset="1" stop-color="#22d3ee" />
       </linearGradient>
     </defs>
     <rect width="48" height="48" rx="11" fill="url(#brand-bg)" />
@@ -42,6 +42,8 @@ withDefaults(defineProps<{ size?: number }>(), { size: 32 })
   display: block;
   flex: none;
   border-radius: 23%;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+  box-shadow:
+    0 2px 10px rgba(91, 140, 255, 0.45),
+    0 0 18px rgba(34, 211, 238, 0.25);
 }
 </style>

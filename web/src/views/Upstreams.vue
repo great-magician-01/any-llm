@@ -3,6 +3,8 @@ import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, deleteModel, type Upstream, type UpstreamModel } from '../api/upstreams'
+import { formatInt } from '../utils/format'
+import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
@@ -146,21 +148,35 @@ const columns: DataTableColumns<Upstream> = [
           ),
     ])
   }},
-  { title: '名称', key: 'name' },
-  { title: '地址', key: 'base_url', ellipsis: { tooltip: true } },
-  { title: '格式', key: 'format', width: 100 },
-  { title: '模型数', key: 'model_count', width: 90 },
+  { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  { title: '地址', key: 'base_url', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
+  {
+    title: '格式',
+    key: 'format',
+    width: 110,
+    render: (row) => h(NTag, { type: row.format === 'openai' ? 'info' : 'warning', bordered: false, size: 'small' }, { default: () => row.format }),
+  },
+  {
+    title: '模型数',
+    key: 'model_count',
+    width: 90,
+    render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
+  },
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
     width: 130,
-    render: (row) => row.daily_token_limit > 0 ? String(row.daily_token_limit) : '不限',
+    render: (row) => row.daily_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
     width: 130,
-    render: (row) => row.monthly_token_limit > 0 ? String(row.monthly_token_limit) : '不限',
+    render: (row) => row.monthly_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
   { title: '操作', key: 'actions', width: 200, render: (row) => h(NSpace, { size: 8 }, {
     default: () => [
@@ -185,13 +201,23 @@ onMounted(load)
 <template>
   <div>
     <header class="page-header">
-      <h1>上游管理</h1>
-      <p>配置上游 LLM 服务，支持 OpenAI / Anthropic 格式。点击行前箭头展开查看模型</p>
+      <div>
+        <h1>上游管理</h1>
+        <p>配置上游 LLM 服务，支持 OpenAI / Anthropic 格式。点击行前箭头展开查看模型</p>
+      </div>
+      <div class="page-header-side">
+        <n-button quaternary circle @click="load">
+          <template #icon><AppIcon name="refresh" :size="16" /></template>
+        </n-button>
+      </div>
     </header>
 
     <n-card title="上游列表" class="panel">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="add">添加上游</n-button>
+        <n-button type="primary" size="small" @click="add">
+          <template #icon><AppIcon name="plus" :size="14" /></template>
+          添加上游
+        </n-button>
       </template>
       <n-data-table
         :bordered="false"

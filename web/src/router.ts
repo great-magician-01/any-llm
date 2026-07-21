@@ -9,7 +9,8 @@ const router = createRouter({
       path: '/',
       component: () => import('./components/Layout.vue'),
       children: [
-        { path: '', redirect: '/upstreams' },
+        { path: '', redirect: '/dashboard' },
+        { path: 'dashboard', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
         { path: 'upstreams', name: 'upstreams', component: () => import('./views/Upstreams.vue') },
         { path: 'keys', name: 'keys', component: () => import('./views/Keys.vue') },
         { path: 'usage', name: 'usage', component: () => import('./views/Usage.vue') },
@@ -26,7 +27,7 @@ router.beforeEach((to, _from) => {
     return { name: 'login' }
   }
   if (to.name === 'login' && hasSession) {
-    return { name: 'upstreams' }
+    return { name: 'dashboard' }
   }
 })
 

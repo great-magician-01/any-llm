@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import client from '../api/client'
 import BrandMark from './BrandMark.vue'
+import AppIcon, { type IconName } from './AppIcon.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -12,32 +14,48 @@ async function logout() {
   router.push('/login')
 }
 
+function item(label: string, key: string, icon: IconName) {
+  return {
+    label,
+    key,
+    icon: () => h(AppIcon, { name: icon, size: 16 }),
+  }
+}
+
 const menuItems = [
-  { label: '上游管理', key: 'upstreams' },
-  { label: 'API 密钥', key: 'keys' },
-  { label: '用量统计', key: 'usage' },
+  item('概览', 'dashboard', 'dashboard'),
+  item('上游管理', 'upstreams', 'layers'),
+  item('API 密钥', 'keys', 'key'),
+  item('用量统计', 'usage', 'chart'),
 ]
 </script>
 
 <template>
   <n-layout has-sider style="height: 100vh">
-    <n-layout-sider :width="216" class="sider">
+    <n-layout-sider :width="228" class="sider">
       <div class="sider-inner">
         <div class="brand">
-          <BrandMark :size="32" />
+          <BrandMark :size="34" />
           <div class="brand-text">
-            <span class="brand-name">any-llm</span>
-            <span class="brand-sub">LLM Gateway</span>
+            <span class="brand-name text-grad">any-llm</span>
+            <span class="brand-sub">LLM GATEWAY</span>
           </div>
         </div>
         <n-menu
           :value="route.name as string"
           :options="menuItems"
-          :indent="16"
+          :indent="18"
           @update:value="(v: string) => router.push({ name: v })"
         />
         <div class="sider-footer">
-          <n-button text class="logout-btn" @click="logout">退出登录</n-button>
+          <div class="admin-chip">
+            <span class="admin-avatar">A</span>
+            <span class="admin-name">管理员</span>
+          </div>
+          <button class="logout-btn" title="退出登录" @click="logout">
+            <AppIcon name="logout" :size="15" />
+            <span>退出登录</span>
+          </button>
         </div>
       </div>
     </n-layout-sider>
@@ -51,19 +69,20 @@ const menuItems = [
 
 <style scoped>
 .sider {
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, rgba(91, 140, 255, 0.05) 0%, rgba(10, 15, 29, 0) 240px);
 }
 .sider-inner {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 16px 12px;
+  padding: 18px 12px 14px;
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 10px 18px;
+  gap: 11px;
+  padding: 2px 10px 20px;
 }
 .brand-text {
   display: flex;
@@ -71,32 +90,73 @@ const menuItems = [
   line-height: 1.25;
 }
 .brand-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 .brand-sub {
-  font-size: 11px;
-  color: var(--text-3);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--text-4);
 }
 .sider-footer {
   margin-top: auto;
-  padding: 12px 10px 2px;
-  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.admin-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.admin-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--grad);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 10px rgba(91, 140, 255, 0.4);
+}
+.admin-name {
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 .logout-btn {
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-3);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
 }
 .logout-btn:hover {
-  color: var(--brand);
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.08);
 }
 .content {
-  background: var(--bg);
+  background: transparent;
 }
 .page {
-  max-width: 1080px;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 28px 32px 48px;
+  padding: 30px 32px 56px;
 }
 </style>

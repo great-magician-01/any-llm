@@ -20,6 +20,6 @@ describe('router auth guard', () => {
   it('bounces authenticated users away from /login', async () => {
     localStorage.setItem('authed', '1')
     await router.push('/login')
-    expect(router.currentRoute.value.name).toBe('upstreams')
+    expect(router.currentRoute.value.name).toBe('dashboard')
   })
 })
