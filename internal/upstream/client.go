@@ -161,10 +161,26 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		// SSE spec: a field line is "name:value" (one optional leading space
+		// after the colon is stripped). Accept both "data:foo" and "data: foo".
+		// Comment lines (": ...") and other fields (event:, id:, retry:) are
+		// skipped — the type is carried inside the data payload for both
+		// OpenAI and Anthropic streams.
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
+		colon := strings.Index(line, ":")
+		if colon < 0 {
+			continue
+		}
+		field := line[:colon]
+		if field != "data" {
+			continue
+		}
+		data := line[colon+1:]
+		if strings.HasPrefix(data, " ") {
+			data = data[1:]
+		}
 		if data == "" {
 			continue
 		}
@@ -202,6 +218,12 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 			} else if ev.Type == "message_delta" {
 				prev := result.Usage()
 				result.setUsage(translate.Usage{InputTokens: prev.InputTokens, OutputTokens: ev.OutputTokens})
+				// Anthropic message_delta carries only output_tokens; input_tokens
+				// arrived in message_start. Propagate them onto the event so
+				// cross-format encoders (e.g. OpenAI usage chunk) see both values.
+				if ev.InputTokens == 0 {
+					ev.InputTokens = prev.InputTokens
+				}
 			}
 			select {
 			case ch <- ev:

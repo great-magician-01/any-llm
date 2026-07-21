@@ -10,12 +10,16 @@ import (
 )
 
 type StreamDecoder struct {
-	started     bool
-	textOpen    bool // a text block at index 0 is open
-	textIndex   int
-	openTools   map[int]int // OpenAI tool_calls index -> IR block index
-	nextBlock   int         // next IR block index to allocate
-	inputTokens int
+	started      bool
+	textOpen     bool // a text block at index 0 is open
+	textIndex    int
+	openTools    map[int]int // OpenAI tool_calls index -> IR block index
+	nextBlock    int         // next IR block index to allocate
+	inputTokens  int
+	outputTokens int
+	finished     bool   // finish_reason received
+	deltaSent    bool   // message_delta already emitted
+	stopReason   string // buffered stop reason (emitted with deferred message_delta)
 }
 
 func NewStreamDecoder() *StreamDecoder {
@@ -32,6 +36,13 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			d.textOpen = false
 		}
 		evs = append(evs, d.closeAllTools()...)
+		if d.finished && !d.deltaSent {
+			d.deltaSent = true
+			evs = append(evs, &translate.StreamEvent{
+				Type:       "message_delta",
+				StopReason: d.stopReason,
+			})
+		}
 		evs = append(evs, &translate.StreamEvent{Type: "message_stop"})
 		return evs, nil
 	}
@@ -52,10 +63,23 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 		})
 	}
 
-	// usage-only chunk (choices empty) — record and emit into a message_delta if finish already sent
+	// usage-only chunk (choices empty) — standard OpenAI pattern when
+	// stream_options.include_usage is true: usage arrives in a separate chunk
+	// AFTER finish_reason. Record the tokens and, if finish was already
+	// received, emit the deferred message_delta carrying stop_reason + usage.
 	if len(ch.Choices) == 0 {
 		if ch.Usage != nil {
 			d.inputTokens = ch.Usage.PromptTokens
+			d.outputTokens = ch.Usage.CompletionTokens
+		}
+		if d.finished && !d.deltaSent {
+			d.deltaSent = true
+			evs = append(evs, &translate.StreamEvent{
+				Type:         "message_delta",
+				StopReason:   d.stopReason,
+				InputTokens:  d.inputTokens,
+				OutputTokens: d.outputTokens,
+			})
 		}
 		return evs, nil
 	}
@@ -125,17 +149,23 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			d.textOpen = false
 		}
 		evs = append(evs, d.closeAllTools()...)
-		md := &translate.StreamEvent{
-			Type:       "message_delta",
-			StopReason: mapStopReasonFromOpenAI(*c.FinishReason),
-		}
+		d.finished = true
+		d.stopReason = mapStopReasonFromOpenAI(*c.FinishReason)
+		// If usage is in this same chunk or was seen earlier, emit message_delta
+		// immediately. Otherwise defer until the usage-only chunk or [DONE].
 		if ch.Usage != nil {
-			md.InputTokens = ch.Usage.PromptTokens
-			md.OutputTokens = ch.Usage.CompletionTokens
-		} else if d.inputTokens > 0 {
-			md.InputTokens = d.inputTokens
+			d.inputTokens = ch.Usage.PromptTokens
+			d.outputTokens = ch.Usage.CompletionTokens
 		}
-		evs = append(evs, md)
+		if d.inputTokens > 0 || d.outputTokens > 0 {
+			d.deltaSent = true
+			evs = append(evs, &translate.StreamEvent{
+				Type:         "message_delta",
+				StopReason:   d.stopReason,
+				InputTokens:  d.inputTokens,
+				OutputTokens: d.outputTokens,
+			})
+		}
 	}
 
 	return evs, nil

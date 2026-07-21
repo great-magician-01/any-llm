@@ -25,10 +25,13 @@ export function formatPercent(part: number, total: number): string {
   return ((part / total) * 100).toFixed(1) + '%'
 }
 
-/** Date -> 本地 "YYYY-MM-DDTHH:mm:ss"（与后端 created_at 字符串比较兼容） */
+/** Date -> 本地 RFC3339 "YYYY-MM-DDTHH:mm:ss±HH:MM"（带时区偏移，后端按绝对时刻解析） */
 export function localISO(d: Date): string {
   const p = (x: number) => String(x).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  const off = -d.getTimezoneOffset()
+  const sign = off < 0 ? '-' : '+'
+  const abs = Math.abs(off)
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
 }
 
 /** 后端 created_at -> "YYYY-MM-DD HH:mm:ss" */

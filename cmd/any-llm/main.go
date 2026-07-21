@@ -24,7 +24,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/webapi"
 )
 
-//go:embed web/dist
+//go:embed all:web/dist
 var frontend embed.FS
 
 // shutdownTimeout bounds how long the server waits for in-flight requests
@@ -94,36 +94,29 @@ func run() int {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", gateway.LoggingMiddleware(gw, "gateway"))
 	mux.Handle("/api/admin/", gateway.LoggingMiddleware(adminHandler, "admin"))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
-			http.NotFound(w, r)
-			return
-		}
-		rel := strings.TrimPrefix(r.URL.Path, "/")
+	// Go 1.22+: "/" only matches the exact root path; use /{$} for
+	// that and /{pathname...} as the catch-all.
+	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		r.URL.Path = "/"
+		spa.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/{pathname...}", func(w http.ResponseWriter, r *http.Request) {
+		rel := r.PathValue("pathname")
 		if rel != "" {
 			if f, err := frontendFS.Open(rel); err == nil {
 				f.Close()
-				// Hashed assets under /assets/ are content-addressed and
-				// safe to cache aggressively.
 				if strings.HasPrefix(rel, "assets/") {
 					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				}
 				spa.ServeHTTP(w, r)
 				return
 			}
-			// Missing file with a file extension looks like a stale asset
-			// reference (e.g. an old build hash still referenced by a
-			// cached index.html). Return 404 instead of index.html so the
-			// browser sees a clear error rather than HTML-where-JS-was-
-			// expected (which surfaces as a misleading "Failed to fetch
-			// dynamically imported module").
 			if path.Ext(rel) != "" {
 				http.NotFound(w, r)
 				return
 			}
 		}
-		// SPA client-side route — always revalidate so the browser picks
-		// up fresh chunk hashes on every navigation.
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		r.URL.Path = "/"
 		spa.ServeHTTP(w, r)

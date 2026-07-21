@@ -78,5 +78,5 @@ type rawStreamEvent struct {
 	Index        int             `json:"index,omitempty"`
 	ContentBlock json.RawMessage `json:"content_block,omitempty"`
 	Delta        json.RawMessage `json:"delta,omitempty"`
-	Usage        *rawUsage       `json:"usage,omitempty"`
+	Usage        json.RawMessage `json:"usage,omitempty"`
 }

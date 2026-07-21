@@ -82,12 +82,20 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 	var conditions []string
 	var args []any
 	if from != "" {
+		t, err := parseTimeParam(from)
+		if err != nil {
+			return nil, fmt.Errorf("usage summary: invalid from: %w", err)
+		}
 		conditions = append(conditions, "created_at >= ?")
-		args = append(args, from)
+		args = append(args, t)
 	}
 	if to != "" {
+		t, err := parseTimeParam(to)
+		if err != nil {
+			return nil, fmt.Errorf("usage summary: invalid to: %w", err)
+		}
 		conditions = append(conditions, "created_at <= ?")
-		args = append(args, to)
+		args = append(args, t)
 	}
 	if len(conditions) > 0 {
 		q += " WHERE " + strings.Join(conditions, " AND ")
@@ -108,6 +116,24 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// parseTimeParam parses a from/to query parameter into a time.Time. It
+// accepts RFC3339 (with timezone offset) as well as naive local formats
+// (interpreted in the server's local timezone, matching how created_at is
+// written by InsertUsage). The result must be passed to queries as a
+// time.Time — plain strings compare incorrectly against created_at under
+// modernc.org/sqlite (DATETIME column affinity).
+func parseTimeParam(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported time format %q", s)
 }
 
 func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {

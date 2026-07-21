@@ -148,6 +148,90 @@ func TestStreamDecode_ParallelToolCalls(t *testing.T) {
 	}
 }
 
+// TestStreamDecode_SeparatedUsageChunk covers the standard OpenAI streaming
+// pattern with stream_options.include_usage=true: usage arrives in a
+// SEPARATE chunk (empty choices) AFTER the finish_reason chunk. The decoder
+// must buffer the stop_reason and emit a single message_delta carrying both
+// stop_reason and usage when the usage chunk arrives.
+func TestStreamDecode_SeparatedUsageChunk(t *testing.T) {
+	d := NewStreamDecoder()
+	var got []*translate.StreamEvent
+	dec := func(s string) {
+		evs, err := d.Decode([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, evs...)
+	}
+	dec(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}`)
+	// finish_reason WITHOUT usage (standard pattern)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	// usage-only chunk (empty choices) arrives separately after finish_reason
+	dec(`{"id":"c1","choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49}}`)
+	dec("[DONE]")
+
+	wantTypes := []string{
+		"message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop",
+	}
+	if len(got) != len(wantTypes) {
+		t.Fatalf("event count=%d want %d (events=%+v)", len(got), len(wantTypes), got)
+	}
+	for i, w := range wantTypes {
+		if got[i].Type != w {
+			t.Fatalf("event[%d]=%q want %q", i, got[i].Type, w)
+		}
+	}
+	md := got[4]
+	if md.StopReason != "stop" {
+		t.Fatalf("message_delta stop_reason=%q want stop", md.StopReason)
+	}
+	if md.InputTokens != 42 {
+		t.Fatalf("message_delta input_tokens=%d want 42", md.InputTokens)
+	}
+	if md.OutputTokens != 7 {
+		t.Fatalf("message_delta output_tokens=%d want 7", md.OutputTokens)
+	}
+}
+
+// TestStreamDecode_NoUsage covers the case where the upstream never sends a
+// usage chunk (e.g. stream_options not supported). The decoder should still
+// emit a message_delta with just the stop_reason at [DONE].
+func TestStreamDecode_NoUsage(t *testing.T) {
+	d := NewStreamDecoder()
+	var got []*translate.StreamEvent
+	dec := func(s string) {
+		evs, err := d.Decode([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, evs...)
+	}
+	dec(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}`)
+	dec(`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	dec("[DONE]")
+
+	wantTypes := []string{
+		"message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop",
+	}
+	if len(got) != len(wantTypes) {
+		t.Fatalf("event count=%d want %d (events=%+v)", len(got), len(wantTypes), got)
+	}
+	for i, w := range wantTypes {
+		if got[i].Type != w {
+			t.Fatalf("event[%d]=%q want %q", i, got[i].Type, w)
+		}
+	}
+	md := got[4]
+	if md.StopReason != "stop" {
+		t.Fatalf("message_delta stop_reason=%q want stop", md.StopReason)
+	}
+	if md.InputTokens != 0 || md.OutputTokens != 0 {
+		t.Fatalf("message_delta usage should be zero, got in=%d out=%d", md.InputTokens, md.OutputTokens)
+	}
+}
+
 func TestStreamEncode_TextFlow(t *testing.T) {
 	e := NewStreamEncoder("gpt-4o")
 	var lines []string

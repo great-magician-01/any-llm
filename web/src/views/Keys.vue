@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress } from 'naive-ui'
+import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
+import { listUpstreams, listModels } from '../api/upstreams'
 import { formatInt } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -87,11 +88,20 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 140,
+    width: 210,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
           h(NButton, { size: 'small', onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOpencodeConfig(row.key, e) }, { default: () => 'opencode' }),
+              default: () => '复制 opencode 配置 JSON（含此密钥）',
+            },
+          ),
           h(
             NPopconfirm,
             { onPositiveClick: () => { del(row.id) } },
@@ -182,6 +192,47 @@ async function del(id: number) {
     message.success('已删除')
   } catch {
     message.error('删除失败')
+  }
+}
+
+// opencode custom provider config: aggregate every upstream's models into
+// the models map so the copied JSON works out of the box.
+async function buildOpencodeConfig(apiKey: string): Promise<string> {
+  const ups = await listUpstreams()
+  const models: Record<string, { name: string }> = {}
+  await Promise.all(ups.map(async (u) => {
+    if (u.id == null) return
+    const ms = await listModels(u.id).catch(() => [])
+    for (const m of ms) {
+      const id = `${u.name}/${m.model_name}`
+      models[id] = { name: id }
+    }
+  }))
+  const cfg: Record<string, unknown> = {
+    $schema: 'https://opencode.ai/config.json',
+    provider: {
+      'any-llm': {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'any-llm',
+        options: {
+          baseURL: `${origin.value}/v1`,
+          apiKey,
+        },
+        models,
+      },
+    },
+  }
+  const firstModel = Object.keys(models)[0]
+  if (firstModel) cfg.model = `any-llm/${firstModel}`
+  return JSON.stringify(cfg, null, 2)
+}
+
+async function copyOpencodeConfig(apiKey: string, evt?: MouseEvent) {
+  try {
+    const json = await buildOpencodeConfig(apiKey)
+    await copyKey(json, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
   }
 }
 
@@ -320,6 +371,10 @@ onMounted(load)
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
             <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
           </n-input-group>
+          <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 opencode 配置 JSON（含此密钥）
+          </n-button>
         </template>
         <template #footer>
           <div style="text-align: right">

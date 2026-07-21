@@ -228,7 +228,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			if !ok {
 				goto done
 			}
-			logger.Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(streamStart).Milliseconds())
+			logger.FileOnly().Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(streamStart).Milliseconds())
 			// Synthesize content_block_start if upstream omitted it (e.g. deepseek).
 			// Without this, Anthropic SDK aborts on receiving content_block_delta
 			// for an index that never had content_block_start.

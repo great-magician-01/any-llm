@@ -51,6 +51,73 @@ func TestInsertUsageAndSummary(t *testing.T) {
 	}
 }
 
+func TestUsageSummaryTimeWindow(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	yesterday := dayStart.Add(-24 * time.Hour)
+
+	// one record today, one record yesterday
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 100, Status: "ok"})
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 999, Status: "ok", CreatedAt: yesterday})
+
+	sumTokens := func(list []UsageSummary) int {
+		n := 0
+		for _, s := range list {
+			n += s.TotalTokens
+		}
+		return n
+	}
+
+	// from = today 00:00, naive local format sent by the frontend (regression:
+	// string params used to compare incorrectly against created_at, yielding
+	// empty results for same-day windows)
+	sums, err := UsageSummaryByGroup(d, "model", dayStart.Format("2006-01-02T15:04:05"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sumTokens(sums); got != 100 {
+		t.Fatalf("today window tokens=%d want 100", got)
+	}
+
+	// same, but RFC3339 with timezone offset
+	sums, err = UsageSummaryByGroup(d, "model", dayStart.Format(time.RFC3339), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sumTokens(sums); got != 100 {
+		t.Fatalf("today window (RFC3339) tokens=%d want 100", got)
+	}
+
+	// from = tomorrow -> nothing
+	sums, err = UsageSummaryByGroup(d, "model", dayStart.Add(24*time.Hour).Format("2006-01-02T15:04:05"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sumTokens(sums); got != 0 {
+		t.Fatalf("tomorrow window tokens=%d want 0", got)
+	}
+
+	// from/to range covering only today (to = today 23:59:59, Usage page shape)
+	sums, err = UsageSummaryByGroup(d, "model",
+		dayStart.Format("2006-01-02T15:04:05"), dayStart.Add(24*time.Hour-time.Second).Format("2006-01-02T15:04:05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sumTokens(sums); got != 100 {
+		t.Fatalf("today range tokens=%d want 100", got)
+	}
+
+	// invalid from -> error
+	if _, err = UsageSummaryByGroup(d, "model", "not-a-time", ""); err == nil {
+		t.Fatal("expected error for invalid from")
+	}
+}
+
 func TestUsageRecordsList(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})

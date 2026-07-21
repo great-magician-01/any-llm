@@ -29,7 +29,9 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 		evt.Model = msg.Model
 		if msg.Usage != nil {
 			evt.InputTokens = msg.Usage.InputTokens
+			evt.OutputTokens = msg.Usage.OutputTokens
 		}
+		evt.RawMessage = raw.Message
 		return evt, nil
 	case "content_block_start":
 		evt := &translate.StreamEvent{Type: "content_block_start", Index: raw.Index}
@@ -62,12 +64,16 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 	case "message_delta":
 		evt := &translate.StreamEvent{Type: "message_delta"}
 		var d struct {
-			StopReason string `json:"stop_reason"`
+			StopReason   string  `json:"stop_reason"`
+			StopSequence *string `json:"stop_sequence"`
 		}
 		_ = json.Unmarshal(raw.Delta, &d)
 		evt.StopReason = d.StopReason
-		if raw.Usage != nil {
-			evt.OutputTokens = raw.Usage.OutputTokens
+		if len(raw.Usage) > 0 {
+			var u rawUsage
+			_ = json.Unmarshal(raw.Usage, &u)
+			evt.OutputTokens = u.OutputTokens
+			evt.RawUsage = raw.Usage
 		}
 		return evt, nil
 	case "message_stop":
@@ -80,11 +86,24 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 	payload := map[string]any{"type": evt.Type}
 	switch evt.Type {
 	case "message_start":
-		msg := map[string]any{"id": evt.MessageID, "model": evt.Model, "role": "assistant"}
-		if evt.InputTokens > 0 {
-			msg["usage"] = map[string]any{"input_tokens": evt.InputTokens}
+		if len(evt.RawMessage) > 0 {
+			payload["message"] = json.RawMessage(evt.RawMessage)
+		} else {
+			msg := map[string]any{
+				"id":            evt.MessageID,
+				"type":          "message",
+				"role":          "assistant",
+				"model":         evt.Model,
+				"content":       []any{},
+				"stop_reason":   nil,
+				"stop_sequence": nil,
+				"usage": map[string]any{
+					"input_tokens":  evt.InputTokens,
+					"output_tokens": evt.OutputTokens,
+				},
+			}
+			payload["message"] = msg
 		}
-		payload["message"] = msg
 	case "content_block_start":
 		payload["index"] = evt.Index
 		if evt.Block != nil {
@@ -122,10 +141,19 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 	case "content_block_stop":
 		payload["index"] = evt.Index
 	case "message_delta":
-		d := map[string]any{"stop_reason": evt.StopReason}
+		d := map[string]any{
+			"stop_reason":   mapStopReasonToAnthropic(evt.StopReason),
+			"stop_sequence": nil,
+		}
 		payload["delta"] = d
-		if evt.OutputTokens > 0 || evt.InputTokens > 0 {
-			payload["usage"] = map[string]any{"output_tokens": evt.OutputTokens}
+		if len(evt.RawUsage) > 0 {
+			payload["usage"] = json.RawMessage(evt.RawUsage)
+		} else if evt.OutputTokens > 0 || evt.InputTokens > 0 {
+			usage := map[string]any{"output_tokens": evt.OutputTokens}
+			if evt.InputTokens > 0 {
+				usage["input_tokens"] = evt.InputTokens
+			}
+			payload["usage"] = usage
 		}
 	case "message_stop":
 		// no extra fields

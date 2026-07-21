@@ -83,15 +83,17 @@ type Usage struct {
 
 // StreamEvent is an Anthropic-style fine-grained streaming event.
 type StreamEvent struct {
-	Type         string        // message_start | content_block_start | content_block_delta | content_block_stop | message_delta | message_stop
-	MessageID    string        // message_start
-	Model        string        // message_start
-	InputTokens  int           // message_start
-	Index        int           // content_block_*
-	Block        *ContentBlock // content_block_start
-	Delta        *Delta        // content_block_delta
-	StopReason   string        // message_delta
-	OutputTokens int           // message_delta
+	Type         string          // message_start | content_block_start | content_block_delta | content_block_stop | message_delta | message_stop
+	MessageID    string          // message_start
+	Model        string          // message_start
+	InputTokens  int             // message_start
+	Index        int             // content_block_*
+	Block        *ContentBlock   // content_block_start
+	Delta        *Delta          // content_block_delta
+	StopReason   string          // message_delta
+	OutputTokens int             // message_delta
+	RawMessage   json.RawMessage // message_start: raw `message` object from same-format upstream (pass-through)
+	RawUsage     json.RawMessage // message_delta: raw `usage` object from same-format upstream (pass-through)
 }
 
 type Delta struct {
