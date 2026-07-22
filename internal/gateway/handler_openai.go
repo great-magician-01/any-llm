@@ -70,6 +70,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	}
 	if err != nil {
 		WriteError(w, 500, inFormat, "failed to encode response", "internal_error")
+		logger.Error("non-stream encode failed", "in_format", inFormat, "err", err)
 		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens, false, "error")
 		return
 	}
@@ -114,6 +115,8 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		if inFormat == "anthropic" {
 			if f, err := anthropic.EncodeStreamEvent(&translate.StreamEvent{Type: "ping"}); err == nil {
 				w.Write(f)
+			} else {
+				logger.Warn("stream anthropic ping encode failed", "err", err)
 			}
 		} else {
 			w.Write([]byte(": kp\n"))
@@ -206,6 +209,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			out, encErr = openai.EncodeResponse(result.Response)
 		}
 		if encErr != nil {
+			logger.Error("stream non-stream response encode failed", "in_format", inFormat, "err", encErr)
 			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens, true, "error")
 			return
 		}
@@ -268,6 +272,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 				frames, err = encoder.Encode(ev)
 			}
 			if err != nil {
+				logger.Warn("stream frame encode skipped", "in_format", inFormat, "type", ev.Type, "index", ev.Index, "err", err)
 				continue
 			}
 			for _, f := range frames {
@@ -330,6 +335,8 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 	if g.writer != nil {
 		g.writer.DoAsync(func(d *sql.DB) error { return model.InsertUsage(d, rec) })
 	} else {
-		model.InsertUsage(g.db, rec)
+		if err := model.InsertUsage(g.db, rec); err != nil {
+			logger.Error("record usage sync write failed", "key_id", rec.ExtKeyID, "upstream", rec.UpstreamName, "model", rec.Model, "total_tokens", rec.TotalTokens, "err", err)
+		}
 	}
 }

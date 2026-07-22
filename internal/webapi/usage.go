@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
@@ -16,6 +17,7 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		to := r.URL.Query().Get("to")
 		summaries, err := model.UsageSummaryByGroup(a.db, groupBy, from, to)
 		if err != nil {
+			logger.Error("admin: usage summary failed", "group_by", groupBy, "err", err)
 			writeJSON(w, 500, map[string]any{"error": err.Error()})
 			return
 		}
@@ -27,6 +29,7 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		size, _ := strconv.Atoi(r.URL.Query().Get("size"))
 		records, total, err := model.UsageRecordsList(a.db, page, size)
 		if err != nil {
+			logger.Error("admin: usage records list failed", "page", page, "size", size, "err", err)
 			writeJSON(w, 500, map[string]any{"error": err.Error()})
 			return
 		}
@@ -66,11 +69,13 @@ func writeUsageTotals(w http.ResponseWriter, a *API, extKeyID, upstreamID *int64
 	monthEnd := monthStart.AddDate(0, 1, 0)
 	daily, err := model.SumTokens(a.db, extKeyID, upstreamID, dayStart, dayEnd)
 	if err != nil {
+		logger.Error("admin: usage daily totals failed", "ext_key_id", extKeyID, "upstream_id", upstreamID, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
 	monthly, err := model.SumTokens(a.db, extKeyID, upstreamID, monthStart, monthEnd)
 	if err != nil {
+		logger.Error("admin: usage monthly totals failed", "ext_key_id", extKeyID, "upstream_id", upstreamID, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}

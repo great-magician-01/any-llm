@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
@@ -13,6 +14,7 @@ import (
 func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 	list, err := model.ListUpstreams(a.db)
 	if err != nil {
+		logger.Error("admin: list upstreams failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
@@ -33,14 +35,17 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		FetchModels       bool   `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Warn("admin: create upstream invalid JSON", "err", err)
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
 	if req.Format != "openai" && req.Format != "anthropic" {
+		logger.Warn("admin: create upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai or anthropic"})
 		return
 	}
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
+		logger.Warn("admin: create upstream negative token limit", "daily", req.DailyTokenLimit, "monthly", req.MonthlyTokenLimit)
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
 		return
 	}
@@ -52,6 +57,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		id, e = model.CreateUpstream(d, u)
 		return e
 	}); err != nil {
+		logger.Error("admin: create upstream DB write failed", "name", req.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
@@ -60,6 +66,8 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
 		if err == nil {
 			a.writeSync(func(d *sql.DB) error { return model.ReplaceModels(d, id, names) })
+		} else {
+			logger.Warn("admin: create upstream fetch models failed", "name", req.Name, "id", id, "err", err)
 		}
 	}
 	u, _ = model.GetUpstreamByID(a.db, id)
@@ -70,6 +78,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 func (a *API) getUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	u, err := model.GetUpstreamByID(a.db, id)
 	if err != nil {
+		logger.Warn("admin: get upstream not found", "id", id, "err", err)
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 		return
 	}
@@ -80,6 +89,7 @@ func (a *API) getUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	u, err := model.GetUpstreamByID(a.db, id)
 	if err != nil {
+		logger.Warn("admin: update upstream not found", "id", id, "err", err)
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 		return
 	}
@@ -92,6 +102,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		MonthlyTokenLimit *int   `json:"monthly_token_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Warn("admin: update upstream invalid JSON", "id", id, "err", err)
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
@@ -127,6 +138,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		u.MonthlyTokenLimit = *req.MonthlyTokenLimit
 	}
 	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
+		logger.Error("admin: update upstream DB write failed", "id", id, "name", u.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
@@ -136,6 +148,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 
 func (a *API) deleteUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteUpstream(d, id) }); err != nil {
+		logger.Error("admin: delete upstream failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
@@ -154,10 +167,12 @@ func (a *API) fetchModels(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
 	if err != nil {
+		logger.Error("admin: fetch models failed", "upstream", u.Name, "id", id, "err", err)
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
 		return
 	}
 	if err := a.writeSync(func(d *sql.DB) error { return model.ReplaceModels(d, id, names) }); err != nil {
+		logger.Error("admin: replace models DB write failed", "upstream", u.Name, "id", id, "err", err)
 		writeSyncErr(w, 500, err)
 		return
 	}
@@ -170,6 +185,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID in
 		case "GET":
 			models, err := model.ListModels(a.db, upstreamID)
 			if err != nil {
+				logger.Error("admin: list models failed", "upstream_id", upstreamID, "err", err)
 				writeJSON(w, 500, map[string]any{"error": err.Error()})
 				return
 			}
@@ -180,6 +196,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID in
 			}
 			json.NewDecoder(r.Body).Decode(&req)
 			if err := a.writeSync(func(d *sql.DB) error { return model.AddModel(d, upstreamID, req.ModelName, true) }); err != nil {
+				logger.Error("admin: add model failed", "upstream_id", upstreamID, "model", req.ModelName, "err", err)
 				writeSyncErr(w, 400, err)
 				return
 			}
@@ -192,6 +209,7 @@ func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID in
 	if rest[0] != "" && r.Method == "DELETE" {
 		mid := parseID(rest[0])
 		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteModel(d, mid) }); err != nil {
+			logger.Error("admin: delete model failed", "model_id", mid, "err", err)
 			writeSyncErr(w, 400, err)
 			return
 		}

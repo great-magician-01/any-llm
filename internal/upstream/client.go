@@ -110,7 +110,10 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		errBody, _ := io.ReadAll(resp.Body)
+		errBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logger.Warn("upstream error: failed to read error body", "url", url, "status", resp.StatusCode, "err", err)
+		}
 		logger.Error("upstream returned error",
 			"url", url,
 			"status", resp.StatusCode,
@@ -241,11 +244,13 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 func injectStreamOptions(body []byte) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
+		logger.Warn("injectStreamOptions: JSON unmarshal failed, sending original body", "err", err)
 		return body
 	}
 	m["stream_options"] = map[string]any{"include_usage": true}
 	out, err := json.Marshal(m)
 	if err != nil {
+		logger.Warn("injectStreamOptions: JSON marshal failed, sending original body", "err", err)
 		return body
 	}
 	return out

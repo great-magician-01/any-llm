@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 const sessionName = "s"
@@ -65,6 +67,7 @@ func (m *Middleware) Wrap(handler http.Handler) http.Handler {
 			return
 		}
 		if !m.authenticate(r) {
+			logger.Warn("auth rejected: invalid or expired session", "remote", r.RemoteAddr, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(401)
 			w.Write([]byte(`{"error":"unauthorized"}`))
@@ -88,20 +91,24 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Warn("auth login: invalid JSON body", "remote", r.RemoteAddr, "err", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]any{"error": "invalid json"})
 		return
 	}
 	if req.Password != m.masterPassword {
+		logger.Warn("auth login: wrong password", "remote", r.RemoteAddr)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(401)
 		json.NewEncoder(w).Encode(map[string]any{"error": "wrong password"})
 		return
 	}
+	logger.Info("auth login succeeded", "remote", r.RemoteAddr)
 	exp := time.Now().Add(sessionExpiry)
 	token, err := SignSession(m.secret, exp)
 	if err != nil {
+		logger.Error("auth login: failed to sign session", "remote", r.RemoteAddr, "err", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]any{"error": "session error"})

@@ -52,6 +52,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	for _, u := range upstreams {
 		models, err := model.ListModels(g.db, u.ID)
 		if err != nil {
+			logger.Warn("gateway: list models failed, skipping upstream", "upstream", u.Name, "upstream_id", u.ID, "err", err)
 			continue
 		}
 		for _, m := range models {
@@ -84,7 +85,9 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	if g.writer != nil {
 		g.writer.DoAsync(func(d *sql.DB) error { return model.TouchExtKey(d, k.ID) })
 	} else {
-		model.TouchExtKey(g.db, k.ID)
+		if err := model.TouchExtKey(g.db, k.ID); err != nil {
+			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
+		}
 	}
 
 	body, err := readBody(r)
@@ -123,6 +126,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 			)
 			return
 		}
+		logger.Error("gateway: check token limits DB error", "key_id", k.ID, "upstream", u.Name, "err", err)
 		WriteError(w, 500, inFormat, "failed to check token limits: "+err.Error(), "internal_error")
 		return
 	}

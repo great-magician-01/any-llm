@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
@@ -35,6 +36,7 @@ func (a *API) handleKeyItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "DELETE":
 		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
+			logger.Error("admin: delete key failed", "id", id, "err", err)
 			writeSyncErr(w, 400, err)
 			return
 		}
@@ -49,6 +51,7 @@ func (a *API) handleKeyItem(w http.ResponseWriter, r *http.Request) {
 func (a *API) listKeys(w http.ResponseWriter, r *http.Request) {
 	list, err := model.ListExtKeys(a.db)
 	if err != nil {
+		logger.Error("admin: list keys failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
@@ -63,6 +66,7 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
+		logger.Warn("admin: create key negative token limit", "daily", req.DailyTokenLimit, "monthly", req.MonthlyTokenLimit)
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
 		return
 	}
@@ -72,9 +76,11 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		k, e = model.CreateExtKey(d, req.Label, req.DailyTokenLimit, req.MonthlyTokenLimit)
 		return e
 	}); err != nil {
+		logger.Error("admin: create key DB write failed", "label", req.Label, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
+	logger.Info("admin: key created", "id", k.ID, "label", k.Label, "enabled", k.Enabled)
 	writeJSON(w, 200, map[string]any{
 		"id": k.ID, "key": k.Key, "label": k.Label, "enabled": k.Enabled,
 		"daily_token_limit": k.DailyTokenLimit, "monthly_token_limit": k.MonthlyTokenLimit,
@@ -89,12 +95,14 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 		MonthlyTokenLimit *int    `json:"monthly_token_limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Warn("admin: update key invalid JSON", "id", id, "err", err)
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
 	// Fetch current values; PATCH semantics — nil fields keep existing value.
 	cur, err := model.GetExtKeyByID(a.db, id)
 	if err != nil {
+		logger.Warn("admin: update key not found", "id", id, "err", err)
 		writeJSON(w, 404, map[string]any{"error": "key not found"})
 		return
 	}
@@ -121,11 +129,13 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 	if err := a.writeSync(func(d *sql.DB) error {
 		return model.UpdateExtKey(d, id, label, enabled, daily, monthly)
 	}); err != nil {
+		logger.Error("admin: update key DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
 	updated, err := model.GetExtKeyByID(a.db, id)
 	if err != nil {
+		logger.Error("admin: update key re-fetch failed", "id", id, "err", err)
 		writeJSON(w, 500, map[string]any{"error": "key updated but re-fetch failed: " + err.Error()})
 		return
 	}

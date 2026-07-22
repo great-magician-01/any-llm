@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 var ErrWriterStopped = errors.New("writer is stopped")
@@ -47,6 +49,8 @@ func (w *Writer) loop() {
 			err := req.fn(w.DB)
 			if req.result != nil {
 				req.result <- err
+			} else {
+				logger.Error("async writer: write failed", "err", err)
 			}
 		case <-w.stopCh:
 			for {
@@ -55,6 +59,8 @@ func (w *Writer) loop() {
 					err := req.fn(w.DB)
 					if req.result != nil {
 						req.result <- err
+					} else {
+						logger.Error("async writer (drain): write failed", "err", err)
 					}
 				default:
 					return
@@ -87,6 +93,7 @@ func (w *Writer) DoAsync(fn WriteFunc) {
 	select {
 	case w.ch <- writeReq{fn: fn}:
 	default:
+		logger.Warn("async writer: channel full, write dropped")
 	}
 }
 
