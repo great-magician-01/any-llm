@@ -9,6 +9,7 @@ export interface Upstream {
 
 export interface UpstreamModel {
   id: number; upstream_id: number; model_name: string; manual: boolean
+  context_length: number; max_output_length: number
 }
 
 export async function listUpstreams() {
@@ -40,12 +41,18 @@ export async function listModels(upstreamId: number) {
   return data.data as UpstreamModel[]
 }
 
-export async function addModel(upstreamId: number, model_name: string) {
-  await client.post(`/upstreams/${upstreamId}/models`, { model_name })
+export const DEFAULT_MODEL_LENGTH = 200000
+
+export async function addModel(upstreamId: number, model_name: string, context_length = DEFAULT_MODEL_LENGTH, max_output_length = DEFAULT_MODEL_LENGTH) {
+  await client.post(`/upstreams/${upstreamId}/models`, { model_name, context_length, max_output_length })
 }
 
-export async function deleteModel(modelId: number) {
-  await client.delete(`/upstreams/${modelId}/models`)
+export async function updateModel(upstreamId: number, modelId: number, context_length: number, max_output_length: number) {
+  await client.put(`/upstreams/${upstreamId}/models/${modelId}`, { context_length, max_output_length })
+}
+
+export async function deleteModel(upstreamId: number, modelId: number) {
+  await client.delete(`/upstreams/${upstreamId}/models/${modelId}`)
 }
 
 export interface UsageTotals { daily_tokens: number; monthly_tokens: number }

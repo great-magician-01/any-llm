@@ -94,7 +94,6 @@ func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
 			t := lastUsed.Time
 			k.LastUsedAt = &t
 		}
-		k.Key = MaskKey(k.Key)
 		out = append(out, k)
 	}
 	return out, nil
@@ -119,13 +118,6 @@ func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, m
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
 	return nil
-}
-
-func MaskKey(key string) string {
-	if len(key) < 16 {
-		return key + "****"
-	}
-	return key[:12] + "****" + key[len(key)-4:]
 }
 
 func TouchExtKey(d *sql.DB, id int64) error {

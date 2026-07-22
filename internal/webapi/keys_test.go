@@ -28,10 +28,9 @@ func TestCreateKey(t *testing.T) {
 	}
 }
 
-func TestListKeysMasked(t *testing.T) {
+func TestListKeysFullKey(t *testing.T) {
 	a, d := setupAPI(t)
 	k, _ := model.CreateExtKey(d, "l", 0, 0)
-	_ = k
 	req := httptest.NewRequest("GET", "/api/admin/keys", nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -46,8 +45,8 @@ func TestListKeysMasked(t *testing.T) {
 		t.Fatalf("len=%d", len(resp.Data))
 	}
 	key, _ := resp.Data[0]["key"].(string)
-	if !strings.Contains(key, "****") {
-		t.Fatalf("key not masked: %q", key)
+	if key != k.Key {
+		t.Fatalf("key=%q want full key %q", key, k.Key)
 	}
 }
 

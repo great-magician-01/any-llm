@@ -34,7 +34,7 @@ func TestCompletion_StreamCrossFormat_OAIin_ANTup(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
-	model.AddModel(d, uid, "claude-3-5", false)
+	model.AddModel(d, uid, "claude-3-5", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -88,7 +88,7 @@ func TestCompletion_StreamSSE_NoSpaceAfterColon(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -133,7 +133,7 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 

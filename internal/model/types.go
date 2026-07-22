@@ -16,10 +16,12 @@ type Upstream struct {
 }
 
 type UpstreamModel struct {
-	ID         int64  `json:"id"`
-	UpstreamID int64  `json:"upstream_id"`
-	ModelName  string `json:"model_name"`
-	Manual     bool   `json:"manual"`
+	ID              int64  `json:"id"`
+	UpstreamID      int64  `json:"upstream_id"`
+	ModelName       string `json:"model_name"`
+	Manual          bool   `json:"manual"`
+	ContextLength   int    `json:"context_length"`
+	MaxOutputLength int    `json:"max_output_length"`
 }
 
 type ExtKey struct {

@@ -20,7 +20,7 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -63,7 +63,7 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -102,7 +102,7 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -135,7 +135,7 @@ func TestCompletion_UpstreamError(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -170,7 +170,7 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	g.client = upstream.NewClient(http.DefaultClient)
 

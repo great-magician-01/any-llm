@@ -139,6 +139,5 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 500, map[string]any{"error": "key updated but re-fetch failed: " + err.Error()})
 		return
 	}
-	updated.Key = model.MaskKey(updated.Key)
 	writeJSON(w, 200, updated)
 }

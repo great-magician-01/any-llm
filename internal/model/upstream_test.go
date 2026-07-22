@@ -84,10 +84,10 @@ func TestListUpdateDeleteUpstream(t *testing.T) {
 func TestModelsCRUD(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	if err := AddModel(d, uid, "gpt-4o", true); err != nil {
+	if err := AddModel(d, uid, "gpt-4o", true, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "gpt-4o-mini", false); err != nil {
+	if err := AddModel(d, uid, "gpt-4o-mini", false, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	models, err := ListModels(d, uid)
@@ -126,7 +126,7 @@ func TestModelsCRUD(t *testing.T) {
 func TestDeleteUpstreamCascadesModels(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false)
+	AddModel(d, uid, "m1", false, 0, 0)
 	if err := DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
 	}
