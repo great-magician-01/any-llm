@@ -29,10 +29,11 @@ type Message struct {
 
 // ContentBlock is a discriminated union; Type selects the populated field.
 type ContentBlock struct {
-	Type       string // "text" | "image" | "tool_use" | "tool_result" | "thinking"
+	Type       string // "text" | "image" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 	Text       string
 	Thinking   string // thinking block content (Type == "thinking")
 	Signature  string // thinking block signature (Type == "thinking")
+	Data       string // redacted_thinking block data (Type == "redacted_thinking")
 	Image      *Image
 	ToolUse    *ToolUse
 	ToolResult *ToolResult

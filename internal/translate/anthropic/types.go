@@ -37,6 +37,17 @@ type rawImageSrc struct {
 	Data      string `json:"data"`
 }
 
+type rawThinkingPart struct {
+	Type      string `json:"type"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
+}
+
+type rawRedactedThinkingPart struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
 type rawToolUsePart struct {
 	Type  string          `json:"type"`
 	ID    string          `json:"id"`

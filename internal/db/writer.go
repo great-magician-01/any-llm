@@ -49,7 +49,7 @@ func (w *Writer) loop() {
 			err := req.fn(w.DB)
 			if req.result != nil {
 				req.result <- err
-			} else {
+			} else if err != nil {
 				logger.Error("async writer: write failed", "err", err)
 			}
 		case <-w.stopCh:
@@ -59,7 +59,7 @@ func (w *Writer) loop() {
 					err := req.fn(w.DB)
 					if req.result != nil {
 						req.result <- err
-					} else {
+					} else if err != nil {
 						logger.Error("async writer (drain): write failed", "err", err)
 					}
 				default:

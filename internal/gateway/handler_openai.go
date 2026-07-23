@@ -149,7 +149,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		case ret := <-callCh:
 			result, callErr = ret.result, ret.err
 			callDone = true
-			logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", callErr)
+			if callErr != nil {
+				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", callErr)
+			} else {
+				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds())
+			}
 		case <-keepalive.C:
 			writePing()
 		case <-r.Context().Done():
@@ -226,6 +230,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 
 	logger.Info("entering post-call stream loop", "elapsed_ms", time.Since(streamStart).Milliseconds())
 	blockStarted := make(map[int]bool)
+	clientGonePost := false
 	for {
 		select {
 		case ev, ok := <-result.Stream:
@@ -281,13 +286,19 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			flusher.Flush()
 		case <-keepalive.C:
 			writePing()
+		case <-r.Context().Done():
+			clientGonePost = true
+			logger.Info("client context done (during stream)", "elapsed_ms", time.Since(streamStart).Milliseconds())
+			goto done
 		}
 	}
 done:
 
 	usage := result.Usage()
 	status := "ok"
-	if err := result.StreamErr(); err != nil {
+	if clientGonePost {
+		status = "error"
+	} else if err := result.StreamErr(); err != nil {
 		status = "error"
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}

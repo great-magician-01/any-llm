@@ -177,6 +177,8 @@ func blockToRaw(b translate.ContentBlock) map[string]any {
 			m["signature"] = b.Signature
 		}
 		return m
+	case "redacted_thinking":
+		return map[string]any{"type": "redacted_thinking", "data": b.Data}
 	case "tool_use":
 		return map[string]any{"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input)}
 	}
@@ -209,6 +211,10 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 		}
 		_ = json.Unmarshal(raw, &tb)
 		return &translate.ContentBlock{Type: "thinking", Thinking: tb.Thinking, Signature: tb.Signature}, nil
+	case "redacted_thinking":
+		var rb rawRedactedThinkingPart
+		_ = json.Unmarshal(raw, &rb)
+		return &translate.ContentBlock{Type: "redacted_thinking", Data: rb.Data}, nil
 	case "tool_use":
 		var tu rawToolUsePart
 		_ = json.Unmarshal(raw, &tu)

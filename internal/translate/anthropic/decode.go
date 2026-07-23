@@ -103,6 +103,14 @@ func decodeBlocks(raw json.RawMessage) ([]translate.ContentBlock, error) {
 				Base64:    ip.Source.Data,
 				MediaType: ip.Source.MediaType,
 			}})
+		case "thinking":
+			var tp rawThinkingPart
+			_ = json.Unmarshal(p, &tp)
+			out = append(out, translate.ContentBlock{Type: "thinking", Thinking: tp.Thinking, Signature: tp.Signature})
+		case "redacted_thinking":
+			var rp rawRedactedThinkingPart
+			_ = json.Unmarshal(p, &rp)
+			out = append(out, translate.ContentBlock{Type: "redacted_thinking", Data: rp.Data})
 		case "tool_use":
 			var tu rawToolUsePart
 			_ = json.Unmarshal(p, &tu)

@@ -91,6 +91,14 @@ func encodeBlocks(blocks []translate.ContentBlock) []map[string]any {
 					"type": "base64", "media_type": b.Image.MediaType, "data": b.Image.Base64,
 				},
 			})
+		case "thinking":
+			m := map[string]any{"type": "thinking", "thinking": b.Thinking}
+			if b.Signature != "" {
+				m["signature"] = b.Signature
+			}
+			parts = append(parts, m)
+		case "redacted_thinking":
+			parts = append(parts, map[string]any{"type": "redacted_thinking", "data": b.Data})
 		case "tool_use":
 			parts = append(parts, map[string]any{
 				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
@@ -124,6 +132,14 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		switch b.Type {
 		case "text":
 			content = append(content, map[string]any{"type": "text", "text": b.Text})
+		case "thinking":
+			m := map[string]any{"type": "thinking", "thinking": b.Thinking}
+			if b.Signature != "" {
+				m["signature"] = b.Signature
+			}
+			content = append(content, m)
+		case "redacted_thinking":
+			content = append(content, map[string]any{"type": "redacted_thinking", "data": b.Data})
 		case "tool_use":
 			content = append(content, map[string]any{
 				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
