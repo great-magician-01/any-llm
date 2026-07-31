@@ -44,16 +44,14 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 				input = append(input, map[string]any{"role": "user", "content": parts})
 			}
 		case "assistant":
-			// 文本 parts 合并进 assistant 消息 item（在 function_call item 之前），
-			// 工具调用转为顶层 function_call item，思考块丢弃。
 			var parts []any
-			var fcs []any
+			var fcItems []any // 延迟收集：assistant 文本项在前、function_call 项在后（对话顺序）
 			for _, b := range m.Content {
 				switch b.Type {
 				case "text":
 					parts = append(parts, map[string]any{"type": "input_text", "text": b.Text})
 				case "tool_use":
-					fcs = append(fcs, map[string]any{
+					fcItems = append(fcItems, map[string]any{
 						"type":      "function_call",
 						"call_id":   b.ToolUse.ID,
 						"name":      b.ToolUse.Name,
@@ -66,7 +64,7 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 			if len(parts) > 0 {
 				input = append(input, map[string]any{"role": "assistant", "content": parts})
 			}
-			input = append(input, fcs...)
+			input = append(input, fcItems...)
 		case "system":
 			var parts []any
 			for _, b := range m.Content {

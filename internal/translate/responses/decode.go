@@ -38,12 +38,7 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 				req.System = append(req.System, decodePartsToText(item.Content)...)
 				continue
 			}
-			if item.Role == "assistant" {
-				// assistant 角色消息在 IR 中无独立承载：工具调用走顶层
-				// function_call item，文本项在解码时跳过（见 decode_test.go）。
-				continue
-			}
-			if item.Role != "user" {
+			if item.Role != "user" && item.Role != "assistant" {
 				return nil, fmt.Errorf("responses decode request: unknown input role %q", item.Role)
 			}
 			blocks, err := decodeParts(item.Content)
