@@ -128,6 +128,11 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if req.APIKey != "" && !isMaskedKey(req.APIKey) {
 		u.APIKey = req.APIKey
 	}
+	if req.Format != "" && req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+		logger.Warn("admin: update upstream invalid format", "format", req.Format)
+		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+		return
+	}
 	if req.Format != "" {
 		u.Format = req.Format
 	}

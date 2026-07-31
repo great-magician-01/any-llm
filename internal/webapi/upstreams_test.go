@@ -210,3 +210,38 @@ func TestCreateUpstream_InvalidFormat(t *testing.T) {
 		t.Fatalf("status=%d", w.Code)
 	}
 }
+
+// TestUpdateUpstream_InvalidFormat verifies the admin API rejects an unknown
+// upstream format on update with 400 (app-layer validation; DB CHECK removed).
+func TestUpdateUpstream_InvalidFormat(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: "k", Format: "openai"})
+
+	body, _ := json.Marshal(map[string]any{"format": "yaml"})
+	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUpdateUpstream_ResponsesFormat verifies the admin API accepts switching
+// an upstream to the OpenAI Responses API "responses" format.
+func TestUpdateUpstream_ResponsesFormat(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://example.com", APIKey: "k", Format: "openai"})
+
+	body, _ := json.Marshal(map[string]any{"format": "responses"})
+	req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.Format != "responses" {
+		t.Fatalf("format not updated: %q", u.Format)
+	}
+}
