@@ -94,7 +94,7 @@
 **1. 表结构不加约束，校验收在应用层**
 
 - `migrations.go` 两个 CREATE TABLE `upstreams`：移除 `CHECK(format IN ...)`，新库直接无约束。
-- 旧库迁移新步骤 `dropUpstreamFormatCheck(d)`（在 `migrationSQLite`/`migrationPG` 之后、`migrateExtraCols` 之前执行；此时 SQLite `foreign_keys` 还是 OFF，外键文本不会被子表改写）：
+- 旧库迁移新步骤 `dropUpstreamFormatCheck(d)`（在 `migrationSQLite`/`migrationPG` 之后、`migrateExtraCols` 之前执行；注意：RENAME 改写 REFERENCES 由 `legacy_alter_table` 控制、与 foreign_keys 设置无关，重建必须临时 `legacy_alter_table=ON`，见下方伪代码）：
   - **SQLite**：查 `sqlite_master` 中 `upstreams` 的建表 SQL，含 `CHECK(format IN` 才动手，备份→重建→还原流程整体在一个事务里：
     ```
     BEGIN;
