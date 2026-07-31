@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -221,13 +222,19 @@ func dropUpstreamFormatCheck(d *sql.DB) error {
 	default:
 		var sqlText string
 		if err := d.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='upstreams'`).Scan(&sqlText); err != nil {
-			// 表不存在（新库尚未建）等异常：交给主迁移处理
-			return nil
+			if errors.Is(err, sql.ErrNoRows) {
+				// 表不存在（新库尚未建）：交给主迁移处理
+				return nil
+			}
+			return fmt.Errorf("read upstreams schema: %w", err)
 		}
 		if !strings.Contains(sqlText, "CHECK(format IN") {
 			return nil
 		}
 		// 备份 -> 重建 -> 还原 -> 清理，整体一个事务；任何一步失败回滚，旧表仍在。
+		// 注意：这里的 CREATE TABLE 与迁移脚本 migrationSQLite 里的 upstreams
+		// DDL 是重复的，新增列时三处（migrationSQLite、本重建语句、INSERT 列清单）
+		// 必须同步。
 		tx, err := d.Begin()
 		if err != nil {
 			return fmt.Errorf("begin rebuild upstreams: %w", err)
@@ -252,9 +259,9 @@ func dropUpstreamFormatCheck(d *sql.DB) error {
 			`DROP TABLE upstreams_bak`,
 			`PRAGMA legacy_alter_table=OFF`,
 		}
-		for _, s := range steps {
+		for i, s := range steps {
 			if _, err := tx.Exec(s); err != nil {
-				return fmt.Errorf("rebuild upstreams step failed: %w", err)
+				return fmt.Errorf("rebuild upstreams step %d failed: %w", i, err)
 			}
 		}
 		return tx.Commit()

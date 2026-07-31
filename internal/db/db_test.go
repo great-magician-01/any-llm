@@ -111,6 +111,15 @@ CREATE TABLE IF NOT EXISTS upstreams (
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS upstream_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+    model_name TEXT NOT NULL,
+    manual INTEGER NOT NULL DEFAULT 0,
+    context_length INTEGER NOT NULL DEFAULT 200000,
+    max_output_length INTEGER NOT NULL DEFAULT 200000,
+    UNIQUE(upstream_id, model_name)
 );`
 	path := filepath.Join(t.TempDir(), "old.db")
 	d, err := sql.Open("sqlite", path)
@@ -124,6 +133,9 @@ CREATE TABLE IF NOT EXISTS upstreams (
 		t.Fatal(err)
 	}
 	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u2','http://y','k2','anthropic')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (1,'m1')`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()
@@ -146,6 +158,35 @@ CREATE TABLE IF NOT EXISTS upstreams (
 	var id1 int64
 	if err := got.QueryRow(`SELECT id FROM upstreams WHERE name='u1'`).Scan(&id1); err != nil || id1 != 1 {
 		t.Fatalf("row id preserved: id=%d err=%v", id1, err)
+	}
+	// 重建后 FK 仍指向新 upstreams（而非被删的 upstreams_bak）：
+	// (1) upstream_models 的 stored schema 不得引用 backup 表
+	// （legacy_alter_table 偏差的关键回归点：没有它 RENAME 会把 REFERENCES
+	// 改写成 upstreams_bak，此断言失败）
+	var mSQL string
+	if err := got.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='upstream_models'`).Scan(&mSQL); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(mSQL, "upstreams_bak") {
+		t.Fatalf("upstream_models still references backup table:\n%s", mSQL)
+	}
+	// (2) join 可见（表本身完好）
+	var cnt int
+	if err := got.QueryRow(`SELECT COUNT(*) FROM upstream_models m JOIN upstreams u ON u.id = m.upstream_id WHERE m.model_name='m1' AND u.name='u1'`).Scan(&cnt); err != nil || cnt != 1 {
+		t.Fatalf("model join after rebuild: cnt=%d err=%v", cnt, err)
+	}
+	// (3) FK 约束仍被强制：坏 upstream_id 必须失败（若 FK 悬空指向已删的
+	// upstreams_bak 也会报错，但错误不同，此断言不能单独区分两种情形）
+	if _, err := got.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (999, 'm2')`); err == nil {
+		t.Fatal("FK not enforced after rebuild: upstream_models may still reference upstreams_bak")
+	}
+	// (4) 级联删除真实生效（FK 端到端指向重建后的 upstreams）
+	if _, err := got.Exec(`DELETE FROM upstreams WHERE id=1`); err != nil {
+		t.Fatalf("delete upstream after rebuild: %v", err)
+	}
+	var cascadeN int
+	if err := got.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE model_name='m1'`).Scan(&cascadeN); err != nil || cascadeN != 0 {
+		t.Fatalf("cascade delete after rebuild: n=%d err=%v", cascadeN, err)
 	}
 	// 会话表已建
 	var tname string
