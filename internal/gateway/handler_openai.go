@@ -27,7 +27,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	irReq, err := decodeInbound(body, inFormat)
 	if err != nil {
 		WriteError(w, 400, inFormat, "failed to decode request: "+err.Error(), "invalid_request_error")
-		g.recordUsage(key, u, realModel, inFormat, 0, 0, false, "error")
+		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
 		return
 	}
 	irReq.Model = realModel
@@ -44,7 +44,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		} else {
 			WriteError(w, 502, inFormat, "upstream call failed: "+err.Error(), "upstream_error")
 		}
-		g.recordUsage(key, u, realModel, inFormat, 0, 0, irReq.Stream, "error")
+		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, irReq.Stream, "error")
 		return
 	}
 
@@ -71,13 +71,13 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	if err != nil {
 		WriteError(w, 500, inFormat, "failed to encode response", "internal_error")
 		logger.Error("non-stream encode failed", "in_format", inFormat, "err", err)
-		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens, false, "error")
+		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, "error")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(out)
 	usage := result.Usage()
-	g.recordUsage(key, u, realModel, inFormat, usage.InputTokens, usage.OutputTokens, false, "ok")
+	g.recordUsage(key, u, realModel, inFormat, usage, false, "ok")
 	logger.Info("completion done",
 		"upstream", u.Name,
 		"model", realModel,
@@ -92,7 +92,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
-		g.recordUsage(key, u, realModel, inFormat, 0, 0, true, "error")
+		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -164,7 +164,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 
 	if clientGone {
-		g.recordUsage(key, u, realModel, inFormat, 0, 0, true, "error")
+		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
 		logger.Info("completion done",
 			"upstream", u.Name, "model", realModel, "stream", true,
 			"input_tokens", 0, "output_tokens", 0, "status", "error", "reason", "client_gone_before_call_done",
@@ -195,7 +195,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			w.Write([]byte("data: " + string(payload) + "\n\n"))
 		}
 		flusher.Flush()
-		g.recordUsage(key, u, realModel, inFormat, 0, 0, true, "error")
+		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
 		logger.Info("completion done",
 			"upstream", u.Name, "model", realModel, "stream", true,
 			"input_tokens", 0, "output_tokens", 0, "status", "error",
@@ -214,13 +214,13 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 		if encErr != nil {
 			logger.Error("stream non-stream response encode failed", "in_format", inFormat, "err", encErr)
-			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage.InputTokens, result.Response.Usage.OutputTokens, true, "error")
+			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, true, "error")
 			return
 		}
 		w.Write(out)
 		flusher.Flush()
 		usage := result.Usage()
-		g.recordUsage(key, u, realModel, inFormat, usage.InputTokens, usage.OutputTokens, true, "ok")
+		g.recordUsage(key, u, realModel, inFormat, usage, true, "ok")
 		logger.Info("completion done",
 			"upstream", u.Name, "model", realModel, "stream", true,
 			"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "status", "ok",
@@ -302,7 +302,7 @@ done:
 		status = "error"
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}
-	g.recordUsage(key, u, realModel, inFormat, usage.InputTokens, usage.OutputTokens, true, status)
+	g.recordUsage(key, u, realModel, inFormat, usage, true, status)
 	logger.Info("completion done",
 		"upstream", u.Name,
 		"model", realModel,
@@ -322,18 +322,21 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	}
 }
 
-func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, input, output int, stream bool, status string) {
-	total := input + output
+func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, status string) {
+	total := usage.InputTokens + usage.OutputTokens
 	rec := &model.UsageRecord{
-		UpstreamName:     u.Name,
-		Model:            realModel,
-		InFormat:         inFormat,
-		UpFormat:         u.Format,
-		PromptTokens:     input,
-		CompletionTokens: output,
-		TotalTokens:      total,
-		Stream:           stream,
-		Status:           status,
+		UpstreamName:      u.Name,
+		Model:             realModel,
+		InFormat:          inFormat,
+		UpFormat:          u.Format,
+		PromptTokens:      usage.InputTokens,
+		CompletionTokens:  usage.OutputTokens,
+		TotalTokens:       total,
+		CacheReadTokens:   usage.CacheReadTokens,
+		CacheCreationTokens: usage.CacheCreationTokens,
+		ReasoningTokens:   usage.ReasoningTokens,
+		Stream:            stream,
+		Status:            status,
 	}
 	if key != nil {
 		kid := key.ID

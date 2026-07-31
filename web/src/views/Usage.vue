@@ -72,7 +72,12 @@ const recordColumns: DataTableColumns<UsageRecord> = [
   { title: '模型', key: 'model', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
   { title: '入格式', key: 'in_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false }, { default: () => row.in_format }) },
   { title: '出格式', key: 'up_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.up_format }) },
-  { title: 'Token', key: 'total_tokens', width: 90, render: (row) => h('span', { class: 'mono' }, formatInt(row.total_tokens)) },
+  { title: '总 Token', key: 'total_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600' }, formatInt(row.total_tokens)) },
+  { title: '输入', key: 'prompt_tokens', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.prompt_tokens)) },
+  { title: '输出', key: 'completion_tokens', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.completion_tokens)) },
+  { title: '缓存命中', key: 'cache_read_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: row.cache_read_tokens > 0 ? 'color: #34d399' : '' }, formatInt(row.cache_read_tokens)) },
+  { title: '缓存写入', key: 'cache_creation_tokens', width: 90, render: (row) => h('span', { class: 'mono' }, formatInt(row.cache_creation_tokens)) },
+  { title: '推理', key: 'reasoning_tokens', width: 80, render: (row) => h('span', { class: 'mono', style: row.reasoning_tokens > 0 ? 'color: var(--brand-hover)' : '' }, formatInt(row.reasoning_tokens)) },
   {
     title: '状态',
     key: 'status',

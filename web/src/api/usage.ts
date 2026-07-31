@@ -8,6 +8,7 @@ export interface UsageSummary {
 export interface UsageRecord {
   id: number; upstream_name: string; model: string; in_format: string; up_format: string
   prompt_tokens: number; completion_tokens: number; total_tokens: number
+  cache_read_tokens: number; cache_creation_tokens: number; reasoning_tokens: number
   stream: boolean; status: string; created_at: string
 }
 

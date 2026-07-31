@@ -154,8 +154,10 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		"stop_reason": mapStopReasonToAnthropic(resp.StopReason),
 		"type":        "message",
 		"usage": map[string]any{
-			"input_tokens":  resp.Usage.InputTokens,
-			"output_tokens": resp.Usage.OutputTokens,
+			"input_tokens":                resp.Usage.InputTokens,
+			"output_tokens":               resp.Usage.OutputTokens,
+			"cache_creation_input_tokens": resp.Usage.CacheCreationTokens,
+			"cache_read_input_tokens":     resp.Usage.CacheReadTokens,
 		},
 	}
 	b, err := json.Marshal(out)

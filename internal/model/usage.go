@@ -54,10 +54,14 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 	}
 	_, err := d.Exec(db.Rebind(d, `INSERT INTO usage_records
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
-		 prompt_tokens, completion_tokens, total_tokens, stream, status, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`),
+		 prompt_tokens, completion_tokens, total_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 stream, status, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
-		r.PromptTokens, r.CompletionTokens, r.TotalTokens, stream, r.Status, ts)
+		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
+		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
+		stream, r.Status, ts)
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}
@@ -149,7 +153,9 @@ func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
 	}
 	offset := (page - 1) * size
 	rows, err := d.Query(db.Rebind(d, `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
-		prompt_tokens, completion_tokens, total_tokens, stream, status, created_at
+		prompt_tokens, completion_tokens, total_tokens,
+		cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		stream, status, created_at
 		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list usage: %w", err)
@@ -163,6 +169,7 @@ func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
 		var upstreamID sql.NullInt64
 		if err := rows.Scan(&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
 			&r.InFormat, &r.UpFormat, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
+			&r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens,
 			&stream, &r.Status, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}

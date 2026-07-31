@@ -1,6 +1,8 @@
 package translate_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -235,6 +237,73 @@ func assertRequestsMatch(t *testing.T, a, b *translate.Request) {
 		}
 		if a.ToolChoice.Name != b.ToolChoice.Name {
 			t.Errorf("tool_choice name %q != %q", a.ToolChoice.Name, b.ToolChoice.Name)
+		}
+	}
+}
+
+// TestCrossUsage_OpenAIToAnthropic verifies the full token breakdown survives
+// the OpenAI -> Anthropic response conversion: prompt cache hits and reasoning
+// tokens from DeepSeek must appear as cache_read_input_tokens in the Anthropic
+// response (reasoning has no Anthropic field and is dropped there).
+func TestCrossUsage_OpenAIToAnthropic(t *testing.T) {
+	src := []byte(`{
+		"id":"c1","model":"deepseek-v4-flash",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"Hi","reasoning_content":"Hmm"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":437,"completion_tokens":82,"total_tokens":519,
+			"prompt_tokens_details":{"cached_tokens":384},
+			"completion_tokens_details":{"reasoning_tokens":26},
+			"prompt_cache_hit_tokens":384,"prompt_cache_miss_tokens":53}
+	}`)
+	ir1, err := openai.DecodeResponse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir1.Usage.CacheReadTokens != 384 || ir1.Usage.ReasoningTokens != 26 {
+		t.Fatalf("ir usage=%+v", ir1.Usage)
+	}
+	antBytes, err := anthropic.EncodeResponse(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(antBytes, &m); err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := m["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(437) || usage["output_tokens"] != float64(82) {
+		t.Fatalf("usage=%v", usage)
+	}
+	if usage["cache_read_input_tokens"] != float64(384) {
+		t.Fatalf("cache_read=%v want 384", usage["cache_read_input_tokens"])
+	}
+}
+
+// TestCrossUsage_AnthropicToOpenAI verifies Anthropic cache fields survive the
+// conversion to an OpenAI response (cache_read -> cached_tokens).
+func TestCrossUsage_AnthropicToOpenAI(t *testing.T) {
+	src := []byte(`{
+		"id":"msg_1","model":"deepseek-v4-flash",
+		"content":[{"type":"text","text":"Hi"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":59,"output_tokens":71,"cache_creation_input_tokens":120,"cache_read_input_tokens":384}
+	}`)
+	ir1, err := anthropic.DecodeResponse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oaiBytes, err := openai.EncodeResponse(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(oaiBytes)
+	for _, want := range []string{
+		`"prompt_tokens":59`,
+		`"completion_tokens":71`,
+		`"total_tokens":130`,
+		`"cached_tokens":384`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %s in %s", want, s)
 		}
 	}
 }

@@ -2723,7 +2723,7 @@ git commit -m "feat: drop upstream format CHECK, add response_sessions table"
 ```go
 // /v1/responses 走 responses 入站格式：无 key 401、错误形状与 openai 一致
 func TestResponsesRoute(t *testing.T) {
-	gw := newTestGateway(t) // 复用现有测试辅助（见 handler_openai_test.go）
+	gw, _ := setupGateway(t) // router_test.go 的现有辅助：(*Gateway, *sql.DB)
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"x/y"}`)))
 	if rec.Code != 401 {
@@ -2750,19 +2750,20 @@ func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	gw := newTestGateway(t) // 复用现有测试辅助
-	uid, err := model.CreateUpstream(gw.db, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	g, d := setupGateway(t) // router_test.go 现有辅助
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = uid
-	key := model.CreateExtKey... // 复用现有测试里创建 key 的辅助
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
 
 	rec := httptest.NewRecorder()
 	body := `{"model":"mock/gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
 	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+keyValue)
-	gw.ServeHTTP(rec, req)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -3335,22 +3336,21 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	gw := newTestGateway(t)
-	_, err := model.CreateUpstream(gw.db, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	g, d := setupGateway(t)
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := model.CreateExtKey(gw.db, &model.ExtKey{Key: "sk-ext-123", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = key
+	model.AddModel(d, uid, "m", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+	gw := g
 
 	// 第一轮：纯文本输入，store 续接
 	rec1 := httptest.NewRecorder()
 	req1 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
 		`{"model":"mock/m","input":[{"role":"user","content":[{"type":"input_text","text":"weather in SF?"}]}],"store":true}`))
-	req1.Header.Set("Authorization", "Bearer sk-ext-123")
+	req1.Header.Set("Authorization", "Bearer "+k.Key)
 	gw.ServeHTTP(rec1, req1)
 	if rec1.Code != 200 {
 		t.Fatalf("turn1 status=%d body=%s", rec1.Code, rec1.Body.String())
@@ -3371,7 +3371,7 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(fmt.Sprintf(
 		`{"model":"mock/m","previous_response_id":"%s","input":[{"type":"function_call_output","call_id":"call_1","output":"sunny"}]}`, id1)))
-	req2.Header.Set("Authorization", "Bearer sk-ext-123")
+	req2.Header.Set("Authorization", "Bearer "+k.Key)
 	gw.ServeHTTP(rec2, req2)
 	if rec2.Code != 200 {
 		t.Fatalf("turn2 status=%d body=%s", rec2.Code, rec2.Body.String())
@@ -3402,17 +3402,17 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 
 // 未知 previous_response_id -> 400 invalid_previous_response_id
 func TestResponsesUnknownPreviousID(t *testing.T) {
-	gw := newTestGateway(t)
-	_, err := model.CreateUpstream(gw.db, &model.Upstream{Name: "mock", BaseURL: "http://127.0.0.1:1", APIKey: "sk-x", Format: "openai"})
+	g, d := setupGateway(t)
+	_, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: "http://127.0.0.1:1", APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = model.CreateExtKey(gw.db, &model.ExtKey{Key: "sk-ext-123", Enabled: true})
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
 		`{"model":"mock/m","previous_response_id":"resp_nope","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
-	req.Header.Set("Authorization", "Bearer sk-ext-123")
-	gw.ServeHTTP(rec, req)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec, req)
 	if rec.Code != 400 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

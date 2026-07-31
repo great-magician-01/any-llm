@@ -281,3 +281,81 @@ func TestEncodeStreamEvent_ThinkingBlockStart(t *testing.T) {
 		t.Fatalf("no signature field: %q", s)
 	}
 }
+
+// TestEncodeStreamEvent_ToolUseBlockWithoutToolUse covers the synthesized
+// content_block_start the gateway emits when the upstream omits it (e.g.
+// DeepSeek's Anthropic API). The synthesized block has only Type set, so
+// EncodeStreamEvent must not dereference a nil ToolUse and must emit a
+// well-formed frame.
+func TestEncodeStreamEvent_ToolUseBlockWithoutToolUse(t *testing.T) {
+	f, err := EncodeStreamEvent(&translate.StreamEvent{
+		Type:  "content_block_start",
+		Index: 1,
+		Block: &translate.ContentBlock{Type: "tool_use"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(f)
+	if !strings.Contains(s, `"type":"tool_use"`) {
+		t.Fatalf("frame=%q want tool_use block", s)
+	}
+	if !strings.HasPrefix(s, "event: content_block_start") {
+		t.Fatalf("frame=%q wrong event name", s)
+	}
+}
+
+// TestDecodeStreamEvent_CacheUsage verifies cache fields are extracted from
+// message_start and message_delta usage.
+func TestDecodeStreamEvent_CacheUsage(t *testing.T) {
+	start, err := DecodeStreamEvent([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"m","usage":{"input_tokens":59,"output_tokens":0,"cache_creation_input_tokens":120,"cache_read_input_tokens":384}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.InputTokens != 59 || start.CacheReadTokens != 384 || start.CacheCreationTokens != 120 {
+		t.Fatalf("start usage=%+v", start)
+	}
+	delta, err := DecodeStreamEvent([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":59,"output_tokens":71,"cache_creation_input_tokens":0,"cache_read_input_tokens":384}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.OutputTokens != 71 || delta.CacheReadTokens != 384 || delta.CacheCreationTokens != 0 {
+		t.Fatalf("delta usage=%+v", delta)
+	}
+}
+
+// TestEncodeStreamEvent_CacheUsageFallback verifies the IR-built (cross-format)
+// message_start and message_delta carry cache fields in their usage.
+func TestEncodeStreamEvent_CacheUsageFallback(t *testing.T) {
+	start, err := EncodeStreamEvent(&translate.StreamEvent{
+		Type:                "message_start",
+		MessageID:           "msg_1",
+		Model:               "m",
+		InputTokens:         59,
+		CacheReadTokens:     384,
+		CacheCreationTokens: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(start), `"cache_read_input_tokens":384`) ||
+		!strings.Contains(string(start), `"cache_creation_input_tokens":120`) {
+		t.Fatalf("start missing cache fields: %s", start)
+	}
+	delta, err := EncodeStreamEvent(&translate.StreamEvent{
+		Type:            "message_delta",
+		StopReason:      "stop",
+		InputTokens:     59,
+		OutputTokens:    71,
+		CacheReadTokens: 384,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(delta), `"cache_read_input_tokens":384`) {
+		t.Fatalf("delta missing cache_read: %s", delta)
+	}
+	if !strings.Contains(string(delta), `"output_tokens":71`) {
+		t.Fatalf("delta missing output_tokens: %s", delta)
+	}
+}

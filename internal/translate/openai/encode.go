@@ -156,6 +156,10 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		switch b.Type {
 		case "text":
 			rm.Content += b.Text
+		case "thinking":
+			// Anthropic thinking blocks map to reasoning_content for
+			// OpenAI-format clients (DeepSeek-style).
+			rm.ReasoningContent += b.Thinking
 		case "tool_use":
 			rm.ToolCalls = append(rm.ToolCalls, rawToolCall{
 				ID:   b.ToolUse.ID,
@@ -177,11 +181,22 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		}},
 	}
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-		rr.Usage = &rawUsage{
+		usage := &rawUsage{
 			PromptTokens:     resp.Usage.InputTokens,
 			CompletionTokens: resp.Usage.OutputTokens,
 			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
+		if resp.Usage.CacheReadTokens > 0 {
+			usage.PromptTokensDetails = &rawPromptTokensDetails{CachedTokens: resp.Usage.CacheReadTokens}
+			usage.PromptCacheHitTokens = resp.Usage.CacheReadTokens
+			if miss := resp.Usage.InputTokens - resp.Usage.CacheReadTokens; miss > 0 {
+				usage.PromptCacheMissTokens = miss
+			}
+		}
+		if resp.Usage.ReasoningTokens > 0 {
+			usage.CompletionTokensDetails = &rawCompletionTokensDetails{ReasoningTokens: resp.Usage.ReasoningTokens}
+		}
+		rr.Usage = usage
 	}
 	b, err := json.Marshal(rr)
 	if err != nil {

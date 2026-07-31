@@ -147,3 +147,92 @@ func TestEncodeResponse_TextAndToolUse(t *testing.T) {
 		t.Fatalf("usage=%+v", got.Usage)
 	}
 }
+
+// TestEncodeResponse_ThinkingToOpenAI verifies Anthropic thinking blocks map
+// to reasoning_content for OpenAI-format clients (DeepSeek-style).
+func TestEncodeResponse_ThinkingToOpenAI(t *testing.T) {
+	out, err := EncodeResponse(&translate.Response{
+		ID:    "msg_1",
+		Model: "m",
+		Content: []translate.ContentBlock{
+			{Type: "thinking", Thinking: "Hmm, let me think"},
+			{Type: "text", Text: "Hi"},
+		},
+		StopReason: "stop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr rawResponse
+	if err := json.Unmarshal(out, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if rr.Choices[0].Message.ReasoningContent != "Hmm, let me think" {
+		t.Fatalf("reasoning_content=%q", rr.Choices[0].Message.ReasoningContent)
+	}
+	if rr.Choices[0].Message.Content != "Hi" {
+		t.Fatalf("content=%q", rr.Choices[0].Message.Content)
+	}
+}
+
+// TestEncodeResponse_FullUsage verifies the OpenAI usage object carries the
+// full breakdown (cache hit + reasoning) when present in the IR.
+func TestEncodeResponse_FullUsage(t *testing.T) {
+	out, err := EncodeResponse(&translate.Response{
+		ID: "c1", Model: "m",
+		Content:    []translate.ContentBlock{{Type: "text", Text: "Hi"}},
+		StopReason: "stop",
+		Usage: translate.Usage{
+			InputTokens:     437,
+			OutputTokens:    82,
+			CacheReadTokens: 384,
+			ReasoningTokens: 26,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr rawResponse
+	if err := json.Unmarshal(out, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if rr.Usage == nil {
+		t.Fatal("no usage")
+	}
+	if rr.Usage.PromptTokens != 437 || rr.Usage.CompletionTokens != 82 || rr.Usage.TotalTokens != 519 {
+		t.Fatalf("usage=%+v", rr.Usage)
+	}
+	if rr.Usage.PromptTokensDetails == nil || rr.Usage.PromptTokensDetails.CachedTokens != 384 {
+		t.Fatalf("cached_tokens=%+v", rr.Usage.PromptTokensDetails)
+	}
+	if rr.Usage.CompletionTokensDetails == nil || rr.Usage.CompletionTokensDetails.ReasoningTokens != 26 {
+		t.Fatalf("reasoning_tokens=%+v", rr.Usage.CompletionTokensDetails)
+	}
+	if rr.Usage.PromptCacheHitTokens != 384 || rr.Usage.PromptCacheMissTokens != 53 {
+		t.Fatalf("hit/miss=%d/%d", rr.Usage.PromptCacheHitTokens, rr.Usage.PromptCacheMissTokens)
+	}
+}
+
+// TestEncodeResponse_NoCacheNoDetails verifies the details fields are omitted
+// entirely when there is no cache/reasoning data.
+func TestEncodeResponse_NoCacheNoDetails(t *testing.T) {
+	out, err := EncodeResponse(&translate.Response{
+		ID: "c1", Model: "m",
+		Content:    []translate.ContentBlock{{Type: "text", Text: "Hi"}},
+		StopReason: "stop",
+		Usage:      translate.Usage{InputTokens: 10, OutputTokens: 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr rawResponse
+	if err := json.Unmarshal(out, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if rr.Usage.PromptTokensDetails != nil || rr.Usage.CompletionTokensDetails != nil {
+		t.Fatalf("details should be omitted: %+v", rr.Usage)
+	}
+	if rr.Usage.PromptCacheHitTokens != 0 {
+		t.Fatalf("hit should be 0: %+v", rr.Usage)
+	}
+}

@@ -288,3 +288,39 @@ func TestThinkingRoundTrip_Response(t *testing.T) {
 		t.Fatalf("redacted_thinking not encoded: %+v", redactedBlock)
 	}
 }
+
+// TestEncodeResponse_CacheUsage verifies the Anthropic response usage carries
+// cache read/creation fields.
+func TestEncodeResponse_CacheUsage(t *testing.T) {
+	out, err := EncodeResponse(&translate.Response{
+		ID: "msg_1", Model: "m",
+		Content:    []translate.ContentBlock{{Type: "text", Text: "Hi"}},
+		StopReason: "stop",
+		Usage: translate.Usage{
+			InputTokens:         59,
+			OutputTokens:        71,
+			CacheReadTokens:     384,
+			CacheCreationTokens: 120,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	usage, _ := m["usage"].(map[string]any)
+	if usage == nil {
+		t.Fatalf("no usage in %s", out)
+	}
+	if usage["input_tokens"] != float64(59) || usage["output_tokens"] != float64(71) {
+		t.Fatalf("in/out=%v/%v", usage["input_tokens"], usage["output_tokens"])
+	}
+	if usage["cache_read_input_tokens"] != float64(384) {
+		t.Fatalf("cache_read=%v", usage["cache_read_input_tokens"])
+	}
+	if usage["cache_creation_input_tokens"] != float64(120) {
+		t.Fatalf("cache_creation=%v", usage["cache_creation_input_tokens"])
+	}
+}

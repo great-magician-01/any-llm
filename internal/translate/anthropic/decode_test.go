@@ -125,3 +125,27 @@ func TestDecodeResponse_TextAndToolUse(t *testing.T) {
 		t.Fatalf("usage=%+v", resp.Usage)
 	}
 }
+
+// TestDecodeResponse_CacheUsage verifies Anthropic cache fields flow into the
+// IR usage.
+func TestDecodeResponse_CacheUsage(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_1","model":"deepseek-v4-flash",
+		"content":[{"type":"text","text":"Hi"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":59,"output_tokens":71,"cache_creation_input_tokens":0,"cache_read_input_tokens":384}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 59 || resp.Usage.OutputTokens != 71 {
+		t.Fatalf("in/out=%d/%d", resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	}
+	if resp.Usage.CacheReadTokens != 384 {
+		t.Fatalf("cache_read=%d want 384", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.CacheCreationTokens != 0 {
+		t.Fatalf("cache_creation=%d want 0", resp.Usage.CacheCreationTokens)
+	}
+}

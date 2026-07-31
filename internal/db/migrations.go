@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS usage_records (
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -105,6 +108,9 @@ CREATE TABLE IF NOT EXISTS usage_records (
     prompt_tokens INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -128,6 +134,9 @@ var extraCols = []struct {
 	{"ext_keys", "monthly_token_limit", "0"},
 	{"upstream_models", "context_length", "200000"},
 	{"upstream_models", "max_output_length", "200000"},
+	{"usage_records", "cache_read_tokens", "0"},
+	{"usage_records", "cache_creation_tokens", "0"},
+	{"usage_records", "reasoning_tokens", "0"},
 }
 
 // migrateExtraCols ensures columns added after the initial schema exist on

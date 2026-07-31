@@ -36,17 +36,20 @@ type ExtKey struct {
 }
 
 type UsageRecord struct {
-	ID               int64     `json:"id"`
-	ExtKeyID         *int64    `json:"ext_key_id"`
-	UpstreamID       *int64    `json:"upstream_id"`
-	UpstreamName     string    `json:"upstream_name"`
-	Model            string    `json:"model"`
-	InFormat         string    `json:"in_format"`
-	UpFormat         string    `json:"up_format"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	TotalTokens      int       `json:"total_tokens"`
-	Stream           bool      `json:"stream"`
-	Status           string    `json:"status"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                  int64     `json:"id"`
+	ExtKeyID            *int64    `json:"ext_key_id"`
+	UpstreamID          *int64    `json:"upstream_id"`
+	UpstreamName        string    `json:"upstream_name"`
+	Model               string    `json:"model"`
+	InFormat            string    `json:"in_format"`
+	UpFormat            string    `json:"up_format"`
+	PromptTokens        int       `json:"prompt_tokens"`
+	CompletionTokens    int       `json:"completion_tokens"`
+	TotalTokens         int       `json:"total_tokens"`
+	CacheReadTokens     int       `json:"cache_read_tokens"`
+	CacheCreationTokens int       `json:"cache_creation_tokens"`
+	ReasoningTokens     int       `json:"reasoning_tokens"`
+	Stream              bool      `json:"stream"`
+	Status              string    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
 }

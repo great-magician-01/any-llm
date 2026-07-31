@@ -195,3 +195,99 @@ func TestDecodeResponse_ToolCalls(t *testing.T) {
 		t.Fatalf("usage=%+v", resp.Usage)
 	}
 }
+
+// TestDecodeResponse_ReasoningContent covers DeepSeek non-stream responses
+// where the thinking arrives in message.reasoning_content: it must become an
+// Anthropic thinking block (first, before text), with a synthesized signature
+// from the message id.
+func TestDecodeResponse_ReasoningContent(t *testing.T) {
+	body := []byte(`{
+		"id":"c1","model":"deepseek-v4-flash",
+		"choices":[{"index":0,"message":{
+			"role":"assistant",
+			"content":"It is SF",
+			"reasoning_content":"Let me think about the weather"
+		},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) != 2 {
+		t.Fatalf("content len=%d (blocks=%+v)", len(resp.Content), resp.Content)
+	}
+	tb := resp.Content[0]
+	if tb.Type != "thinking" || tb.Thinking != "Let me think about the weather" || tb.Signature != "c1" {
+		t.Fatalf("thinking block=%+v", tb)
+	}
+	if resp.Content[1].Type != "text" || resp.Content[1].Text != "It is SF" {
+		t.Fatalf("text block=%+v", resp.Content[1])
+	}
+}
+
+// TestDecodeResponse_NoReasoning verifies responses without reasoning_content
+// produce no thinking block (regression guard).
+func TestDecodeResponse_NoReasoning(t *testing.T) {
+	body := []byte(`{
+		"id":"c1","model":"gpt-4o",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
+		t.Fatalf("content=%+v", resp.Content)
+	}
+}
+
+// TestDecodeResponse_FullUsage verifies the full token breakdown from a
+// DeepSeek-style response: input/output plus prompt cache hits and reasoning
+// tokens.
+func TestDecodeResponse_FullUsage(t *testing.T) {
+	body := []byte(`{
+		"id":"c1","model":"deepseek-v4-flash",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"Hi","reasoning_content":"Hmm"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":437,"completion_tokens":82,"total_tokens":519,
+			"prompt_tokens_details":{"cached_tokens":384},
+			"completion_tokens_details":{"reasoning_tokens":26},
+			"prompt_cache_hit_tokens":384,"prompt_cache_miss_tokens":53}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := resp.Usage
+	if u.InputTokens != 437 || u.OutputTokens != 82 {
+		t.Fatalf("in/out=%d/%d", u.InputTokens, u.OutputTokens)
+	}
+	if u.CacheReadTokens != 384 {
+		t.Fatalf("cache_read=%d want 384", u.CacheReadTokens)
+	}
+	if u.ReasoningTokens != 26 {
+		t.Fatalf("reasoning=%d want 26", u.ReasoningTokens)
+	}
+}
+
+// TestDecodeResponse_CacheHitTopLevel covers DeepSeek's top-level
+// prompt_cache_hit_tokens fallback (no prompt_tokens_details).
+func TestDecodeResponse_CacheHitTopLevel(t *testing.T) {
+	body := []byte(`{
+		"id":"c1","model":"deepseek-v4-flash",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,
+			"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.CacheReadTokens != 60 {
+		t.Fatalf("cache_read=%d want 60", resp.Usage.CacheReadTokens)
+	}
+	if resp.Usage.ReasoningTokens != 0 {
+		t.Fatalf("reasoning=%d want 0", resp.Usage.ReasoningTokens)
+	}
+}

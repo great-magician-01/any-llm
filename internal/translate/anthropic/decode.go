@@ -184,8 +184,10 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 		Model:      rr.Model,
 		StopReason: mapStopReasonFromAnthropic(rr.StopReason),
 		Usage: translate.Usage{
-			InputTokens:  rr.Usage.InputTokens,
-			OutputTokens: rr.Usage.OutputTokens,
+			InputTokens:         rr.Usage.InputTokens,
+			OutputTokens:        rr.Usage.OutputTokens,
+			CacheReadTokens:     rr.Usage.CacheReadInputTokens,
+			CacheCreationTokens: rr.Usage.CacheCreationInputTokens,
 		},
 	}
 	blocks, err := decodeBlocks(arrayToRaw(rr.Content))

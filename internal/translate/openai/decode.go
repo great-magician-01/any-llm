@@ -190,6 +190,14 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 	}
 	if len(rr.Choices) > 0 {
 		msg := rr.Choices[0].Message
+		if msg.ReasoningContent != "" {
+			// DeepSeek reasoning models put the thinking here; expose it as an
+			// Anthropic thinking block. The signature is synthesized from the
+			// message id, mirroring DeepSeek's own Anthropic responses.
+			resp.Content = append(resp.Content, translate.ContentBlock{
+				Type: "thinking", Thinking: msg.ReasoningContent, Signature: rr.ID,
+			})
+		}
 		if msg.Content != "" {
 			resp.Content = append(resp.Content, translate.ContentBlock{Type: "text", Text: msg.Content})
 		}
@@ -207,6 +215,16 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 	if rr.Usage != nil {
 		resp.Usage.InputTokens = rr.Usage.PromptTokens
 		resp.Usage.OutputTokens = rr.Usage.CompletionTokens
+		if rr.Usage.PromptTokensDetails != nil {
+			resp.Usage.CacheReadTokens = rr.Usage.PromptTokensDetails.CachedTokens
+		}
+		if resp.Usage.CacheReadTokens == 0 {
+			// DeepSeek also exposes the prompt cache hit as a top-level field.
+			resp.Usage.CacheReadTokens = rr.Usage.PromptCacheHitTokens
+		}
+		if rr.Usage.CompletionTokensDetails != nil {
+			resp.Usage.ReasoningTokens = rr.Usage.CompletionTokensDetails.ReasoningTokens
+		}
 	}
 	return resp, nil
 }

@@ -30,6 +30,8 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 		if msg.Usage != nil {
 			evt.InputTokens = msg.Usage.InputTokens
 			evt.OutputTokens = msg.Usage.OutputTokens
+			evt.CacheReadTokens = msg.Usage.CacheReadInputTokens
+			evt.CacheCreationTokens = msg.Usage.CacheCreationInputTokens
 		}
 		evt.RawMessage = raw.Message
 		return evt, nil
@@ -73,6 +75,8 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 			var u rawUsage
 			_ = json.Unmarshal(raw.Usage, &u)
 			evt.OutputTokens = u.OutputTokens
+			evt.CacheReadTokens = u.CacheReadInputTokens
+			evt.CacheCreationTokens = u.CacheCreationInputTokens
 			evt.RawUsage = raw.Usage
 		}
 		return evt, nil
@@ -98,8 +102,10 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 				"stop_reason":   nil,
 				"stop_sequence": nil,
 				"usage": map[string]any{
-					"input_tokens":  evt.InputTokens,
-					"output_tokens": evt.OutputTokens,
+					"input_tokens":                evt.InputTokens,
+					"output_tokens":               evt.OutputTokens,
+					"cache_creation_input_tokens": evt.CacheCreationTokens,
+					"cache_read_input_tokens":     evt.CacheReadTokens,
 				},
 			}
 			payload["message"] = msg
@@ -148,10 +154,17 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 		payload["delta"] = d
 		if len(evt.RawUsage) > 0 {
 			payload["usage"] = json.RawMessage(evt.RawUsage)
-		} else if evt.OutputTokens > 0 || evt.InputTokens > 0 {
+		} else if evt.OutputTokens > 0 || evt.InputTokens > 0 ||
+			evt.CacheReadTokens > 0 || evt.CacheCreationTokens > 0 {
 			usage := map[string]any{"output_tokens": evt.OutputTokens}
 			if evt.InputTokens > 0 {
 				usage["input_tokens"] = evt.InputTokens
+			}
+			if evt.CacheReadTokens > 0 {
+				usage["cache_read_input_tokens"] = evt.CacheReadTokens
+			}
+			if evt.CacheCreationTokens > 0 {
+				usage["cache_creation_input_tokens"] = evt.CacheCreationTokens
 			}
 			payload["usage"] = usage
 		}
@@ -180,6 +193,11 @@ func blockToRaw(b translate.ContentBlock) map[string]any {
 	case "redacted_thinking":
 		return map[string]any{"type": "redacted_thinking", "data": b.Data}
 	case "tool_use":
+		if b.ToolUse == nil {
+			// Synthesized block (upstream omitted content_block_start): only
+			// the type is known. Emit a minimal block instead of panicking.
+			return map[string]any{"type": "tool_use"}
+		}
 		return map[string]any{"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input)}
 	}
 	return map[string]any{"type": b.Type}

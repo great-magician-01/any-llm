@@ -197,7 +197,12 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 			}
 			for _, ev := range events {
 				if ev.Type == "message_delta" {
-					u := translate.Usage{InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens}
+					u := translate.Usage{
+						InputTokens:     ev.InputTokens,
+						OutputTokens:    ev.OutputTokens,
+						CacheReadTokens: ev.CacheReadTokens,
+						ReasoningTokens: ev.ReasoningTokens,
+					}
 					result.setUsage(u)
 				}
 				select {
@@ -217,15 +222,31 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				continue
 			}
 			if ev.Type == "message_start" {
-				result.setUsage(translate.Usage{InputTokens: ev.InputTokens})
+				result.setUsage(translate.Usage{
+					InputTokens:         ev.InputTokens,
+					CacheReadTokens:     ev.CacheReadTokens,
+					CacheCreationTokens: ev.CacheCreationTokens,
+				})
 			} else if ev.Type == "message_delta" {
 				prev := result.Usage()
-				result.setUsage(translate.Usage{InputTokens: prev.InputTokens, OutputTokens: ev.OutputTokens})
+				result.setUsage(translate.Usage{
+					InputTokens:         prev.InputTokens,
+					OutputTokens:        ev.OutputTokens,
+					CacheReadTokens:     ev.CacheReadTokens,
+					CacheCreationTokens: ev.CacheCreationTokens,
+					ReasoningTokens:     ev.ReasoningTokens,
+				})
 				// Anthropic message_delta carries only output_tokens; input_tokens
 				// arrived in message_start. Propagate them onto the event so
 				// cross-format encoders (e.g. OpenAI usage chunk) see both values.
 				if ev.InputTokens == 0 {
 					ev.InputTokens = prev.InputTokens
+				}
+				if ev.CacheReadTokens == 0 {
+					ev.CacheReadTokens = prev.CacheReadTokens
+				}
+				if ev.CacheCreationTokens == 0 {
+					ev.CacheCreationTokens = prev.CacheCreationTokens
 				}
 			}
 			select {

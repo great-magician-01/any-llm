@@ -60,15 +60,28 @@ type rawChoice struct {
 }
 
 type rawRespMessage struct {
-	Role      string        `json:"role"`
-	Content   string        `json:"content,omitempty"`
-	ToolCalls []rawToolCall `json:"tool_calls,omitempty"`
+	Role             string        `json:"role"`
+	Content          string        `json:"content,omitempty"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"`
+	ToolCalls        []rawToolCall `json:"tool_calls,omitempty"`
+}
+
+type rawPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type rawCompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 type rawUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens             int                        `json:"prompt_tokens"`
+	CompletionTokens         int                        `json:"completion_tokens"`
+	TotalTokens              int                        `json:"total_tokens"`
+	PromptTokensDetails      *rawPromptTokensDetails    `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails  *rawCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheHitTokens     int                        `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens    int                        `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // Stream chunk
@@ -86,7 +99,8 @@ type rawChunkChoice struct {
 }
 
 type rawDelta struct {
-	Role      string        `json:"role,omitempty"`
-	Content   string        `json:"content,omitempty"`
-	ToolCalls []rawToolCall `json:"tool_calls,omitempty"`
+	Role             string        `json:"role,omitempty"`
+	Content          string        `json:"content,omitempty"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"`
+	ToolCalls        []rawToolCall `json:"tool_calls,omitempty"`
 }
