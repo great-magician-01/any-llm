@@ -206,6 +206,113 @@ func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
 	}
 }
 
+// 有状态两轮工具循环：第一轮 assistant 返回 function_call，
+// 第二轮 previous_response_id 续接 + function_call_output，
+// 上游必须收到包含完整历史的请求。
+func TestResponsesStatefulToolLoop(t *testing.T) {
+	var upstreamCalls []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		upstreamCalls = append(upstreamCalls, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(upstreamCalls) == 1 {
+			// 第一轮：只回工具调用
+			fmt.Fprint(w, `{"id":"c1","model":"m","choices":[{"index":0,"message":{"role":"assistant",
+				"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},
+				"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+		} else {
+			fmt.Fprint(w, `{"id":"c2","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}`)
+		}
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.AddModel(d, uid, "m", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+	gw := g
+
+	// 第一轮：纯文本输入，store 续接
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock/m","input":[{"role":"user","content":[{"type":"input_text","text":"weather in SF?"}]}],"store":true}`))
+	req1.Header.Set("Authorization", "Bearer "+k.Key)
+	gw.ServeHTTP(rec1, req1)
+	if rec1.Code != 200 {
+		t.Fatalf("turn1 status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var resp1 map[string]any
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	id1, _ := resp1["id"].(string)
+	if !strings.HasPrefix(id1, "resp_") {
+		t.Fatalf("turn1 id=%q", id1)
+	}
+	output, _ := resp1["output"].([]any)
+	fc := output[0].(map[string]any)
+	if fc["type"] != "function_call" || fc["call_id"] != "call_1" {
+		t.Fatalf("turn1 output=%v", output)
+	}
+
+	// 第二轮：previous_response_id + function_call_output（只发新内容）
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(fmt.Sprintf(
+		`{"model":"mock/m","previous_response_id":"%s","input":[{"type":"function_call_output","call_id":"call_1","output":"sunny"}]}`, id1)))
+	req2.Header.Set("Authorization", "Bearer "+k.Key)
+	gw.ServeHTTP(rec2, req2)
+	if rec2.Code != 200 {
+		t.Fatalf("turn2 status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+
+	// 上游第二轮请求必须包含完整历史：user 问题 + assistant 工具调用 + user 工具结果
+	if len(upstreamCalls) != 2 {
+		t.Fatalf("upstream calls=%d", len(upstreamCalls))
+	}
+	msgs, _ := upstreamCalls[1]["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("turn2 upstream messages len=%d: %v", len(msgs), msgs)
+	}
+	m0 := msgs[0].(map[string]any)
+	if m0["role"] != "user" {
+		t.Fatalf("m0=%v", m0)
+	}
+	m1 := msgs[1].(map[string]any)
+	tcs, _ := m1["tool_calls"].([]any)
+	if m1["role"] != "assistant" || len(tcs) != 1 {
+		t.Fatalf("m1=%v", m1)
+	}
+	m2 := msgs[2].(map[string]any)
+	if m2["role"] != "tool" || m2["tool_call_id"] != "call_1" {
+		t.Fatalf("m2=%v", m2)
+	}
+}
+
+// 未知 previous_response_id -> 400 invalid_previous_response_id
+func TestResponsesUnknownPreviousID(t *testing.T) {
+	g, d := setupGateway(t)
+	_, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: "http://127.0.0.1:1", APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock/m","previous_response_id":"resp_nope","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_previous_response_id") {
+		t.Fatalf("error type: %s", rec.Body.String())
+	}
+}
+
 // TestCompletion_UpstreamError_AnthropicOut verifies that when the client uses
 // the Anthropic format and the upstream returns an error, the gateway extracts
 // the human-readable message (rather than nesting the raw JSON body) and maps

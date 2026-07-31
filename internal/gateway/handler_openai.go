@@ -33,8 +33,35 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	}
 	irReq.Model = realModel
 
+	var sess *sessionCtx
+	if inFormat == "responses" {
+		sess = &sessionCtx{respID: responses.NewID(), input: irReq.Messages}
+		if pid, _ := irReq.Extra["previous_response_id"].(string); pid != "" {
+			hist, ok, err := g.sessions.Get(pid)
+			if err != nil {
+				WriteError(w, 500, inFormat, "session lookup failed: "+err.Error(), "internal_error")
+				g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
+				return
+			}
+			if !ok {
+				WriteError(w, 400, inFormat, "unknown previous_response_id: "+pid, "invalid_previous_response_id")
+				g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
+				return
+			}
+			sess.prev = hist
+			// 注意拷贝：避免 append 复写 hist 底层数组
+			merged := make([]translate.Message, 0, len(hist)+len(irReq.Messages))
+			merged = append(merged, hist...)
+			merged = append(merged, irReq.Messages...)
+			irReq.Messages = merged
+		}
+		// 会话字段不转发给上游
+		delete(irReq.Extra, "previous_response_id")
+		delete(irReq.Extra, "store")
+	}
+
 	if irReq.Stream {
-		g.handleStream(w, r, inFormat, key, u, realModel, irReq)
+		g.handleStream(w, r, inFormat, key, u, realModel, irReq, sess)
 		return
 	}
 
@@ -49,7 +76,10 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		return
 	}
 
-	g.handleNonStream(w, inFormat, result, key, u, realModel, irReq.Stream)
+	if sess != nil {
+		result.Response.ID = sess.respID
+	}
+	g.handleNonStream(w, inFormat, result, key, u, realModel, irReq.Stream, sess)
 }
 
 func bodyHasStream(body []byte) bool {
@@ -60,7 +90,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -79,6 +109,9 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(out)
+	if sess != nil {
+		g.saveSession(sess, result.Response.Content)
+	}
 	usage := result.Usage()
 	g.recordUsage(key, u, realModel, inFormat, usage, false, "ok")
 	logger.Info("completion done",
@@ -91,7 +124,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	)
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, u *model.Upstream, realModel string, irReq *translate.Request) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, u *model.Upstream, realModel string, irReq *translate.Request, sess *sessionCtx) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
@@ -113,7 +146,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	case "anthropic":
 		encoder = nil
 	case "responses":
-		encoder = responses.NewStreamEncoder(realModel, responses.NewID())
+		encoder = responses.NewStreamEncoder(realModel, sess.respID)
 	default:
 		encoder = openai.NewStreamEncoder(realModel)
 	}
@@ -307,14 +340,21 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 	}
 done:
-	// 让 responses 编码器补发 response.completed（上游若没发 message_stop）
+	// 让 responses 编码器补发 response.completed（上游若没发 message_stop），
+	// 成功后把累积输出写入会话存储。
 	if !clientGonePost {
-		if enc, ok := encoder.(interface{ Flush() [][]byte }); ok {
+		if enc, ok := encoder.(interface {
+			Flush() [][]byte
+			Content() []translate.ContentBlock
+		}); ok {
 			if frames := enc.Flush(); len(frames) > 0 {
 				for _, f := range frames {
 					w.Write(f)
 				}
 				flusher.Flush()
+			}
+			if sess != nil {
+				g.saveSession(sess, enc.Content())
 			}
 		}
 	}
@@ -380,4 +420,22 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 			logger.Error("record usage sync write failed", "key_id", rec.ExtKeyID, "upstream", rec.UpstreamName, "model", rec.Model, "total_tokens", rec.TotalTokens, "err", err)
 		}
 	}
+}
+
+// saveSession 累积会话：旧历史 + 本轮输入 + 本轮模型输出。
+// 只在调用成功后调用；失败时不存，客户端带同一 previous_response_id 重试不会重复。
+func (g *Gateway) saveSession(sess *sessionCtx, content []translate.ContentBlock) {
+	msgs := make([]translate.Message, 0, len(sess.prev)+len(sess.input)+1)
+	msgs = append(msgs, sess.prev...)
+	msgs = append(msgs, sess.input...)
+	msgs = append(msgs, translate.Message{Role: "assistant", Content: content})
+	if err := g.sessions.Put(sess.respID, msgs); err != nil {
+		logger.Warn("session save failed", "id", sess.respID, "err", err)
+	}
+}
+
+type sessionCtx struct {
+	respID string               // 返回给客户端的响应 id，也是会话 key
+	prev   []translate.Message  // previous_response_id 命中的旧历史
+	input  []translate.Message  // 本轮请求的 input（未合并前的）
 }
