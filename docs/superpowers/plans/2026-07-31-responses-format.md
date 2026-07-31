@@ -1800,6 +1800,10 @@ func TestStreamEncode_SynthesizeMissingStart(t *testing.T) {
 	if !strings.Contains(s, `"type":"response.output_item.added"`) || !strings.Contains(s, `"type":"response.output_text.delta"`) {
 		t.Fatalf("missing synthesized start: %s", s)
 	}
+	// 合成的 added 帧必须先于触发它的 delta 帧（否则接收方解码器会丢弃首个 delta）
+	if strings.Index(s, `"type":"response.output_item.added"`) > strings.Index(s, `"type":"response.output_text.delta"`) {
+		t.Fatalf("output_item.added must precede output_text.delta: %s", s)
+	}
 }
 
 // thinking 块 -> reasoning item（summary 流）
@@ -1932,7 +1936,6 @@ type StreamEncoder struct {
 	thinkBuf   map[int]string
 	toolMeta   map[int]*translate.ToolUse // IR block index -> call_id/name
 	items      map[int]map[string]any     // output_index -> 最终 item（completed 用）
-	pendingFrames [][]byte                // ensureItemStarted 合成的 added 事件暂存区
 }
 
 func NewStreamEncoder(model, id string) *StreamEncoder {
@@ -2027,23 +2030,28 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		idx := evt.Index
 		switch evt.Delta.Type {
 		case "text_delta":
-			e.ensureItemStarted(idx, "text")
+			// ensureItemStarted 返回合成的 added/part 帧，必须排在 delta 之前
+			// （否则接收方解码器会因 item 未打开而丢弃本 delta）。
+			frames = e.ensureItemStarted(idx, "text")
 			e.textBuf[idx] += evt.Delta.Text
-			return [][]byte{sseFrame("response.output_text.delta", map[string]any{
+			frames = append(frames, sseFrame("response.output_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "content_index": 0, "delta": evt.Delta.Text,
-			})}, nil
+			}))
+			return frames, nil
 		case "input_json_delta":
-			e.ensureItemStarted(idx, "tool_use")
+			frames = e.ensureItemStarted(idx, "tool_use")
 			e.toolArgs[idx] += evt.Delta.PartialJSON
-			return [][]byte{sseFrame("response.function_call_arguments.delta", map[string]any{
+			frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.PartialJSON,
-			})}, nil
+			}))
+			return frames, nil
 		case "thinking_delta":
-			e.ensureItemStarted(idx, "thinking")
+			frames = e.ensureItemStarted(idx, "thinking")
 			e.thinkBuf[idx] += evt.Delta.Thinking
-			return [][]byte{sseFrame("response.reasoning_summary_text.delta", map[string]any{
+			frames = append(frames, sseFrame("response.reasoning_summary_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.Thinking,
-			})}, nil
+			}))
+			return frames, nil
 		case "signature_delta":
 			// Responses 无签名概念
 			return nil, nil
@@ -2253,19 +2261,9 @@ func sseFrame(evType string, payload map[string]any) []byte {
 }
 ```
 
-**重要修正**：`ensureItemStarted` 里不能递归调 `Encode` 并把输出拼到返回切片（`Encode` 的返回值已经组装好）。改为：`StreamEncoder` 增加字段 `pendingFrames [][]byte`，`Encode` 在每个分支 return 前把 `pendingFrames` 清空并前置。在 `Encode` 开头：
+**重要修正**：`ensureItemStarted` 里不能递归调 `Encode`，且合成帧**必须与触发它的 delta 同一次调用返回**（否则接收方解码器会因 item 未打开而丢弃该 delta）。改为：`ensureItemStarted` 直接返回合成帧（`[][]byte`），delta 分支把返回帧前置到本帧输出前。不需要 `pendingFrames` 字段，也不需要在 `Encode` 入口做前置。
 
-```go
-	// 合成帧前置：ensureItemStarted 产生的 added 事件必须先于 delta 输出
-	if len(e.pendingFrames) > 0 {
-		frames = append(frames, e.pendingFrames...)
-		e.pendingFrames = nil
-	}
-```
-
-放在每个 return 之前的统一出口不可行（switch 内多个 return），所以在 `Encode` 入口对每个 case 处理前处理。具体做法：把上面的前置逻辑放在 `Encode` 函数体最开头（`frames` 初始化之后、`switch` 之前），并让 `ensureItemStarted` 只往 `pendingFrames` 里塞帧。这样 delta 分支返回时 pendingFrames 已在 `frames` 里（在 entry 处被前置）。注意 entry 处 `e.started` 合成的 created 帧也走 `frames`，顺序 OK。
-
-修正后的结构（替换上面 Encode 的开头）：
+修正后的结构（替换上面 Encode 的 delta 分支与 ensureItemStarted）：
 
 ```go
 func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
@@ -2274,10 +2272,6 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		e.started = true
 		frames = append(frames, e.createdFrames()...)
 	}
-	if len(e.pendingFrames) > 0 {
-		frames = append(frames, e.pendingFrames...)
-		e.pendingFrames = nil
-	}
 	switch evt.Type {
 	...
 ```
@@ -2285,16 +2279,16 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 `ensureItemStarted` 保持往 `e.pendingFrames` 塞帧（它内部调 `e.Encode(content_block_start)` 会递归——递归调用里 pendingFrames 已被 entry 清空，但递归返回的帧需要塞回 pendingFrames；为避免递归混乱，**不递归**，直接内联构造帧）：
 
 ```go
-func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
+func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
 	if _, ok := e.blockKind[idx]; ok {
-		return
+		return nil
 	}
 	e.blockKind[idx] = kind
 	switch kind {
 	case "text":
 		itemID := "msg_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames,
+		return [][]byte{
 			sseFrame("response.output_item.added", map[string]any{
 				"output_index": idx,
 				"item": map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
@@ -2303,26 +2297,29 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
 				"item_id": itemID, "output_index": idx, "content_index": 0,
 				"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 			}),
-		)
+		}
 	case "thinking":
 		// 注意：item id 前缀必须与 kind 匹配（rs_/fc_/msg_），后续 delta 帧
 		// 用 e.itemIDs[idx] 引用同一个 id。
 		itemID := "rs_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
+		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
 			"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
-		}))
+		})}
 	case "tool_use":
 		itemID := "fc_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
+		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
 			"item":         map[string]any{"id": itemID, "type": "function_call", "call_id": "", "name": "", "arguments": ""},
-		}))
+		})}
 	}
+	return nil
 }
 ```
+
+（同时：content_block_start 的 tool_use 分支要加 `evt.Block.ToolUse` 的 nil 守卫，防止上游发来无 ToolUse 的 tool_use 块时 panic。）
 
 - [ ] **Step 4: 跑测试确认通过**
 
