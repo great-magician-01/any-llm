@@ -39,9 +39,9 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
-	if req.Format != "openai" && req.Format != "anthropic" {
+	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
 		logger.Warn("admin: create upstream invalid format", "format", req.Format)
-		writeJSON(w, 400, map[string]any{"error": "format must be openai or anthropic"})
+		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
 	}
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {

@@ -318,6 +318,7 @@ onMounted(load)
             <n-radio-group v-model:value="form.format">
               <n-radio value="openai">OpenAI</n-radio>
               <n-radio value="anthropic">Anthropic</n-radio>
+              <n-radio value="responses">Responses</n-radio>
             </n-radio-group>
           </n-form-item>
           <n-form-item label="单日 token 上限">

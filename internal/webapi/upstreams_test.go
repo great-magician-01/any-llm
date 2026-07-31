@@ -184,3 +184,29 @@ func TestUpdateUpstream_NewKeyApplied(t *testing.T) {
 		t.Fatalf("stored key not updated: got=%q", u.APIKey)
 	}
 }
+
+// TestCreateUpstream_ResponsesFormat verifies the admin API accepts creating
+// an upstream in the OpenAI Responses API "responses" format.
+func TestCreateUpstream_ResponsesFormat(t *testing.T) {
+	a, _ := setupAPI(t)
+	body, _ := json.Marshal(map[string]any{"name": "r1", "base_url": "https://api.openai.com", "api_key": "sk-xxx", "format": "responses"})
+	req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateUpstream_InvalidFormat verifies the admin API rejects an unknown
+// upstream format with 400.
+func TestCreateUpstream_InvalidFormat(t *testing.T) {
+	a, _ := setupAPI(t)
+	body, _ := json.Marshal(map[string]any{"name": "r2", "base_url": "https://x", "api_key": "k", "format": "yaml"})
+	req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status=%d", w.Code)
+	}
+}
