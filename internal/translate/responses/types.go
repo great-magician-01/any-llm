@@ -45,6 +45,61 @@ var knownRequestKeys = map[string]bool{
 	"store": true, "previous_response_id": true, "text": true,
 }
 
+// Response (non-stream)
+type rawResponse struct {
+	ID                string                `json:"id"`
+	Object            string                `json:"object,omitempty"`
+	CreatedAt         int64                 `json:"created_at,omitempty"`
+	Status            string                `json:"status,omitempty"` // completed | incomplete | failed
+	Model             string                `json:"model,omitempty"`
+	Output            []rawOutputItem       `json:"output,omitempty"`
+	Usage             *rawUsage             `json:"usage,omitempty"`
+	IncompleteDetails *rawIncompleteDetails `json:"incomplete_details,omitempty"`
+}
+
+type rawIncompleteDetails struct {
+	Reason string `json:"reason"`
+}
+
+type rawOutputItem struct {
+	Type      string           `json:"type"` // message | function_call | reasoning | refusal
+	ID        string           `json:"id,omitempty"`
+	Status    string           `json:"status,omitempty"`
+	Role      string           `json:"role,omitempty"`
+	Content   []rawOutputPart  `json:"content,omitempty"`
+	CallID    string           `json:"call_id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Arguments string           `json:"arguments,omitempty"`
+	Summary   []rawSummaryPart `json:"summary,omitempty"`
+}
+
+type rawOutputPart struct {
+	Type        string `json:"type"` // output_text | output_refusal | ...
+	Text        string `json:"text,omitempty"`
+	Annotations []any  `json:"annotations,omitempty"`
+}
+
+type rawSummaryPart struct {
+	Type string `json:"type"` // summary_text
+	Text string `json:"text,omitempty"`
+}
+
+type rawUsage struct {
+	InputTokens         int                     `json:"input_tokens"`
+	OutputTokens        int                     `json:"output_tokens"`
+	TotalTokens         int                     `json:"total_tokens"`
+	InputTokensDetails  *rawInputTokensDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *rawOutputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+type rawInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type rawOutputTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
 func extractExtra(all map[string]any) map[string]any {
 	if len(all) == 0 {
 		return nil

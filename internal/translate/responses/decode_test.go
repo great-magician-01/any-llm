@@ -134,3 +134,71 @@ func TestDecodeRequest_ToolChoiceRequired(t *testing.T) {
 		t.Fatalf("tool_choice=%+v", req.ToolChoice)
 	}
 }
+
+func TestDecodeResponse_Full(t *testing.T) {
+	body := []byte(`{
+		"id": "resp_1", "object": "response", "created_at": 123, "status": "completed", "model": "gpt-4o",
+		"output": [
+			{"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
+			 "content": [{"type": "output_text", "text": "Hi", "annotations": []}]},
+			{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"SF\"}"},
+			{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "think it through"}], "content": []}
+		],
+		"usage": {"input_tokens": 437, "output_tokens": 82, "total_tokens": 519,
+			"input_tokens_details": {"cached_tokens": 384},
+			"output_tokens_details": {"reasoning_tokens": 26}}
+	}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "resp_1" || resp.Model != "gpt-4o" || resp.StopReason != "tool_calls" {
+		t.Fatalf("resp=%+v", resp)
+	}
+	if len(resp.Content) != 3 {
+		t.Fatalf("content len=%d", len(resp.Content))
+	}
+	if resp.Content[0].Type != "text" || resp.Content[0].Text != "Hi" {
+		t.Fatalf("content0=%+v", resp.Content[0])
+	}
+	tu := resp.Content[1]
+	if tu.Type != "tool_use" || tu.ToolUse.ID != "call_1" || tu.ToolUse.Name != "get_weather" ||
+		string(tu.ToolUse.Input) != `{"city":"SF"}` {
+		t.Fatalf("content1=%+v", tu)
+	}
+	th := resp.Content[2]
+	if th.Type != "thinking" || th.Thinking != "think it through" || th.Signature != "rs_1" {
+		t.Fatalf("content2=%+v", th)
+	}
+	u := resp.Usage
+	if u.InputTokens != 437 || u.OutputTokens != 82 || u.CacheReadTokens != 384 || u.ReasoningTokens != 26 {
+		t.Fatalf("usage=%+v", u)
+	}
+}
+
+func TestDecodeResponse_StatusIncomplete(t *testing.T) {
+	body := []byte(`{"id":"r","status":"incomplete","model":"m",
+		"incomplete_details":{"reason":"max_output_tokens"},
+		"output":[{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text","text":"part"}]}]}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StopReason != "max_tokens" {
+		t.Fatalf("stop=%q", resp.StopReason)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "part" {
+		t.Fatalf("content=%+v", resp.Content)
+	}
+}
+
+func TestDecodeResponse_EmptyOutput(t *testing.T) {
+	body := []byte(`{"id":"r","status":"completed","model":"m","output":[]}`)
+	resp, err := DecodeResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StopReason != "stop" || len(resp.Content) != 0 {
+		t.Fatalf("resp=%+v", resp)
+	}
+}

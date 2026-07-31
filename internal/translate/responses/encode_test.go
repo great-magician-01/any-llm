@@ -127,3 +127,103 @@ func TestEncodeRequest_ThinkingDropped(t *testing.T) {
 		t.Fatalf("thinking must be dropped: %s", body)
 	}
 }
+
+func TestEncodeResponse_Full(t *testing.T) {
+	resp := &translate.Response{
+		ID:         "resp_9",
+		Model:      "gpt-4o",
+		StopReason: "stop",
+		Content: []translate.ContentBlock{
+			{Type: "text", Text: "Hi"},
+			{Type: "thinking", Thinking: "think it through", Signature: "rs_1"},
+			{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)}},
+		},
+		Usage: translate.Usage{
+			InputTokens: 437, OutputTokens: 82,
+			CacheReadTokens: 384, ReasoningTokens: 26,
+		},
+	}
+	body, err := EncodeResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["id"] != "resp_9" || m["object"] != "response" || m["status"] != "completed" || m["model"] != "gpt-4o" {
+		t.Fatalf("resp=%v", m)
+	}
+	output, _ := m["output"].([]any)
+	if len(output) != 3 {
+		t.Fatalf("output len=%d: %v", len(output), output)
+	}
+	msg := output[0].(map[string]any)
+	if msg["type"] != "message" || msg["role"] != "assistant" {
+		t.Fatalf("output0=%v", msg)
+	}
+	content, _ := msg["content"].([]any)
+	part := content[0].(map[string]any)
+	if part["type"] != "output_text" || part["text"] != "Hi" {
+		t.Fatalf("part=%v", part)
+	}
+	rs := output[1].(map[string]any)
+	if rs["type"] != "reasoning" {
+		t.Fatalf("output1=%v", rs)
+	}
+	summary, _ := rs["summary"].([]any)
+	if summary[0].(map[string]any)["text"] != "think it through" {
+		t.Fatalf("summary=%v", summary)
+	}
+	fc := output[2].(map[string]any)
+	if fc["type"] != "function_call" || fc["call_id"] != "call_1" || fc["name"] != "get_weather" ||
+		fc["arguments"] != `{"city":"SF"}` {
+		t.Fatalf("output2=%v", fc)
+	}
+	usage, _ := m["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(437) || usage["output_tokens"] != float64(82) {
+		t.Fatalf("usage=%v", usage)
+	}
+	det, _ := usage["input_tokens_details"].(map[string]any)
+	if det["cached_tokens"] != float64(384) {
+		t.Fatalf("details=%v", det)
+	}
+	od, _ := usage["output_tokens_details"].(map[string]any)
+	if od["reasoning_tokens"] != float64(26) {
+		t.Fatalf("od=%v", od)
+	}
+}
+
+func TestEncodeResponse_MaxTokens(t *testing.T) {
+	resp := &translate.Response{ID: "r", Model: "m", StopReason: "max_tokens",
+		Content: []translate.ContentBlock{{Type: "text", Text: "part"}}}
+	body, _ := EncodeResponse(resp)
+	var m map[string]any
+	_ = json.Unmarshal(body, &m)
+	if m["status"] != "incomplete" {
+		t.Fatalf("status=%v", m["status"])
+	}
+	det, _ := m["incomplete_details"].(map[string]any)
+	if det["reason"] != "max_output_tokens" {
+		t.Fatalf("incomplete_details=%v", m["incomplete_details"])
+	}
+}
+
+func TestEncodeResponse_GeneratesID(t *testing.T) {
+	resp := &translate.Response{Model: "m", StopReason: "stop"}
+	body, _ := EncodeResponse(resp)
+	var m map[string]any
+	_ = json.Unmarshal(body, &m)
+	id, _ := m["id"].(string)
+	if !strings.HasPrefix(id, "resp_") || len(id) <= 5 {
+		t.Fatalf("id=%q", id)
+	}
+}
+
+func TestEncodeResponse_NoUsageWhenZero(t *testing.T) {
+	resp := &translate.Response{ID: "r", Model: "m", StopReason: "stop"}
+	body, _ := EncodeResponse(resp)
+	if strings.Contains(string(body), "usage") {
+		t.Fatalf("usage must be omitted: %s", body)
+	}
+}

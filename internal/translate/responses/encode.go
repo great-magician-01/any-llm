@@ -1,9 +1,12 @@
 package responses
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
 )
@@ -146,4 +149,85 @@ func blocksToText(blocks []translate.ContentBlock) string {
 		}
 	}
 	return s
+}
+
+// NewID 生成客户端可见的响应 id，也是会话存储的 key。
+func NewID() string {
+	return "resp_" + randHex(16)
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func EncodeResponse(resp *translate.Response) ([]byte, error) {
+	if resp.ID == "" {
+		resp.ID = NewID()
+	}
+	out := make([]map[string]any, 0, len(resp.Content))
+	for _, b := range resp.Content {
+		switch b.Type {
+		case "text":
+			// 连续 text 块合并进同一个 message item
+			if len(out) > 0 {
+				if last, ok := out[len(out)-1]["type"].(string); ok && last == "message" {
+					content, _ := out[len(out)-1]["content"].([]any)
+					out[len(out)-1]["content"] = append(content, map[string]any{
+						"type": "output_text", "text": b.Text, "annotations": []any{},
+					})
+					continue
+				}
+			}
+			out = append(out, map[string]any{
+				"type": "message", "id": "msg_" + randHex(8), "status": "completed", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": b.Text, "annotations": []any{}}},
+			})
+		case "thinking":
+			out = append(out, map[string]any{
+				"type": "reasoning", "id": "rs_" + randHex(8),
+				"summary": []any{map[string]any{"type": "summary_text", "text": b.Thinking}},
+				"content": []any{},
+			})
+		case "tool_use":
+			out = append(out, map[string]any{
+				"type": "function_call", "id": "fc_" + randHex(8),
+				"call_id": b.ToolUse.ID, "name": b.ToolUse.Name,
+				"arguments": string(b.ToolUse.Input),
+			})
+		}
+		// redacted_thinking / image 无法在 Responses 表示，跳过
+	}
+	status := "completed"
+	switch resp.StopReason {
+	case "max_tokens":
+		status = "incomplete"
+	}
+	obj := map[string]any{
+		"id": resp.ID, "object": "response", "created_at": time.Now().Unix(),
+		"status": status, "model": resp.Model, "output": out,
+	}
+	if status == "incomplete" {
+		obj["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	}
+	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+		usage := map[string]any{
+			"input_tokens":  resp.Usage.InputTokens,
+			"output_tokens": resp.Usage.OutputTokens,
+			"total_tokens":  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		}
+		if resp.Usage.CacheReadTokens > 0 {
+			usage["input_tokens_details"] = map[string]any{"cached_tokens": resp.Usage.CacheReadTokens}
+		}
+		if resp.Usage.ReasoningTokens > 0 {
+			usage["output_tokens_details"] = map[string]any{"reasoning_tokens": resp.Usage.ReasoningTokens}
+		}
+		obj["usage"] = usage
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("responses encode response: %w", err)
+	}
+	return b, nil
 }

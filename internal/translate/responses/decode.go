@@ -165,3 +165,74 @@ func mergeExtra(existing, more map[string]any) map[string]any {
 	}
 	return existing
 }
+
+func DecodeResponse(body []byte) (*translate.Response, error) {
+	var rr rawResponse
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, fmt.Errorf("responses decode response: %w", err)
+	}
+	resp := &translate.Response{ID: rr.ID, Model: rr.Model}
+	hasToolCall := false
+	for _, item := range rr.Output {
+		switch item.Type {
+		case "message":
+			for _, part := range item.Content {
+				if part.Type == "output_text" {
+					resp.Content = append(resp.Content, translate.ContentBlock{Type: "text", Text: part.Text})
+				}
+				// output_refusal 等其他 part 类型跳过
+			}
+		case "function_call":
+			hasToolCall = true
+			resp.Content = append(resp.Content, translate.ContentBlock{
+				Type: "tool_use",
+				ToolUse: &translate.ToolUse{
+					ID:    item.CallID,
+					Name:  item.Name,
+					Input: json.RawMessage(item.Arguments),
+				},
+			})
+		case "reasoning":
+			var summary string
+			for _, sp := range item.Summary {
+				if sp.Type == "summary_text" {
+					summary += sp.Text
+				}
+			}
+			if summary != "" {
+				resp.Content = append(resp.Content, translate.ContentBlock{
+					Type: "thinking", Thinking: summary, Signature: item.ID,
+				})
+			}
+		}
+		// 未知 item 类型跳过
+	}
+	resp.StopReason = mapStopFromStatus(rr.Status, hasToolCall)
+	if rr.Usage != nil {
+		resp.Usage.InputTokens = rr.Usage.InputTokens
+		resp.Usage.OutputTokens = rr.Usage.OutputTokens
+		if rr.Usage.InputTokensDetails != nil {
+			resp.Usage.CacheReadTokens = rr.Usage.InputTokensDetails.CachedTokens
+		}
+		if rr.Usage.OutputTokensDetails != nil {
+			resp.Usage.ReasoningTokens = rr.Usage.OutputTokensDetails.ReasoningTokens
+		}
+	}
+	return resp, nil
+}
+
+// mapStopFromStatus 把 Responses status 映射到 IR StopReason 词表。
+// completed 且含 function_call 时推 tool_calls（与 chat completions 一致）。
+func mapStopFromStatus(status string, hasToolCall bool) string {
+	switch status {
+	case "incomplete":
+		return "max_tokens"
+	case "completed":
+		if hasToolCall {
+			return "tool_calls"
+		}
+		return "stop"
+	default: // failed 等：错误由 HTTP/事件层报告
+		return "stop"
+	}
+}
