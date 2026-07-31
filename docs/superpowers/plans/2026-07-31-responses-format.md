@@ -3571,10 +3571,26 @@ done:
 				}
 				flusher.Flush()
 			}
-			if sess != nil {
+			// 只在流成功结束时保存会话：流失败（StreamErr != nil）时 respID
+			// 已经通过 response.created 发给客户端，保存会令重试重复 input
+			if sess != nil && result.StreamErr() == nil {
 				g.saveSession(sess, enc.Content())
 			}
 		}
+	}
+```
+
+另外 `handleStream` 里 `result.Response != nil` 的早退分支（上游对流式请求回了非流式 JSON，罕见但存在）也要保存会话——否则续接会 400：
+
+```go
+	if result.Response != nil {
+		...
+		usage := result.Usage()
+		g.recordUsage(key, u, realModel, inFormat, usage, true, "ok")
+		if sess != nil {
+			g.saveSession(sess, result.Response.Content)
+		}
+		return
 	}
 ```
 
