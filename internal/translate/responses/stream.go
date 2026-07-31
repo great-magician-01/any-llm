@@ -143,7 +143,7 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			})
 		}
 		evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: st.index})
-		delete(d.openItems, ev.ItemID)
+		delete(d.openItems, id)
 		return evs, nil
 
 	case "response.content_part.added", "response.content_part.done",
