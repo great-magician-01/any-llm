@@ -1557,7 +1557,13 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 		return nil, nil
 
 	case "response.output_item.done":
-		st := d.openItems[ev.ItemID]
+		// 真实 OpenAI SSE 中此事件不带顶层 item_id，id 在 item 对象里
+		// （output_item.added/done 都如此；只有 delta 类事件带顶层 item_id）。
+		id := ev.ItemID
+		if id == "" && ev.Item != nil {
+			id = ev.Item.ID
+		}
+		st := d.openItems[id]
 		if st == nil {
 			return nil, nil
 		}
@@ -1569,7 +1575,7 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			})
 		}
 		evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: st.index})
-		delete(d.openItems, ev.ItemID)
+		delete(d.openItems, id)
 		return evs, nil
 
 	case "response.content_part.added", "response.content_part.done",
