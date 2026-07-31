@@ -2889,6 +2889,29 @@ done:
 
 import 增加 `"github.com/great-magician-01/any-llm/internal/translate/responses"`。
 
+`handleStream` 的 callErr 分支（stream header 已发后的上游错误帧）也要加 responses 分支——responses 流式客户端期望 `event: error` + data 里带 `type`（与 StreamDecoder/OpenAI SDK 的解析一致），不能复用 chat-completions 的无 event 错误帧：
+
+```go
+		if inFormat == "anthropic" {
+			payload, _ := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": errType, "message": msg},
+			})
+			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
+		} else if inFormat == "responses" {
+			payload, _ := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": errType, "message": msg},
+			})
+			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
+		} else {
+			payload, _ := json.Marshal(map[string]any{
+				"error": map[string]any{"message": msg, "type": errType},
+			})
+			w.Write([]byte("data: " + string(payload) + "\n\n"))
+		}
+```
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/gateway/ -run 'TestResponses' -v` → PASS；再 `go test ./internal/gateway/` → 全绿

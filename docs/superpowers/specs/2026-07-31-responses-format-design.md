@@ -87,7 +87,7 @@
 | `internal/gateway/session.go`（新） | 会话存储，见第五节 |
 | `recordUsage` | 零改动（in_format/up_format 只是字符串流转） |
 
-流式细节：keepalive ping（`: kp\n`）与流中错误帧（`data: {"error":{...}}`）走现有 `inFormat != "anthropic"` default 分支；anthropic 专属 content_block_start 合成块有 `if inFormat == "anthropic"` 守卫，responses 不误入。
+流式细节：keepalive ping（`: kp\n`）走现有 `inFormat != "anthropic"` default 分支；流中错误帧 responses 走独立分支（`event: error` + data 带 `type`，与 OpenAI SDK/StreamDecoder 解析一致），anthropic 与 openai 保持原形状；anthropic 专属 content_block_start 合成块有 `if inFormat == "anthropic"` 守卫，responses 不误入。
 
 ### 第三节：DB 迁移与后台（用户调整后的方案）
 
