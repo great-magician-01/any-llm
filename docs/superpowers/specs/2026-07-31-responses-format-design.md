@@ -98,13 +98,15 @@
   - **SQLite**：查 `sqlite_master` 中 `upstreams` 的建表 SQL，含 `CHECK(format IN` 才动手，备份→重建→还原流程整体在一个事务里：
     ```
     BEGIN;
-    ALTER TABLE upstreams RENAME TO upstreams_bak;   -- ① 备份（旧表完整保留）
-    CREATE TABLE upstreams (同列定义，去掉 CHECK);    -- ② 重建
-    INSERT INTO upstreams (显式列名…) SELECT 同列名… FROM upstreams_bak;  -- ③ 还原
-    DROP TABLE upstreams_bak;                        -- ④ 确认还原成功后才清理备份
+    PRAGMA legacy_alter_table=ON;                    -- ① 防止 RENAME 改写其他表的 REFERENCES
+    ALTER TABLE upstreams RENAME TO upstreams_bak;   -- ② 备份（旧表完整保留）
+    CREATE TABLE upstreams (同列定义，去掉 CHECK);    -- ③ 重建
+    INSERT INTO upstreams (显式列名…) SELECT 同列名… FROM upstreams_bak;  -- ④ 还原
+    DROP TABLE upstreams_bak;                        -- ⑤ 确认还原成功后才清理备份
+    PRAGMA legacy_alter_table=OFF;
     COMMIT;
     ```
-    列名显式列出，防列序漂移；任何一步失败回滚，旧表（备份）还在。
+    列名显式列出，防列序漂移；任何一步失败回滚，旧表（备份）还在。**实现时实测确认**：SQLite 3.25+（modernc v1.53.0）的 `ALTER TABLE RENAME` 改写其他表的 REFERENCES 子句由 `legacy_alter_table` 控制、与 foreign_keys 设置无关——必须临时 `legacy_alter_table=ON`，否则 `upstream_models` 的 REFERENCES 会被改成指向已删除的 `upstreams_bak`（迁移"成功"但产出坏库）。
   - **PG**：`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_format_check`（PG 对未命名 CHECK 的自动命名 `<table>_<column>_check`；新库无此约束时幂等跳过，无需重建）。
 - `internal/webapi/upstreams.go:42` 应用层校验改为 `openai | anthropic | responses`。
 - 未来再加格式零表结构改动。

@@ -2670,12 +2670,15 @@ func dropUpstreamFormatCheck(d *sql.DB) error {
 			return nil
 		}
 		// 备份 -> 重建 -> 还原 -> 清理，整体一个事务；任何一步失败回滚，旧表仍在。
+		// 注意：SQLite 3.25+ 的 RENAME 会改写其他表的 REFERENCES（由
+		// legacy_alter_table 控制，与 foreign_keys 无关），必须临时 ON。
 		tx, err := d.Begin()
 		if err != nil {
 			return fmt.Errorf("begin rebuild upstreams: %w", err)
 		}
 		defer tx.Rollback()
 		steps := []string{
+			`PRAGMA legacy_alter_table=ON`,
 			`ALTER TABLE upstreams RENAME TO upstreams_bak`,
 			`CREATE TABLE upstreams (
 			    id INTEGER PRIMARY KEY AUTOINCREMENT,
