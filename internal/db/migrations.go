@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const migrationSQLite = `
@@ -11,7 +12,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     name TEXT NOT NULL UNIQUE,
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL,
-    format TEXT NOT NULL CHECK(format IN ('openai','anthropic')),
+    format TEXT NOT NULL,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -61,6 +62,14 @@ CREATE TABLE IF NOT EXISTS usage_records (
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id);
+
+CREATE TABLE IF NOT EXISTS response_sessions (
+    id TEXT PRIMARY KEY,
+    messages TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
 `
 
 const migrationPG = `
@@ -69,7 +78,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     name TEXT NOT NULL UNIQUE,
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL,
-    format TEXT NOT NULL CHECK(format IN ('openai','anthropic')),
+    format TEXT NOT NULL,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -119,6 +128,14 @@ CREATE TABLE IF NOT EXISTS usage_records (
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id);
 CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id);
+
+CREATE TABLE IF NOT EXISTS response_sessions (
+    id TEXT PRIMARY KEY,
+    messages TEXT NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
 `
 
 // extraCols lists the columns added after the initial schema, together with
@@ -186,5 +203,60 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 			}
 		}
 		return false, nil
+	}
+}
+
+// dropUpstreamFormatCheck 移除旧库 upstreams 表上的 format CHECK 约束（新库
+// 的 CREATE TABLE 已不带约束，无需处理）。校验改为应用层（webapi）。
+// 必须在 PRAGMA foreign_keys=ON 之前调用。注意：SQLite 3.25+ 的
+// ALTER TABLE RENAME 默认会改写其他表的 REFERENCES 子句（仅当
+// PRAGMA legacy_alter_table=ON 时才不改写），与 foreign_keys 设置无关，
+// 所以重建期间要临时打开 legacy_alter_table，否则 upstream_models 的
+// REFERENCES 会被改成指向已删除的 upstreams_bak。
+func dropUpstreamFormatCheck(d *sql.DB) error {
+	switch DialectOf(d) {
+	case DialectPostgres:
+		_, err := d.Exec(`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_format_check`)
+		return err
+	default:
+		var sqlText string
+		if err := d.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='upstreams'`).Scan(&sqlText); err != nil {
+			// 表不存在（新库尚未建）等异常：交给主迁移处理
+			return nil
+		}
+		if !strings.Contains(sqlText, "CHECK(format IN") {
+			return nil
+		}
+		// 备份 -> 重建 -> 还原 -> 清理，整体一个事务；任何一步失败回滚，旧表仍在。
+		tx, err := d.Begin()
+		if err != nil {
+			return fmt.Errorf("begin rebuild upstreams: %w", err)
+		}
+		defer tx.Rollback()
+		steps := []string{
+			`PRAGMA legacy_alter_table=ON`,
+			`ALTER TABLE upstreams RENAME TO upstreams_bak`,
+			`CREATE TABLE upstreams (
+			    id INTEGER PRIMARY KEY AUTOINCREMENT,
+			    name TEXT NOT NULL UNIQUE,
+			    base_url TEXT NOT NULL,
+			    api_key TEXT NOT NULL,
+			    format TEXT NOT NULL,
+			    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+			    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+			    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`INSERT INTO upstreams (id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at)
+			 SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams_bak`,
+			`DROP TABLE upstreams_bak`,
+			`PRAGMA legacy_alter_table=OFF`,
+		}
+		for _, s := range steps {
+			if _, err := tx.Exec(s); err != nil {
+				return fmt.Errorf("rebuild upstreams step failed: %w", err)
+			}
+		}
+		return tx.Commit()
 	}
 }

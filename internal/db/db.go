@@ -37,6 +37,10 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
+	if err := dropUpstreamFormatCheck(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("drop upstream format check: %w", err)
+	}
 	if err := migrateExtraCols(d); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("migrate extra cols: %w", err)
@@ -86,6 +90,10 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 	if _, err := d.Exec(migrationPG); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+	if err := dropUpstreamFormatCheck(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("drop upstream format check: %w", err)
 	}
 	if err := migrateExtraCols(d); err != nil {
 		d.Close()
