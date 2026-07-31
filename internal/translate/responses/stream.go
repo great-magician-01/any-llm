@@ -239,7 +239,6 @@ type StreamEncoder struct {
 	thinkBuf   map[int]string
 	toolMeta   map[int]*translate.ToolUse // IR block index -> call_id/name
 	items      map[int]map[string]any     // output_index -> 最终 item（completed 用）
-	pendingFrames [][]byte                // ensureItemStarted 合成的 added 事件暂存区
 }
 
 func NewStreamEncoder(model, id string) *StreamEncoder {
@@ -262,11 +261,6 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 	if !e.started && evt.Type != "message_start" {
 		e.started = true
 		frames = append(frames, e.createdFrames()...)
-	}
-	// 合成帧前置：ensureItemStarted 产生的 added 事件必须先于 delta 输出
-	if len(e.pendingFrames) > 0 {
-		frames = append(frames, e.pendingFrames...)
-		e.pendingFrames = nil
 	}
 	switch evt.Type {
 	case "message_start":
@@ -315,15 +309,25 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 			itemID := "fc_" + randHex(8)
 			e.itemIDs[idx] = itemID
 			e.toolMeta[idx] = evt.Block.ToolUse
+			// 防御：上游可能发来无 ToolUse 的 tool_use 块，与 stop 分支的 tm != nil 一致
+			tm := evt.Block.ToolUse
+			callID, name := "", ""
+			if tm != nil {
+				callID, name = tm.ID, tm.Name
+			}
 			frames = append(frames, sseFrame("response.output_item.added", map[string]any{
 				"output_index": idx,
 				"item": map[string]any{
 					"id": itemID, "type": "function_call",
-					"call_id": evt.Block.ToolUse.ID, "name": evt.Block.ToolUse.Name, "arguments": "",
+					"call_id": callID, "name": name, "arguments": "",
 				},
 			}))
 			// Anthropic 上游的 start 块自带完整 input：立即转发，避免 arguments 截断
-			if input := string(evt.Block.ToolUse.Input); input != "" && input != "{}" {
+			input := ""
+			if tm != nil {
+				input = string(tm.Input)
+			}
+			if input != "" && input != "{}" {
 				e.toolArgs[idx] = input
 				frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
 					"item_id": itemID, "output_index": idx, "delta": input,
@@ -339,23 +343,28 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		idx := evt.Index
 		switch evt.Delta.Type {
 		case "text_delta":
-			e.ensureItemStarted(idx, "text")
+			// ensureItemStarted 返回合成的 added/part 帧，必须排在 delta 之前
+			// （否则接收方解码器会因 item 未打开而丢弃本 delta）。
+			frames = e.ensureItemStarted(idx, "text")
 			e.textBuf[idx] += evt.Delta.Text
-			return [][]byte{sseFrame("response.output_text.delta", map[string]any{
+			frames = append(frames, sseFrame("response.output_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "content_index": 0, "delta": evt.Delta.Text,
-			})}, nil
+			}))
+			return frames, nil
 		case "input_json_delta":
-			e.ensureItemStarted(idx, "tool_use")
+			frames = e.ensureItemStarted(idx, "tool_use")
 			e.toolArgs[idx] += evt.Delta.PartialJSON
-			return [][]byte{sseFrame("response.function_call_arguments.delta", map[string]any{
+			frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.PartialJSON,
-			})}, nil
+			}))
+			return frames, nil
 		case "thinking_delta":
-			e.ensureItemStarted(idx, "thinking")
+			frames = e.ensureItemStarted(idx, "thinking")
 			e.thinkBuf[idx] += evt.Delta.Thinking
-			return [][]byte{sseFrame("response.reasoning_summary_text.delta", map[string]any{
+			frames = append(frames, sseFrame("response.reasoning_summary_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.Thinking,
-			})}, nil
+			}))
+			return frames, nil
 		case "signature_delta":
 			// Responses 无签名概念
 			return nil, nil
@@ -434,17 +443,18 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 	return nil, nil
 }
 
-// ensureItemStarted 为缺失 content_block_start 的块补合成 added（+part）事件。
-func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
+// ensureItemStarted 为缺失 content_block_start 的块补合成 added（+part）事件，
+// 返回的合成帧由 delta 分支直接前置到本帧输出前（同一次 Encode 调用内完成）。
+func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
 	if _, ok := e.blockKind[idx]; ok {
-		return
+		return nil
 	}
 	e.blockKind[idx] = kind
 	switch kind {
 	case "text":
 		itemID := "msg_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames,
+		return [][]byte{
 			sseFrame("response.output_item.added", map[string]any{
 				"output_index": idx,
 				"item": map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
@@ -453,27 +463,27 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
 				"item_id": itemID, "output_index": idx, "content_index": 0,
 				"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 			}),
-		)
+		}
 	case "thinking":
 		// 注意：item id 前缀必须与 kind 匹配（rs_/fc_/msg_），后续 delta 帧
 		// 用 e.itemIDs[idx] 引用同一个 id。
 		itemID := "rs_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
+		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
 			"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
-		}))
+		})}
 	case "tool_use":
 		itemID := "fc_" + randHex(8)
 		e.itemIDs[idx] = itemID
-		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
+		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
 			"item":         map[string]any{"id": itemID, "type": "function_call", "call_id": "", "name": "", "arguments": ""},
-		}))
+		})}
 	}
+	return nil
 }
 
-// pendingFrames 是合成事件暂存区，Encode 返回时统一前置。
 func (e *StreamEncoder) createdFrames() [][]byte {
 	resp := map[string]any{
 		"id": e.id, "object": "response", "created_at": e.created,

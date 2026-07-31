@@ -323,6 +323,10 @@ func TestStreamEncode_SynthesizeMissingStart(t *testing.T) {
 	if !strings.Contains(s, `"type":"response.output_item.added"`) || !strings.Contains(s, `"type":"response.output_text.delta"`) {
 		t.Fatalf("missing synthesized start: %s", s)
 	}
+	// 合成的 added 帧必须先于触发它的 delta 帧（否则接收方解码器会丢弃首个 delta）
+	if strings.Index(s, `"type":"response.output_item.added"`) > strings.Index(s, `"type":"response.output_text.delta"`) {
+		t.Fatalf("output_item.added must precede output_text.delta: %s", s)
+	}
 }
 
 // thinking 块 -> reasoning item（summary 流）
