@@ -142,22 +142,27 @@ func TestDecodeRequest_Basic(t *testing.T) {
 	if len(req.System) != 1 || req.System[0].Text != "be good" {
 		t.Fatalf("system=%+v", req.System)
 	}
-	if len(req.Messages) != 3 {
+	// 注意：assistant 文本历史消息必须保留（忠实转换，不丢对话历史）
+	if len(req.Messages) != 4 {
 		t.Fatalf("messages len=%d", len(req.Messages))
 	}
 	u := req.Messages[0]
 	if u.Role != "user" || len(u.Content) != 1 || u.Content[0].Type != "text" || u.Content[0].Text != "hi" {
 		t.Fatalf("msg0=%+v", u)
 	}
-	a := req.Messages[1]
+	at := req.Messages[1]
+	if at.Role != "assistant" || len(at.Content) != 1 || at.Content[0].Type != "text" || at.Content[0].Text != "hello" {
+		t.Fatalf("msg1(assistant text)=%+v", at)
+	}
+	a := req.Messages[2]
 	if a.Role != "assistant" || len(a.Content) != 1 || a.Content[0].Type != "tool_use" {
-		t.Fatalf("msg1=%+v", a)
+		t.Fatalf("msg2=%+v", a)
 	}
 	if a.Content[0].ToolUse.ID != "call_1" || a.Content[0].ToolUse.Name != "get_weather" ||
 		string(a.Content[0].ToolUse.Input) != `{"city":"SF"}` {
 		t.Fatalf("tool_use=%+v", a.Content[0].ToolUse)
 	}
-	tr := req.Messages[2]
+	tr := req.Messages[3]
 	if tr.Role != "user" || tr.Content[0].Type != "tool_result" || tr.Content[0].ToolResult.ToolUseID != "call_1" ||
 		tr.Content[0].ToolResult.Content[0].Text != "sunny" {
 		t.Fatalf("msg2=%+v", tr)
@@ -622,12 +627,13 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 			}
 		case "assistant":
 			var parts []any
+			var fcItems []any // 延迟收集：assistant 文本项在前、function_call 项在后（对话顺序）
 			for _, b := range m.Content {
 				switch b.Type {
 				case "text":
 					parts = append(parts, map[string]any{"type": "input_text", "text": b.Text})
 				case "tool_use":
-					input = append(input, map[string]any{
+					fcItems = append(fcItems, map[string]any{
 						"type":      "function_call",
 						"call_id":   b.ToolUse.ID,
 						"name":      b.ToolUse.Name,
@@ -640,6 +646,7 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 			if len(parts) > 0 {
 				input = append(input, map[string]any{"role": "assistant", "content": parts})
 			}
+			input = append(input, fcItems...)
 		case "system":
 			var parts []any
 			for _, b := range m.Content {
