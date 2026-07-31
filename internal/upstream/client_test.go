@@ -2,6 +2,8 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -235,6 +237,108 @@ func cloneHeader(h http.Header) http.Header {
 		out[k] = append([]string(nil), vs...)
 	}
 	return out
+}
+
+// responses 上游：非流式（请求是 responses 形状，解码 responses 响应含 usage）
+func TestCallResponsesNonStream(t *testing.T) {
+	var gotPath, gotAuth string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m",
+			"output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,
+				"input_tokens_details":{"cached_tokens":8},"output_tokens_details":{"reasoning_tokens":2}}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.Client())
+	u := &model.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
+	res, err := c.Call(context.Background(), u, &translate.Request{Model: "m", Stream: false}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/responses" {
+		t.Fatalf("path=%q", gotPath)
+	}
+	if gotAuth != "Bearer sk-test" {
+		t.Fatalf("auth=%q", gotAuth)
+	}
+	if gotBody["instructions"] != nil { // 无 system 时不应发 instructions
+		t.Fatalf("body=%v", gotBody)
+	}
+	if res.Response == nil || res.Response.Content[0].Text != "Hi" {
+		t.Fatalf("resp=%+v", res.Response)
+	}
+	u2 := res.Usage()
+	if u2.InputTokens != 10 || u2.OutputTokens != 5 || u2.CacheReadTokens != 8 || u2.ReasoningTokens != 2 {
+		t.Fatalf("usage=%+v", u2)
+	}
+}
+
+// responses 上游：流式（SSE 事件序列 -> IR 事件）
+func TestCallResponsesStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `event: response.created`+"\n"+`data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","model":"m","output":[]}}`+"\n\n")
+		fmt.Fprint(w, `event: response.output_item.added`+"\n"+`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`+"\n\n")
+		fmt.Fprint(w, `event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hi"}`+"\n\n")
+		fmt.Fprint(w, `event: response.output_item.done`+"\n"+`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi","annotations":[]}]}}`+"\n\n")
+		fmt.Fprint(w, `event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"m","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`+"\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.Client())
+	u := &model.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
+	res, err := c.Call(context.Background(), u, &translate.Request{Model: "m", Stream: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	var usage translate.Usage
+	for ev := range res.Stream {
+		types = append(types, ev.Type)
+		if ev.Type == "message_delta" {
+			usage = translate.Usage{InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens,
+				CacheReadTokens: ev.CacheReadTokens, ReasoningTokens: ev.ReasoningTokens}
+		}
+	}
+	joined := strings.Join(types, ",")
+	for _, want := range []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in %s", want, joined)
+		}
+	}
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
+		t.Fatalf("usage=%+v", usage)
+	}
+	if err := res.StreamErr(); err != nil {
+		t.Fatalf("stream err: %v", err)
+	}
+}
+
+// FetchModels 对 responses 上游走 Bearer + /models
+func TestFetchModelsResponses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Errorf("auth=%q", r.Header.Get("Authorization"))
+		}
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"m1"}]}`)
+	}))
+	defer srv.Close()
+	got, err := FetchModels(context.Background(), srv.Client(), &model.Upstream{BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "m1" {
+		t.Fatalf("models=%v", got)
+	}
 }
 
 func TestUpstreamError_Message(t *testing.T) {

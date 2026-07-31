@@ -29,7 +29,7 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream
 		return nil, fmt.Errorf("create fetch request: %w", err)
 	}
 	switch u.Format {
-	case "openai":
+	case "openai", "responses":
 		req.Header.Set("Authorization", "Bearer "+u.APIKey)
 	case "anthropic":
 		req.Header.Set("x-api-key", u.APIKey)

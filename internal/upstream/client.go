@@ -16,6 +16,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
+	"github.com/great-magician-01/any-llm/internal/translate/responses"
 )
 
 type Client struct {
@@ -79,6 +80,15 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 		path = "/messages"
 		contentType = "application/json"
 		reqHeaders = map[string]string{"x-api-key": u.APIKey}
+	case "responses":
+		body, err = responses.EncodeRequest(irReq)
+		if err != nil {
+			return nil, fmt.Errorf("encode responses request: %w", err)
+		}
+		// 上游为 responses 格式时不做 include_usage 注入：usage 随 response.completed 返回
+		path = "/responses"
+		contentType = "application/json"
+		reqHeaders = map[string]string{"Authorization": "Bearer " + u.APIKey}
 	default:
 		return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
 	}
@@ -136,6 +146,8 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 			irResp, err = openai.DecodeResponse(respBody)
 		case "anthropic":
 			irResp, err = anthropic.DecodeResponse(respBody)
+		case "responses":
+			irResp, err = responses.DecodeResponse(respBody)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
@@ -158,6 +170,10 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 	var oaiDec *openai.StreamDecoder
 	if format == "openai" {
 		oaiDec = openai.NewStreamDecoder()
+	}
+	var rspDec *responses.StreamDecoder
+	if format == "responses" {
+		rspDec = responses.NewStreamDecoder()
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -253,6 +269,27 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 			case ch <- ev:
 			case <-ctx.Done():
 				return
+			}
+		case "responses":
+			events, err := rspDec.Decode([]byte(data))
+			if err != nil {
+				logger.Warn("stream decode error", "format", "responses", "err", err, "data", truncateUpstream(data, 256))
+				continue
+			}
+			for _, ev := range events {
+				if ev.Type == "message_delta" {
+					result.setUsage(translate.Usage{
+						InputTokens:     ev.InputTokens,
+						OutputTokens:    ev.OutputTokens,
+						CacheReadTokens: ev.CacheReadTokens,
+						ReasoningTokens: ev.ReasoningTokens,
+					})
+				}
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
