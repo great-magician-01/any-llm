@@ -8,6 +8,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
+	"github.com/great-magician-01/any-llm/internal/translate/responses"
 )
 
 // OpenAI request -> IR -> Anthropic request -> IR -> should match first IR semantically
@@ -301,6 +302,164 @@ func TestCrossUsage_AnthropicToOpenAI(t *testing.T) {
 		`"completion_tokens":71`,
 		`"total_tokens":130`,
 		`"cached_tokens":384`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %s in %s", want, s)
+		}
+	}
+}
+
+// Responses 请求 -> IR -> OpenAI chat completions -> IR，语义一致
+func TestCrossRequest_ResponsesToOpenAI(t *testing.T) {
+	src := []byte(`{
+		"model":"gpt-4o",
+		"instructions":"be good",
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"role":"assistant","content":[{"type":"input_text","text":"sure"}]},
+			{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"sunny"}
+		],
+		"tools":[{"type":"function","name":"get_weather","description":"w","parameters":{"type":"object"}}],
+		"tool_choice":"auto","max_output_tokens":50
+	}`)
+	ir1, err := responses.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oaiBytes, err := openai.EncodeRequest(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir2, err := openai.DecodeRequest(oaiBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRequestsMatch(t, ir1, ir2)
+}
+
+// OpenAI chat completions -> IR -> Responses -> IR，语义一致
+func TestCrossRequest_OpenAIToResponses(t *testing.T) {
+	src := []byte(`{
+		"model":"gpt-4o",
+		"messages":[
+			{"role":"system","content":"be good"},
+			{"role":"user","content":"hi"},
+			{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"sunny"}
+		],
+		"tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object"}}}],
+		"tool_choice":"auto","max_tokens":50
+	}`)
+	ir1, err := openai.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rspBytes, err := responses.EncodeRequest(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir2, err := responses.DecodeRequest(rspBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRequestsMatch(t, ir1, ir2)
+}
+
+// Responses 请求 -> IR -> Anthropic -> IR，语义一致
+func TestCrossRequest_ResponsesToAnthropic(t *testing.T) {
+	src := []byte(`{
+		"model":"claude-3-5",
+		"instructions":"be good",
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"role":"assistant","content":[{"type":"input_text","text":"sure"}]},
+			{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"sunny"}
+		],
+		"tools":[{"type":"function","name":"get_weather","description":"w","parameters":{"type":"object"}}],
+		"tool_choice":"auto","max_output_tokens":50
+	}`)
+	ir1, err := responses.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	antBytes, err := anthropic.EncodeRequest(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir2, err := anthropic.DecodeRequest(antBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRequestsMatch(t, ir1, ir2)
+}
+
+// Responses 响应 -> IR -> Anthropic -> IR（含 thinking 与 usage）
+func TestCrossResponse_ResponsesToAnthropic(t *testing.T) {
+	src := []byte(`{
+		"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"claude-3-5",
+		"output":[
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"hmm"}],"content":[]},
+			{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Hi"}]},
+			{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}
+		],
+		"usage":{"input_tokens":10,"output_tokens":8,"total_tokens":18,
+			"input_tokens_details":{"cached_tokens":5},
+			"output_tokens_details":{"reasoning_tokens":2}}
+	}`)
+	ir1, err := responses.DecodeResponse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir1.StopReason != "tool_calls" || ir1.Usage.CacheReadTokens != 5 || ir1.Usage.ReasoningTokens != 2 {
+		t.Fatalf("ir1=%+v usage=%+v", ir1, ir1.Usage)
+	}
+	antBytes, err := anthropic.EncodeResponse(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ir2, err := anthropic.DecodeResponse(antBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ir2.Content) != 3 {
+		t.Fatalf("content len=%d", len(ir2.Content))
+	}
+	if ir2.Content[0].Type != "thinking" || ir2.Content[0].Thinking != "hmm" {
+		t.Fatalf("c0=%+v", ir2.Content[0])
+	}
+	if ir2.Content[1].Type != "text" || ir2.Content[1].Text != "Hi" {
+		t.Fatalf("c1=%+v", ir2.Content[1])
+	}
+	if ir2.Content[2].Type != "tool_use" || ir2.Content[2].ToolUse.Name != "get_weather" {
+		t.Fatalf("c2=%+v", ir2.Content[2])
+	}
+	if ir2.Usage.InputTokens != 10 || ir2.Usage.OutputTokens != 8 || ir2.Usage.CacheReadTokens != 5 {
+		t.Fatalf("usage=%+v", ir2.Usage)
+	}
+}
+
+// Anthropic 响应 -> IR -> Responses，usage/thinking 透传（JSON 断言）
+func TestCrossResponse_AnthropicToResponses(t *testing.T) {
+	src := []byte(`{
+		"id":"msg_1","model":"claude-3-5",
+		"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Hi"}],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":59,"output_tokens":71,"cache_read_input_tokens":384}
+	}`)
+	ir1, err := anthropic.DecodeResponse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rspBytes, err := responses.EncodeResponse(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(rspBytes)
+	for _, want := range []string{
+		`"input_tokens":59`, `"output_tokens":71`, `"total_tokens":130`,
+		`"cached_tokens":384`, `"summary"`, `"hmm"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
