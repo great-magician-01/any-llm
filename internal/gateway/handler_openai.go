@@ -196,6 +196,12 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 				"error": map[string]any{"type": errType, "message": msg},
 			})
 			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
+		} else if inFormat == "responses" {
+			payload, _ := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": errType, "message": msg},
+			})
+			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
 		} else {
 			payload, _ := json.Marshal(map[string]any{
 				"error": map[string]any{"message": msg, "type": errType},
