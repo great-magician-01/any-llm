@@ -1,6 +1,8 @@
 package responses
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -206,4 +208,218 @@ func TestStreamDecode_ErrorEvent(t *testing.T) {
 	if len(got) != 1 || got[0].Type != "error" {
 		t.Fatalf("evs=%+v", got)
 	}
+}
+
+// 文本回复：完整事件序列断言
+func TestStreamEncode_TextSequence(t *testing.T) {
+	e := NewStreamEncoder("gpt-4o", "resp_9")
+	events := []*translate.StreamEvent{
+		{Type: "message_start", MessageID: "resp_9", Model: "gpt-4o", InputTokens: 10, CacheReadTokens: 7},
+		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "text"}},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: " there"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", StopReason: "stop", OutputTokens: 3, ReasoningTokens: 1},
+		{Type: "message_stop"},
+	}
+	var frames [][]byte
+	for _, ev := range events {
+		got, err := e.Encode(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range got {
+			frames = append(frames, f)
+		}
+	}
+	s := joinFrames(frames)
+	// 开头必须有 response.created + response.in_progress
+	if !strings.Contains(s, `"type":"response.created"`) || !strings.Contains(s, `"type":"response.in_progress"`) {
+		t.Fatalf("missing created/in_progress: %s", s)
+	}
+	// output_item.added 是 message，part 是 output_text
+	// （map 序列化按键排序，id 不一定在 item 里第一个键，用宽松子串断言）
+	if !strings.Contains(s, `"id":"msg_`) || !strings.Contains(s, `"type":"message"`) {
+		t.Fatalf("missing output_item.added: %s", s)
+	}
+	// 两个 text delta
+	if strings.Count(s, `"type":"response.output_text.delta"`) != 2 {
+		t.Fatalf("delta count: %s", s)
+	}
+	// stop 时发出 done 三连
+	for _, want := range []string{"response.output_text.done", "response.content_part.done", "response.output_item.done"} {
+		if !strings.Contains(s, `"type":"`+want+`"`) {
+			t.Fatalf("missing %s: %s", want, s)
+		}
+	}
+	// completed 带 usage（input 来自 message_start，output 来自 message_delta）
+	if !strings.Contains(s, `"type":"response.completed"`) {
+		t.Fatalf("missing completed: %s", s)
+	}
+	if !strings.Contains(s, `"input_tokens":10`) || !strings.Contains(s, `"output_tokens":3`) {
+		t.Fatalf("completed usage: %s", s)
+	}
+	if !strings.Contains(s, `"cached_tokens":7`) || !strings.Contains(s, `"reasoning_tokens":1`) {
+		t.Fatalf("completed details: %s", s)
+	}
+}
+
+// 工具调用：start 块自带 arguments 片段时先补发 delta
+func TestStreamEncode_ToolUseWithInitialArgs(t *testing.T) {
+	e := NewStreamEncoder("m", "resp_9")
+	events := []*translate.StreamEvent{
+		{Type: "message_start", MessageID: "resp_9", Model: "m"},
+		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{
+			Type: "tool_use",
+			ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":`)},
+		}},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `"SF"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", StopReason: "tool_calls"},
+		{Type: "message_stop"},
+	}
+	var frames [][]byte
+	for _, ev := range events {
+		got, _ := e.Encode(ev)
+		for _, f := range got {
+			frames = append(frames, f)
+		}
+	}
+	s := joinFrames(frames)
+	if !strings.Contains(s, `"type":"response.output_item.added"`) ||
+		!strings.Contains(s, `"type":"function_call"`) ||
+		!strings.Contains(s, `"call_id":"call_1"`) {
+		t.Fatalf("missing function_call item: %s", s)
+	}
+	// start 自带完整 arguments -> 补发第一段 delta
+	if !strings.Contains(s, `"type":"response.function_call_arguments.delta"`) {
+		t.Fatalf("missing arguments delta: %s", s)
+	}
+	if strings.Count(s, `"type":"response.function_call_arguments.delta"`) != 2 {
+		t.Fatalf("expected 2 arguments deltas: %s", s)
+	}
+	if !strings.Contains(s, `"arguments":"{\"city\":\"SF\"}"`) {
+		t.Fatalf("missing final arguments in done: %s", s)
+	}
+}
+
+// 缺失 content_block_start：delta 直接来时自动补合成
+func TestStreamEncode_SynthesizeMissingStart(t *testing.T) {
+	e := NewStreamEncoder("m", "resp_9")
+	var frames [][]byte
+	for _, ev := range []*translate.StreamEvent{
+		{Type: "message_start", Model: "m"},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", StopReason: "stop", OutputTokens: 1},
+		{Type: "message_stop"},
+	} {
+		got, _ := e.Encode(ev)
+		for _, f := range got {
+			frames = append(frames, f)
+		}
+	}
+	s := joinFrames(frames)
+	if !strings.Contains(s, `"type":"response.output_item.added"`) || !strings.Contains(s, `"type":"response.output_text.delta"`) {
+		t.Fatalf("missing synthesized start: %s", s)
+	}
+}
+
+// thinking 块 -> reasoning item（summary 流）
+func TestStreamEncode_Thinking(t *testing.T) {
+	e := NewStreamEncoder("m", "resp_9")
+	var frames [][]byte
+	for _, ev := range []*translate.StreamEvent{
+		{Type: "message_start", Model: "m"},
+		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "thinking"}},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "thinking_delta", Thinking: "hmm"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, Block: &translate.ContentBlock{Type: "text"}},
+		{Type: "content_block_delta", Index: 1, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", StopReason: "stop", OutputTokens: 2},
+		{Type: "message_stop"},
+	} {
+		got, _ := e.Encode(ev)
+		for _, f := range got {
+			frames = append(frames, f)
+		}
+	}
+	s := joinFrames(frames)
+	if !strings.Contains(s, `"type":"response.reasoning_summary_text.delta"`) ||
+		!strings.Contains(s, `"type":"response.reasoning_summary_text.done"`) {
+		t.Fatalf("missing reasoning summary events: %s", s)
+	}
+	if strings.Contains(s, `"type":"response.reasoning_text.delta"`) {
+		t.Fatalf("must not emit reasoning_text events: %s", s)
+	}
+}
+
+// Flush：上游没发 message_stop 时补发 completed；从未 start 时补发 created+completed
+func TestStreamEncode_Flush(t *testing.T) {
+	e := NewStreamEncoder("m", "resp_9")
+	_, _ = e.Encode(&translate.StreamEvent{Type: "message_start", Model: "m"})
+	_, _ = e.Encode(&translate.StreamEvent{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "text"}})
+	_, _ = e.Encode(&translate.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}})
+	_, _ = e.Encode(&translate.StreamEvent{Type: "content_block_stop", Index: 0})
+	_, _ = e.Encode(&translate.StreamEvent{Type: "message_delta", StopReason: "stop", OutputTokens: 1})
+	frames := e.Flush()
+	s := joinFrames(frames)
+	if !strings.Contains(s, `"type":"response.completed"`) || !strings.Contains(s, `"output_tokens":1`) {
+		t.Fatalf("flush: %s", s)
+	}
+	// 再次 Flush 应为空（幂等）
+	if len(e.Flush()) != 0 {
+		t.Fatal("Flush not idempotent")
+	}
+
+	e2 := NewStreamEncoder("m", "resp_2")
+	frames2 := e2.Flush()
+	s2 := joinFrames(frames2)
+	if !strings.Contains(s2, `"type":"response.created"`) || !strings.Contains(s2, `"type":"response.completed"`) {
+		t.Fatalf("flush empty stream: %s", s2)
+	}
+}
+
+// Content：累积的模型输出（text/tool_use/thinking）
+func TestStreamEncode_Content(t *testing.T) {
+	e := NewStreamEncoder("m", "resp_9")
+	for _, ev := range []*translate.StreamEvent{
+		{Type: "message_start", Model: "m"},
+		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "thinking"}},
+		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "thinking_delta", Thinking: "hmm"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, Block: &translate.ContentBlock{Type: "text"}},
+		{Type: "content_block_delta", Index: 1, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "content_block_start", Index: 2, Block: &translate.ContentBlock{
+			Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)},
+		}},
+		{Type: "content_block_stop", Index: 2},
+		{Type: "message_stop"},
+	} {
+		_, _ = e.Encode(ev)
+	}
+	c := e.Content()
+	if len(c) != 3 {
+		t.Fatalf("content len=%d: %+v", len(c), c)
+	}
+	if c[0].Type != "thinking" || c[0].Thinking != "hmm" {
+		t.Fatalf("c0=%+v", c[0])
+	}
+	if c[1].Type != "text" || c[1].Text != "Hi" {
+		t.Fatalf("c1=%+v", c[1])
+	}
+	if c[2].Type != "tool_use" || c[2].ToolUse.ID != "call_1" || string(c[2].ToolUse.Input) != `{"city":"SF"}` {
+		t.Fatalf("c2=%+v", c[2])
+	}
+}
+
+func joinFrames(frames [][]byte) string {
+	var sb strings.Builder
+	for _, f := range frames {
+		sb.Write(f)
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
