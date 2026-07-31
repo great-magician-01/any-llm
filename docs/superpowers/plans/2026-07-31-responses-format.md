@@ -3679,6 +3679,16 @@ Expected: FAIL（`format must be openai or anthropic`）
 	}
 ```
 
+**同一函数族（updateUpstream，PUT 路径）也必须加同样的校验**——DB CHECK 已移除，PUT 是最后一个未校验的写入路径，非法 format 会直接落库：
+
+```go
+	if req.Format != "" && req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+		logger.Warn("admin: update upstream invalid format", "format", req.Format)
+		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+		return
+	}
+```
+
 - [ ] **Step 4: 改前端表单**
 
 `web/src/views/Upstreams.vue`（约 319 行，n-radio-group 内）：
