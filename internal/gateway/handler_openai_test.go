@@ -290,6 +290,101 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 	if m2["role"] != "tool" || m2["tool_call_id"] != "call_1" {
 		t.Fatalf("m2=%v", m2)
 	}
+
+	// 会话字段不得转发给上游（两轮都检查）
+	for i, body := range upstreamCalls {
+		if _, ok := body["previous_response_id"]; ok {
+			t.Fatalf("round %d: previous_response_id forwarded upstream: %v", i+1, body)
+		}
+		if _, ok := body["store"]; ok {
+			t.Fatalf("round %d: store forwarded upstream: %v", i+1, body)
+		}
+	}
+}
+
+// 调用失败不得写会话：非流式上游 500、流式中途断开（unexpected EOF）都不存。
+func TestResponsesFailedCallDoesNotSave(t *testing.T) {
+	// 非流式：上游 500
+	srv500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":{"message":"boom","type":"internal_error"}}`)
+	}))
+	defer srv500.Close()
+
+	g, d := setupGateway(t)
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv500.URL, APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.AddModel(d, uid, "m", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock/m","store":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec, req)
+	if rec.Code != 500 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var n int
+	if err := g.sessions.db.QueryRow(`SELECT COUNT(*) FROM response_sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("failed call saved %d sessions", n)
+	}
+	// 同一 previous_response_id 续接应 400：失败调用没留下任何会话
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock/m","previous_response_id":"resp_never","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req2.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec2, req2)
+	if rec2.Code != 400 || !strings.Contains(rec2.Body.String(), "invalid_previous_response_id") {
+		t.Fatalf("follow-up status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+
+	// 流式：上游发一段文本后中途断开（声明 Content-Length 但未写完就关连接 → 客户端 unexpected EOF）
+	srvAbort := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("no hijacker")
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 10000\r\n\r\n")
+		fmt.Fprintf(buf, "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}]}\n\n")
+		buf.Flush()
+	}))
+	defer srvAbort.Close()
+
+	g2, d2 := setupGateway(t)
+	uid2, err := model.CreateUpstream(d2, &model.Upstream{Name: "mock2", BaseURL: srvAbort.URL, APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.AddModel(d2, uid2, "m", false, 0, 0)
+	k2, _ := model.CreateExtKey(d2, "test", 0, 0)
+	g2.client = upstream.NewClient(http.DefaultClient)
+
+	recS := httptest.NewRecorder()
+	reqS := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock2/m","stream":true,"store":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	reqS.Header.Set("Authorization", "Bearer "+k2.Key)
+	g2.ServeHTTP(recS, reqS)
+	var n2 int
+	if err := g2.sessions.db.QueryRow(`SELECT COUNT(*) FROM response_sessions`).Scan(&n2); err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 {
+		t.Fatalf("aborted stream saved %d sessions", n2)
+	}
 }
 
 // 未知 previous_response_id -> 400 invalid_previous_response_id

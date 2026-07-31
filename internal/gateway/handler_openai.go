@@ -272,6 +272,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			"upstream", u.Name, "model", realModel, "stream", true,
 			"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "status", "ok",
 		)
+		// 上游用非流式 JSON 应答流式请求：输出完整，照常累积会话
+		if sess != nil {
+			g.saveSession(sess, result.Response.Content)
+		}
 		return
 	}
 
@@ -353,7 +357,9 @@ done:
 				}
 				flusher.Flush()
 			}
-			if sess != nil {
+			// 只有调用成功后保存：上游流中途出错时 respID 已随 response.created
+			// 发给客户端，若把部分输出并入历史，客户端带同一 id 重试会重复内容。
+			if sess != nil && result.StreamErr() == nil {
 				g.saveSession(sess, enc.Content())
 			}
 		}
