@@ -206,6 +206,73 @@ func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
 	}
 }
 
+// 流式请求被上游以非流式 JSON 应答（Content-Type: application/json）：
+// responses 客户端必须拿到 responses 形状（object:response）且响应 id 与会话
+// key 一致（resp_ 前缀），这样该 id 才能作为 previous_response_id 续接。
+func TestResponsesStreamFallbackNonStreamJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"c1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.AddModel(d, uid, "m", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	// 第一轮：流式 + store，上游用非流式 JSON 应答
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
+		`{"model":"mock/m","stream":true,"store":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+	req1.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec1, req1)
+	if rec1.Code != 200 {
+		t.Fatalf("turn1 status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+	body1 := rec1.Body.String()
+	if !strings.Contains(body1, `"object":"response"`) {
+		t.Fatalf("turn1 not responses-shaped: %s", body1)
+	}
+	// 从 SSE data 载荷里取响应 id
+	id1 := ""
+	for _, line := range strings.Split(body1, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev struct {
+			Response *struct {
+				ID string `json:"id"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			continue
+		}
+		if ev.Response != nil && ev.Response.ID != "" {
+			id1 = ev.Response.ID
+			break
+		}
+	}
+	if !strings.HasPrefix(id1, "resp_") {
+		t.Fatalf("turn1 id=%q (want session-stamped resp_ id)", id1)
+	}
+
+	// 第二轮：用第一轮的 id 续接（previous_response_id），必须 200 而非 400
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(fmt.Sprintf(
+		`{"model":"mock/m","previous_response_id":"%s","input":[{"role":"user","content":[{"type":"input_text","text":"more"}]}]}`, id1)))
+	req2.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec2, req2)
+	if rec2.Code != 200 {
+		t.Fatalf("turn2 status=%d body=%s (previous_response_id=%s)", rec2.Code, rec2.Body.String(), id1)
+	}
+}
+
 // 有状态两轮工具循环：第一轮 assistant 返回 function_call，
 // 第二轮 previous_response_id 续接 + function_call_output，
 // 上游必须收到包含完整历史的请求。

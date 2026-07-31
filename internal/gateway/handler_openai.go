@@ -251,11 +251,18 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 
 	if result.Response != nil {
+		// 非流式 JSON 应答：客户端拿到的响应 id 必须与会话 key 一致，
+		// 否则后续 previous_response_id 续接会 400。
+		if sess != nil {
+			result.Response.ID = sess.respID
+		}
 		var out []byte
 		var encErr error
 		switch inFormat {
 		case "anthropic":
 			out, encErr = anthropic.EncodeResponse(result.Response)
+		case "responses":
+			out, encErr = responses.EncodeResponse(result.Response)
 		default:
 			out, encErr = openai.EncodeResponse(result.Response)
 		}

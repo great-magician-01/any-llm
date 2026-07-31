@@ -287,7 +287,7 @@ func TestCallResponsesStream(t *testing.T) {
 		fmt.Fprint(w, `event: response.output_item.added`+"\n"+`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`+"\n\n")
 		fmt.Fprint(w, `event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hi"}`+"\n\n")
 		fmt.Fprint(w, `event: response.output_item.done`+"\n"+`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi","annotations":[]}]}}`+"\n\n")
-		fmt.Fprint(w, `event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"m","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`+"\n\n")
+		fmt.Fprint(w, `event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"m","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":8},"output_tokens_details":{"reasoning_tokens":2}}}}`+"\n\n")
 	}))
 	defer srv.Close()
 
@@ -314,6 +314,9 @@ func TestCallResponsesStream(t *testing.T) {
 	}
 	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
 		t.Fatalf("usage=%+v", usage)
+	}
+	if usage.CacheReadTokens != 8 || usage.ReasoningTokens != 2 {
+		t.Fatalf("usage details=%+v", usage)
 	}
 	if err := res.StreamErr(); err != nil {
 		t.Fatalf("stream err: %v", err)

@@ -345,21 +345,23 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		case "text_delta":
 			// ensureItemStarted 返回合成的 added/part 帧，必须排在 delta 之前
 			// （否则接收方解码器会因 item 未打开而丢弃本 delta）。
-			frames = e.ensureItemStarted(idx, "text")
+			// 注意用 append：帧开头可能已有合成的 response.created/in_progress，
+			// 直接赋值会丢掉它们。
+			frames = append(frames, e.ensureItemStarted(idx, "text")...)
 			e.textBuf[idx] += evt.Delta.Text
 			frames = append(frames, sseFrame("response.output_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "content_index": 0, "delta": evt.Delta.Text,
 			}))
 			return frames, nil
 		case "input_json_delta":
-			frames = e.ensureItemStarted(idx, "tool_use")
+			frames = append(frames, e.ensureItemStarted(idx, "tool_use")...)
 			e.toolArgs[idx] += evt.Delta.PartialJSON
 			frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.PartialJSON,
 			}))
 			return frames, nil
 		case "thinking_delta":
-			frames = e.ensureItemStarted(idx, "thinking")
+			frames = append(frames, e.ensureItemStarted(idx, "thinking")...)
 			e.thinkBuf[idx] += evt.Delta.Thinking
 			frames = append(frames, sseFrame("response.reasoning_summary_text.delta", map[string]any{
 				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.Thinking,

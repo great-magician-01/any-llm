@@ -76,7 +76,7 @@ func TestStreamDecode_ToolUse(t *testing.T) {
 		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"SF\"}"}`,
 		`{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\"city\":\"SF\"}"}`,
 		`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}}`,
-		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"m","output":[],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"m","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"SF\"}"}],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}`,
 	}
 	var evs []*translate.StreamEvent
 	for _, f := range frames {
@@ -86,7 +86,7 @@ func TestStreamDecode_ToolUse(t *testing.T) {
 		}
 		evs = append(evs, got...)
 	}
-	var start, json1, json2, stop *translate.StreamEvent
+	var start, json1, json2, stop, md *translate.StreamEvent
 	for _, ev := range evs {
 		switch {
 		case ev.Type == "content_block_start":
@@ -99,6 +99,8 @@ func TestStreamDecode_ToolUse(t *testing.T) {
 			}
 		case ev.Type == "content_block_stop":
 			stop = ev
+		case ev.Type == "message_delta":
+			md = ev
 		}
 	}
 	if start == nil || start.Block.Type != "tool_use" || start.Block.ToolUse.ID != "call_1" ||
@@ -110,6 +112,10 @@ func TestStreamDecode_ToolUse(t *testing.T) {
 	}
 	if stop == nil || stop.Index != start.Index {
 		t.Fatalf("stop=%+v", stop)
+	}
+	// completed 的 output 含 function_call -> 推 stopReason "tool_calls"
+	if md == nil || md.StopReason != "tool_calls" {
+		t.Fatalf("message_delta=%+v (want StopReason tool_calls)", md)
 	}
 }
 
