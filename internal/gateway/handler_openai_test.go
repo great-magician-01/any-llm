@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -154,6 +155,54 @@ func TestCompletion_UpstreamError(t *testing.T) {
 	records, _, _ := model.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v", records)
+	}
+}
+
+// responses 入站 -> openai 上游：非流式全链路
+func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
+	// mock 上游：断言收到的请求是 chat completions 形状且模型正确，返回文本
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t) // router_test.go 现有辅助
+	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	rec := httptest.NewRecorder()
+	body := `{"model":"mock/gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	g.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 客户端拿到 Responses 形状
+	var m map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["object"] != "response" || m["status"] != "completed" {
+		t.Fatalf("response=%v", m)
+	}
+	// 上游拿到 chat completions 形状（模型名被替换为真实模型）
+	msgs, _ := gotBody["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("upstream messages=%v", gotBody)
+	}
+	if gotBody["model"] != "gpt-4o" {
+		t.Fatalf("upstream model=%v", gotBody["model"])
 	}
 }
 

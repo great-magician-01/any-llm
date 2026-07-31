@@ -102,6 +102,19 @@ func TestRouteInvalidModelFormat(t *testing.T) {
 	}
 }
 
+// /v1/responses 走 responses 入站格式：无 key 401、错误形状与 openai 一致
+func TestResponsesRoute(t *testing.T) {
+	gw, _ := setupGateway(t) // router_test.go 的现有辅助：(*Gateway, *sql.DB)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"x/y"}`)))
+	if rec.Code != 401 {
+		t.Fatalf("status=%d want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("error shape: %s", rec.Body.String())
+	}
+}
+
 func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})

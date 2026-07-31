@@ -32,6 +32,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.handleCompletion(w, r, "openai")
 	case r.URL.Path == "/v1/messages" && r.Method == "POST":
 		g.handleCompletion(w, r, "anthropic")
+	case r.URL.Path == "/v1/responses" && r.Method == "POST":
+		g.handleCompletion(w, r, "responses")
 	default:
 		http.NotFound(w, r)
 	}

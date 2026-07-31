@@ -11,6 +11,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
+	"github.com/great-magician-01/any-llm/internal/translate/responses"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -65,6 +66,8 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	switch inFormat {
 	case "anthropic":
 		out, err = anthropic.EncodeResponse(result.Response)
+	case "responses":
+		out, err = responses.EncodeResponse(result.Response)
 	default:
 		out, err = openai.EncodeResponse(result.Response)
 	}
@@ -106,7 +109,12 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	var encoder interface {
 		Encode(evt *translate.StreamEvent) ([][]byte, error)
 	}
-	if inFormat != "anthropic" {
+	switch inFormat {
+	case "anthropic":
+		encoder = nil
+	case "responses":
+		encoder = responses.NewStreamEncoder(realModel, responses.NewID())
+	default:
 		encoder = openai.NewStreamEncoder(realModel)
 	}
 
@@ -293,6 +301,17 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 	}
 done:
+	// 让 responses 编码器补发 response.completed（上游若没发 message_stop）
+	if !clientGonePost {
+		if enc, ok := encoder.(interface{ Flush() [][]byte }); ok {
+			if frames := enc.Flush(); len(frames) > 0 {
+				for _, f := range frames {
+					w.Write(f)
+				}
+				flusher.Flush()
+			}
+		}
+	}
 
 	usage := result.Usage()
 	status := "ok"
@@ -317,6 +336,8 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	switch inFormat {
 	case "anthropic":
 		return anthropic.DecodeRequest(body)
+	case "responses":
+		return responses.DecodeRequest(body)
 	default:
 		return openai.DecodeRequest(body)
 	}
