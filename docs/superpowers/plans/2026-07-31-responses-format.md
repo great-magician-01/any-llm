@@ -1715,7 +1715,8 @@ func TestStreamEncode_TextSequence(t *testing.T) {
 		t.Fatalf("missing created/in_progress: %s", s)
 	}
 	// output_item.added 是 message，part 是 output_text
-	if !strings.Contains(s, `"item":{"id":"msg_`) || !strings.Contains(s, `"type":"message"`) {
+	// （map 序列化按键排序，id 不一定在 item 里第一个键，用宽松子串断言）
+	if !strings.Contains(s, `"id":"msg_`) || !strings.Contains(s, `"type":"message"`) {
 		t.Fatalf("missing output_item.added: %s", s)
 	}
 	// 两个 text delta
@@ -1747,7 +1748,7 @@ func TestStreamEncode_ToolUseWithInitialArgs(t *testing.T) {
 		{Type: "message_start", MessageID: "resp_9", Model: "m"},
 		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{
 			Type: "tool_use",
-			ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)},
+			ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"`)},
 		}},
 		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `"SF"}`}},
 		{Type: "content_block_stop", Index: 0},
@@ -2240,9 +2241,14 @@ func (e *StreamEncoder) Content() []translate.ContentBlock {
 	return out
 }
 
-// sseFrame 组装 Responses SSE 帧（event: + data: 双行，SDK 从 data 的 type 字段解析）。
-func sseFrame(evType string, payload any) []byte {
-	b, _ := json.Marshal(payload)
+// sseFrame 组装 Responses SSE 帧。type 必须进 data 载荷（真实 OpenAI 帧与
+// StreamDecoder 都从 data 的 type 字段解析）；event: 行仅作可读提示。
+func sseFrame(evType string, payload map[string]any) []byte {
+	p := map[string]any{"type": evType}
+	for k, v := range payload {
+		p[k] = v
+	}
+	b, _ := json.Marshal(p)
 	return []byte("event: " + evType + "\ndata: " + string(b) + "\n\n")
 }
 ```
@@ -2284,9 +2290,9 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
 		return
 	}
 	e.blockKind[idx] = kind
-	itemID := "msg_" + randHex(8)
 	switch kind {
 	case "text":
+		itemID := "msg_" + randHex(8)
 		e.itemIDs[idx] = itemID
 		e.pendingFrames = append(e.pendingFrames,
 			sseFrame("response.output_item.added", map[string]any{
@@ -2299,16 +2305,20 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) {
 			}),
 		)
 	case "thinking":
+		// 注意：item id 前缀必须与 kind 匹配（rs_/fc_/msg_），后续 delta 帧
+		// 用 e.itemIDs[idx] 引用同一个 id。
+		itemID := "rs_" + randHex(8)
 		e.itemIDs[idx] = itemID
 		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
-			"item":         map[string]any{"id": "rs_" + randHex(8), "type": "reasoning", "summary": []any{}, "content": []any{}},
+			"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
 		}))
 	case "tool_use":
+		itemID := "fc_" + randHex(8)
 		e.itemIDs[idx] = itemID
 		e.pendingFrames = append(e.pendingFrames, sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
-			"item":         map[string]any{"id": "fc_" + randHex(8), "type": "function_call", "call_id": "", "name": "", "arguments": ""},
+			"item":         map[string]any{"id": itemID, "type": "function_call", "call_id": "", "name": "", "arguments": ""},
 		}))
 	}
 }
