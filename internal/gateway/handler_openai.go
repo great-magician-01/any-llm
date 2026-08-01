@@ -405,18 +405,18 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, status string) {
 	total := usage.InputTokens + usage.OutputTokens
 	rec := &model.UsageRecord{
-		UpstreamName:      u.Name,
-		Model:             realModel,
-		InFormat:          inFormat,
-		UpFormat:          u.Format,
-		PromptTokens:      usage.InputTokens,
-		CompletionTokens:  usage.OutputTokens,
-		TotalTokens:       total,
-		CacheReadTokens:   usage.CacheReadTokens,
+		UpstreamName:        u.Name,
+		Model:               realModel,
+		InFormat:            inFormat,
+		UpFormat:            u.Format,
+		PromptTokens:        usage.InputTokens,
+		CompletionTokens:    usage.OutputTokens,
+		TotalTokens:         total,
+		CacheReadTokens:     usage.CacheReadTokens,
 		CacheCreationTokens: usage.CacheCreationTokens,
-		ReasoningTokens:   usage.ReasoningTokens,
-		Stream:            stream,
-		Status:            status,
+		ReasoningTokens:     usage.ReasoningTokens,
+		Stream:              stream,
+		Status:              status,
 	}
 	if key != nil {
 		kid := key.ID
@@ -448,7 +448,7 @@ func (g *Gateway) saveSession(sess *sessionCtx, content []translate.ContentBlock
 }
 
 type sessionCtx struct {
-	respID string               // 返回给客户端的响应 id，也是会话 key
-	prev   []translate.Message  // previous_response_id 命中的旧历史
-	input  []translate.Message  // 本轮请求的 input（未合并前的）
+	respID string              // 返回给客户端的响应 id，也是会话 key
+	prev   []translate.Message // previous_response_id 命中的旧历史
+	input  []translate.Message // 本轮请求的 input（未合并前的）
 }

@@ -10,22 +10,22 @@ import (
 )
 
 type StreamDecoder struct {
-	started        bool
-	textOpen       bool // a text block is open
-	textIndex      int
-	thinkingOpen   bool // a thinking block is open (DeepSeek reasoning_content)
-	thinkingIndex  int
-	openTools      map[int]int // OpenAI tool_calls index -> IR block index
-	nextBlock      int         // next IR block index to allocate
-	slot0Taken     bool        // the index-0 slot is held by the first block opened
-	id             string      // message id, used to synthesize the thinking signature
-	inputTokens    int
-	outputTokens   int
-	cacheRead      int // prompt cache hits (cached_tokens / prompt_cache_hit_tokens)
-	reasoning      int // completion_tokens_details.reasoning_tokens
-	finished       bool   // finish_reason received
-	deltaSent      bool   // message_delta already emitted
-	stopReason     string // buffered stop reason (emitted with deferred message_delta)
+	started       bool
+	textOpen      bool // a text block is open
+	textIndex     int
+	thinkingOpen  bool // a thinking block is open (DeepSeek reasoning_content)
+	thinkingIndex int
+	openTools     map[int]int // OpenAI tool_calls index -> IR block index
+	nextBlock     int         // next IR block index to allocate
+	slot0Taken    bool        // the index-0 slot is held by the first block opened
+	id            string      // message id, used to synthesize the thinking signature
+	inputTokens   int
+	outputTokens  int
+	cacheRead     int    // prompt cache hits (cached_tokens / prompt_cache_hit_tokens)
+	reasoning     int    // completion_tokens_details.reasoning_tokens
+	finished      bool   // finish_reason received
+	deltaSent     bool   // message_delta already emitted
+	stopReason    string // buffered stop reason (emitted with deferred message_delta)
 }
 
 func NewStreamDecoder() *StreamDecoder {

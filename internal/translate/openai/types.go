@@ -75,13 +75,13 @@ type rawCompletionTokensDetails struct {
 }
 
 type rawUsage struct {
-	PromptTokens             int                        `json:"prompt_tokens"`
-	CompletionTokens         int                        `json:"completion_tokens"`
-	TotalTokens              int                        `json:"total_tokens"`
-	PromptTokensDetails      *rawPromptTokensDetails    `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails  *rawCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
-	PromptCacheHitTokens     int                        `json:"prompt_cache_hit_tokens,omitempty"`
-	PromptCacheMissTokens    int                        `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptTokens            int                         `json:"prompt_tokens"`
+	CompletionTokens        int                         `json:"completion_tokens"`
+	TotalTokens             int                         `json:"total_tokens"`
+	PromptTokensDetails     *rawPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *rawCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheHitTokens    int                         `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens   int                         `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // Stream chunk

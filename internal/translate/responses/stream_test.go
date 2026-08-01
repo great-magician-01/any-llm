@@ -276,7 +276,7 @@ func TestStreamEncode_ToolUseWithInitialArgs(t *testing.T) {
 	events := []*translate.StreamEvent{
 		{Type: "message_start", MessageID: "resp_9", Model: "m"},
 		{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{
-			Type: "tool_use",
+			Type:    "tool_use",
 			ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":`)},
 		}},
 		{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `"SF"}`}},

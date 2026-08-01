@@ -77,7 +77,7 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 				Type:  "content_block_start",
 				Index: idx,
 				Block: &translate.ContentBlock{
-					Type: "tool_use",
+					Type:    "tool_use",
 					ToolUse: &translate.ToolUse{ID: item.CallID, Name: item.Name, Input: json.RawMessage("{}")},
 				},
 			})
@@ -459,7 +459,7 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
 		return [][]byte{
 			sseFrame("response.output_item.added", map[string]any{
 				"output_index": idx,
-				"item": map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
+				"item":         map[string]any{"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}},
 			}),
 			sseFrame("response.content_part.added", map[string]any{
 				"item_id": itemID, "output_index": idx, "content_index": 0,

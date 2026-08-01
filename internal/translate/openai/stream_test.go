@@ -373,7 +373,7 @@ func TestStreamDecode_ReasoningThenToolUse(t *testing.T) {
 		"content_block_start", "content_block_delta", "content_block_delta", // thinking start + deltas
 		"content_block_delta", "content_block_stop", // signature delta + thinking stop
 		"content_block_start", "content_block_delta", // text
-		"content_block_stop", // text stop
+		"content_block_stop",                         // text stop
 		"content_block_start", "content_block_delta", // tool start + args
 		"content_block_stop", // tool stop
 		"message_delta", "message_stop",
