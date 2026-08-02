@@ -43,8 +43,8 @@ docker compose logs -f
 `docker-compose.yml` 做了三件事：
 
 - 端口映射 `6718:6718`（**应用实际监听 6718**）
-- 数据持久化：SQLite 数据库和会话密钥存放在 named volume `any-llm-data`（挂载到容器 `/data`），容器重建不丢数据
-- 日志走 stdout，用 `docker compose logs` 查看
+- 数据持久化：SQLite 数据库、会话密钥和日志存放在 named volume `any-llm-data`（挂载到容器 `/data`），容器重建不丢数据
+- 日志写入挂载卷 `/data/logs`（logger 同时输出到 stdout，`docker compose logs` 也能看）
 
 ## 3. docker run 直接运行
 
@@ -54,7 +54,7 @@ docker run -d --name any-llm \
   -v any-llm-data:/data \
   -e ANY_LLM_DB_PATH=/data/any-llm.db \
   -e ANY_LLM_SESSION_SECRET_FILE=/data/.session-secret \
-  -e ANY_LLM_LOG_FILE= \
+  -e ANY_LLM_LOG_FILE=/data/logs/any-llm.log \
   -e ANY_LLM_MASTER_PASSWORD=your-password \
   --restart unless-stopped \
   any-llm:latest
@@ -74,7 +74,7 @@ docker run -d --name any-llm \
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | 管理界面登录密码，**建议务必修改** |
 | `ANY_LLM_SESSION_SECRET` | 空 | 会话密钥；为空时自动生成并持久化到 `ANY_LLM_SESSION_SECRET_FILE` |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成密钥的存放文件（容器里放到挂载卷下，否则重启登录失效） |
-| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志文件路径；**容器里建议留空**，日志走 stdout 用 `docker logs` 查看 |
+| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志文件路径；容器里建议指向挂载卷，如 `/data/logs/any-llm.log`（logger 会按日期自动建子目录，同时输出到 stdout） |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
 ## 5. 使用 PostgreSQL（可选）

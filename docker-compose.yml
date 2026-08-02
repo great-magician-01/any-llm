@@ -15,8 +15,8 @@ services:
       ANY_LLM_PORT: "6718"
       ANY_LLM_DB_PATH: /data/any-llm.db
       ANY_LLM_SESSION_SECRET_FILE: /data/.session-secret
-      # 日志走 stdout（docker compose logs -f 查看）
-      ANY_LLM_LOG_FILE: ""
+      # 日志写入挂载卷（logger 同时输出到 stdout，docker compose logs -f 也能看）
+      ANY_LLM_LOG_FILE: /data/logs/any-llm.log
       # 在 .env 里设置，例如 ANY_LLM_MASTER_PASSWORD=your-password
       ANY_LLM_MASTER_PASSWORD: ${ANY_LLM_MASTER_PASSWORD:-admin}
 
