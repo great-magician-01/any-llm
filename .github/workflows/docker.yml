@@ -1,0 +1,41 @@
+name: Docker Build
+
+on:
+  push:
+    branches: [docker]
+  workflow_dispatch:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and load image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: |
+            any-llm:latest
+            any-llm:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # docker save produces a plain POSIX tar (no gzip) — do NOT pipe to gzip.
+      - name: Save image as uncompressed .tar
+        run: docker save -o any-llm.tar any-llm:latest
+
+      - name: Verify archive is tar, not tar.gz
+        run: file any-llm.tar
+
+      - name: Upload .tar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: any-llm-docker-image
+          path: any-llm.tar
+          retention-days: 30
