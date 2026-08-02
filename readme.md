@@ -51,6 +51,16 @@ docker run -d \
 docker logs -f any-llm
 ```
 
+或使用仓库自带的 `docker compose`：
+
+```bash
+echo 'ANY_LLM_MASTER_PASSWORD=your-password' >> .env
+docker compose up -d
+```
+
+> 从 `docker` 分支的 GitHub Actions 可直接下载预构建镜像（`.tar` 格式，非 `.tar.gz`）。
+> 完整部署说明见 [docs/docker.md](docs/docker.md)。
+
 ## 配置
 
 所有配置通过环境变量或 `.env` 文件设置（`.env` 不会覆盖已存在的环境变量）。
