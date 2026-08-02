@@ -1,0 +1,24 @@
+services:
+  any-llm:
+    # 从 CI 下载的 .tar 镜像导入（docker load -i any-llm.tar），
+    # 或本地构建（docker build -t any-llm:latest .）
+    image: any-llm:latest
+    container_name: any-llm
+    restart: unless-stopped
+    ports:
+      # 应用实际监听 6718（Dockerfile 里的 EXPOSE 8080 仅是声明）
+      - "6718:6718"
+    volumes:
+      # 数据库与会话密钥持久化到 named volume
+      - any-llm-data:/data
+    environment:
+      ANY_LLM_PORT: "6718"
+      ANY_LLM_DB_PATH: /data/any-llm.db
+      ANY_LLM_SESSION_SECRET_FILE: /data/.session-secret
+      # 日志走 stdout（docker compose logs -f 查看）
+      ANY_LLM_LOG_FILE: ""
+      # 在 .env 里设置，例如 ANY_LLM_MASTER_PASSWORD=your-password
+      ANY_LLM_MASTER_PASSWORD: ${ANY_LLM_MASTER_PASSWORD:-admin}
+
+volumes:
+  any-llm-data:
