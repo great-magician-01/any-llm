@@ -359,3 +359,75 @@ func TestEncodeStreamEvent_CacheUsageFallback(t *testing.T) {
 		t.Fatalf("delta missing output_tokens: %s", delta)
 	}
 }
+
+// TestStreamEncoder_ToolOnlyIndexRewritten verifies that a stream whose first
+// content_block arrives at IR index 1 (the OpenAI StreamDecoder reserves
+// index 0 for a text block and starts tool blocks at index 1, so a tool-only
+// turn never opens index 0) is rewritten so the Anthropic client sees a
+// 0-based, contiguous index sequence as the spec requires.
+func TestStreamEncoder_ToolOnlyIndexRewritten(t *testing.T) {
+	e := NewStreamEncoder()
+	var lines []string
+	enc := func(evt *translate.StreamEvent) {
+		fs, err := e.Encode(evt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			lines = append(lines, string(f))
+		}
+	}
+	enc(&translate.StreamEvent{Type: "message_start", MessageID: "m1", Model: "claude-3-5"})
+	enc(&translate.StreamEvent{Type: "content_block_start", Index: 1, Block: &translate.ContentBlock{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather"}}})
+	enc(&translate.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `{"city":"SF"}`}})
+	enc(&translate.StreamEvent{Type: "content_block_stop", Index: 1})
+	enc(&translate.StreamEvent{Type: "message_delta", StopReason: "tool_calls"})
+	enc(&translate.StreamEvent{Type: "message_stop"})
+
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, `"index":0`) {
+		t.Fatalf("expected the rewritten tool block to be at index 0, got: %s", joined)
+	}
+	if strings.Contains(joined, `"index":1`) {
+		t.Fatalf("original IR index 1 should have been rewritten to 0, got: %s", joined)
+	}
+	// sanity: the tool_use block still carries its id/name
+	if !strings.Contains(joined, `"id":"call_1"`) || !strings.Contains(joined, `"name":"get_weather"`) {
+		t.Fatalf("tool block payload lost: %s", joined)
+	}
+}
+
+// TestStreamEncoder_TextAndToolIndicesPreserved verifies that a normal
+// text-then-tool stream (text at index 0, tool at index 1) is emitted with
+// the SAME indices — the remap must not reorder already-0-based sequences.
+func TestStreamEncoder_TextAndToolIndicesPreserved(t *testing.T) {
+	e := NewStreamEncoder()
+	var lines []string
+	enc := func(evt *translate.StreamEvent) {
+		fs, err := e.Encode(evt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			lines = append(lines, string(f))
+		}
+	}
+	enc(&translate.StreamEvent{Type: "message_start", MessageID: "m1"})
+	enc(&translate.StreamEvent{Type: "content_block_start", Index: 0, Block: &translate.ContentBlock{Type: "text"}})
+	enc(&translate.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &translate.Delta{Type: "text_delta", Text: "Hi"}})
+	enc(&translate.StreamEvent{Type: "content_block_stop", Index: 0})
+	enc(&translate.StreamEvent{Type: "content_block_start", Index: 1, Block: &translate.ContentBlock{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather"}}})
+	enc(&translate.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &translate.Delta{Type: "input_json_delta", PartialJSON: `{"city":"SF"}`}})
+	enc(&translate.StreamEvent{Type: "content_block_stop", Index: 1})
+	enc(&translate.StreamEvent{Type: "message_delta", StopReason: "tool_calls"})
+	enc(&translate.StreamEvent{Type: "message_stop"})
+
+	joined := strings.Join(lines, "")
+	// both 0 and 1 must appear; no 2 should appear.
+	if !strings.Contains(joined, `"index":0`) || !strings.Contains(joined, `"index":1`) {
+		t.Fatalf("text(0) and tool(1) indices should be preserved, got: %s", joined)
+	}
+	if strings.Contains(joined, `"index":2`) {
+		t.Fatalf("no index 2 expected (text+tool only), got: %s", joined)
+	}
+}
