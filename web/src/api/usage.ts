@@ -12,9 +12,21 @@ export interface UsageRecord {
   stream: boolean; status: string; created_at: string
 }
 
+export interface UsageDayStat {
+  day: string; request_count: number; total_tokens: number
+  prompt_tokens: number; completion_tokens: number
+  cache_read_tokens: number; cache_creation_tokens: number; reasoning_tokens: number
+  ok_count: number; error_count: number
+}
+
 export async function fetchSummary(groupBy: string, from?: string, to?: string) {
   const { data } = await client.get('/usage/summary', { params: { group_by: groupBy, from, to } })
   return data.data as UsageSummary[]
+}
+
+export async function fetchDaily(days: number, from?: string, to?: string) {
+  const { data } = await client.get('/usage/daily', { params: { days, from, to } })
+  return data.data as UsageDayStat[]
 }
 
 export async function fetchRecords(page: number, size: number) {

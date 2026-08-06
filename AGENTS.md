@@ -58,6 +58,7 @@ All settings load from environment variables. A `.env` file in the working direc
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | warns on default at startup |
 | `ANY_LLM_SESSION_SECRET` | auto-gen | if unset, a random secret is generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` so sessions survive restarts; falls back to ephemeral (with warning) if the file is unwritable |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | where the auto-generated session secret is persisted (0600); only used when `ANY_LLM_SESSION_SECRET` is unset |
+| `ANY_LLM_SESSION_TTL` | `24h` | admin login session expiry; Go duration (`24h`, `168h`) or plain hours (`24`); `0` = never expire |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
@@ -84,7 +85,7 @@ All settings load from environment variables. A `.env` file in the working direc
 - **Graceful shutdown**: `main.go` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain, then force-close). Deferred cleanup runs LIFO: `writer.Stop` (drains queued usage writes) → `db.Close` → `logger.Close`. Server sets `ReadHeaderTimeout` (10s) but **no WriteTimeout** — SSE streams are long-lived.
 - **`cmd/any-llm/web/dist/` must exist** when compiling the Go binary (`//go:embed web/dist`) — `npm run build` copies it there; CI stubs it with an empty `index.html`
 - **Ext key format**: `all-sk-` prefix + 32 base62 chars
-- **Session auth**: HMAC-SHA256, 24h expiry; secret persisted in `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`, gitignored) when env unset
+- **Session auth**: HMAC-SHA256, expiry from `ANY_LLM_SESSION_TTL` (default 24h, `0` = never — signed as a year-9999 expiry so verification needs no special case); secret persisted in `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`, gitignored) when env unset
 - **DB writer**: `internal/db.Writer` serializes all writes through a single goroutine (buffered channel, capacity 512). `DoAsync` is fire-and-forget (silently drops on full buffer / after Stop); `DoSync` blocks for the result and returns `ErrWriterStopped` (mapped to HTTP 503) if the server is shutting down. `Stop` waits for in-flight sync calls to finish before draining and exiting, so concurrent shutdown cannot deadlock or orphan in-flight admin writes.
 - **Dialect abstraction**: `db.Rebind(d, q)` rewrites `?` placeholders to `$N` for PostgreSQL, inferred from the `*sql.DB` driver (no global state). String literals (`'...'`, with `''` escape) and SQL comments (`--`, `/* */`) are skipped so `?` inside them is preserved. Migrations are split into `migrationSQLite` / `migrationPG`; PG uses `BIGSERIAL` + `TIMESTAMP(0)`, SQLite uses `INTEGER PRIMARY KEY AUTOINCREMENT` + `DATETIME`.
 - **Streaming**: always injects `stream_options: {include_usage: true}` into OpenAI upstream requests

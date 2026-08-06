@@ -36,6 +36,19 @@ func (a *API) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": records, "total": total})
 		return
 	}
+	if r.URL.Path == "/api/admin/usage/daily" && r.Method == "GET" {
+		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+		from := r.URL.Query().Get("from")
+		to := r.URL.Query().Get("to")
+		stats, err := model.UsageDailyStats(a.db, days, from, to)
+		if err != nil {
+			logger.Error("admin: usage daily stats failed", "days", days, "from", from, "to", to, "err", err)
+			writeJSON(w, 500, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"data": stats})
+		return
+	}
 	// GET /api/admin/usage/key/:id    — daily/monthly token totals for an ext key
 	// GET /api/admin/usage/upstream/:id — daily/monthly token totals for an upstream
 	if r.Method == "GET" {

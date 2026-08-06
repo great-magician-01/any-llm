@@ -144,7 +144,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 	switch inFormat {
 	case "anthropic":
-		encoder = nil
+		// Stateful encoder: rewrites content_block indices to a 0-based
+		// contiguous sequence (the spec requires it; an OpenAI-only-tool-call
+		// upstream starts at index 1).
+		encoder = anthropic.NewStreamEncoder()
 	case "responses":
 		encoder = responses.NewStreamEncoder(realModel, sess.respID)
 	default:
@@ -191,7 +194,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			result, callErr = ret.result, ret.err
 			callDone = true
 			if callErr != nil {
-				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", callErr)
+				logger.Warn("upstream call returned with error", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", callErr)
 			} else {
 				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds())
 			}
@@ -221,8 +224,8 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		} else {
 			msg, errType, status = "upstream call failed: "+callErr.Error(), "upstream_error", 502
 		}
-		logger.Warn("upstream call failed after stream header sent",
-			"upstream", u.Name, "model", realModel, "status", status, "err", msg)
+		logger.Error("upstream call failed after stream header sent",
+			"upstream", u.Name, "model", realModel, "status", status, "err", msg, "in_format", inFormat)
 		if inFormat == "anthropic" {
 			payload, _ := json.Marshal(map[string]any{
 				"type":  "error",
@@ -314,8 +317,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 					Index: ev.Index,
 					Block: &translate.ContentBlock{Type: blockType},
 				}
-				if f, e := anthropic.EncodeStreamEvent(synthEv); e == nil {
-					w.Write(f)
+				if frames, e := encoder.Encode(synthEv); e == nil {
+					for _, f := range frames {
+						w.Write(f)
+					}
 					logger.Info("synthesized content_block_start", "index", ev.Index, "block_type", blockType)
 				}
 				blockStarted[ev.Index] = true
@@ -323,17 +328,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			if ev.Type == "content_block_start" {
 				blockStarted[ev.Index] = true
 			}
-			var frames [][]byte
-			var err error
-			if inFormat == "anthropic" {
-				f, e := anthropic.EncodeStreamEvent(ev)
-				err = e
-				if err == nil {
-					frames = [][]byte{f}
-				}
-			} else {
-				frames, err = encoder.Encode(ev)
-			}
+			frames, err := encoder.Encode(ev)
 			if err != nil {
 				logger.Warn("stream frame encode skipped", "in_format", inFormat, "type", ev.Type, "index", ev.Index, "err", err)
 				continue

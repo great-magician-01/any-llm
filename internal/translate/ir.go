@@ -64,7 +64,7 @@ type Tool struct {
 }
 
 type ToolChoice struct {
-	Type string // "auto" | "none" | "tool"
+	Type string // "auto" | "none" | "required" | "tool"
 	Name string // set when Type == "tool"
 }
 

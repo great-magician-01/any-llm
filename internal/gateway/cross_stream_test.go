@@ -169,3 +169,58 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 		t.Fatalf("recorded tokens=%+v", records[0])
 	}
 }
+
+// TestCompletion_StreamCrossFormat_ANTin_OAIup_ToolOnly verifies that when an
+// OpenAI-format upstream streams a tool-only turn (no text deltas), the
+// gateway's Anthropic output starts content_block indices at 0. The OpenAI
+// StreamDecoder reserves IR index 0 for a never-opened text block, so the
+// first tool_use block arrives at IR index 1; without index rewriting the
+// Anthropic client would see a stream whose first content_block_start has
+// index 1 (no index 0), which deviates from the Anthropic streaming spec.
+func TestCompletion_StreamCrossFormat_ANTin_OAIup_ToolOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		w.Write([]byte(`data: {"id":"c1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}` + "\n\n"))
+		f.Flush()
+		w.Write([]byte(`data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}` + "\n\n"))
+		f.Flush()
+		w.Write([]byte(`data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"SF\"}"}}]}}]}` + "\n\n"))
+		f.Flush()
+		w.Write([]byte(`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		f.Flush()
+		w.Write([]byte("data: [DONE]\n\n"))
+		f.Flush()
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"weather?"}],"stream":true}`))
+	req.Header.Set("x-api-key", k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, body)
+	}
+	if !strings.Contains(body, "event: content_block_start") {
+		t.Fatalf("missing content_block_start: %s", body)
+	}
+	// the (only) tool_use block must be at index 0, not 1
+	if !strings.Contains(body, `"index":0`) {
+		t.Fatalf("missing index 0 for first content_block (should be rewritten from 1): %s", body)
+	}
+	if strings.Contains(body, `"index":1`) {
+		t.Fatalf("index 1 should not appear (tool-only turn must start at 0): %s", body)
+	}
+	// payload sanity: the tool_use id/name survived the rewrite
+	if !strings.Contains(body, `"id":"call_1"`) || !strings.Contains(body, `"name":"get_weather"`) {
+		t.Fatalf("tool_use payload lost: %s", body)
+	}
+}
