@@ -30,13 +30,32 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 			out["system"] = sys
 		}
 	}
-	// messages
+	// messages — merge adjacent same-role messages so the output satisfies
+	// Anthropic's "roles must alternate" constraint. OpenAI clients emit one
+	// role:"tool" message per tool result, which decodes into one IR "user"
+	// message per result; without merging, two parallel tool results become
+	// two consecutive user messages and Anthropic rejects the request.
 	var msgs []rawMessage
+	var curRole string
+	var curParts []map[string]any
+	flush := func() {
+		if curRole == "" {
+			return
+		}
+		raw, _ := json.Marshal(curParts)
+		msgs = append(msgs, rawMessage{Role: curRole, Content: raw})
+		curRole, curParts = "", nil
+	}
 	for _, m := range req.Messages {
 		parts := encodeBlocks(m.Content)
-		raw, _ := json.Marshal(parts)
-		msgs = append(msgs, rawMessage{Role: m.Role, Content: raw})
+		if m.Role == curRole {
+			curParts = append(curParts, parts...)
+			continue
+		}
+		flush()
+		curRole, curParts = m.Role, parts
 	}
+	flush()
 	out["messages"] = msgs
 	if req.Temperature != nil {
 		out["temperature"] = *req.Temperature
@@ -60,7 +79,12 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 		out["tools"] = tools
 	}
 	if req.ToolChoice != nil {
-		tc := map[string]any{"type": req.ToolChoice.Type}
+		tcType := req.ToolChoice.Type
+		// IR "required" (must call a tool) maps to Anthropic's "any".
+		if tcType == "required" {
+			tcType = "any"
+		}
+		tc := map[string]any{"type": tcType}
 		if req.ToolChoice.Type == "tool" {
 			tc["name"] = req.ToolChoice.Name
 		}

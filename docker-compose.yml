@@ -2,6 +2,7 @@ services:
   any-llm:
     # 从 CI 下载的 .tar 镜像导入（docker load -i any-llm.tar），
     # 或本地构建（docker build -t any-llm:latest .）
+    build: .
     image: any-llm:latest
     container_name: any-llm
     restart: unless-stopped

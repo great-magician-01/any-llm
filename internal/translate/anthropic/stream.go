@@ -180,6 +180,51 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 	return []byte("event: " + evt.Type + "\ndata: " + string(b) + "\n\n"), nil
 }
 
+// StreamEncoder is a stateful encoder that rewrites content_block indices to
+// a 0-based, contiguous sequence, as required by the Anthropic streaming
+// spec. The raw upstream (or the IR produced by an OpenAI upstream) may emit
+// block indices that do not start at 0 — e.g. an OpenAI-only-tool-call turn
+// produces its first tool_use block at IR index 1 because the text block at
+// index 0 was never opened. Forwarding such indices verbatim yields a stream
+// whose first content_block_start has index 1 (no index 0), which deviates
+// from the spec and confuses strict clients.
+type StreamEncoder struct {
+	indexRemap map[int]int
+	nextIdx    int
+}
+
+func NewStreamEncoder() *StreamEncoder {
+	return &StreamEncoder{indexRemap: map[int]int{}}
+}
+
+// remapIndex maps an IR block index to the next contiguous 0-based output
+// index, allocating a new slot on first sight.
+func (e *StreamEncoder) remapIndex(irIdx int) int {
+	if out, ok := e.indexRemap[irIdx]; ok {
+		return out
+	}
+	out := e.nextIdx
+	e.indexRemap[irIdx] = out
+	e.nextIdx++
+	return out
+}
+
+// Encode translates one IR stream event into a single Anthropic SSE frame
+// (single-element slice, matching the openai.StreamEncoder interface so the
+// gateway can use a uniform encoder variable). It does not mutate evt.
+func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
+	out := *evt // shallow copy; Block/Delta pointers are read-only downstream
+	switch out.Type {
+	case "content_block_start", "content_block_delta", "content_block_stop":
+		out.Index = e.remapIndex(out.Index)
+	}
+	b, err := EncodeStreamEvent(&out)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
 func blockToRaw(b translate.ContentBlock) map[string]any {
 	switch b.Type {
 	case "text":

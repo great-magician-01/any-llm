@@ -367,6 +367,10 @@ func TestCrossRequest_OpenAIToResponses(t *testing.T) {
 }
 
 // Responses 请求 -> IR -> Anthropic -> IR，语义一致
+//
+// 注意：Anthropic 要求 user/assistant 角色交替，EncodeRequest 会把相邻同角色
+// 消息合并（此处为连续两条 assistant：文本 + function_call），因此往返后消息
+// 从 4 条变为 3 条，语义不变。
 func TestCrossRequest_ResponsesToAnthropic(t *testing.T) {
 	src := []byte(`{
 		"model":"claude-3-5",
@@ -384,6 +388,9 @@ func TestCrossRequest_ResponsesToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(ir1.Messages) != 4 {
+		t.Fatalf("ir1 messages len=%d want 4 (user/asst/asst/user before merge)", len(ir1.Messages))
+	}
 	antBytes, err := anthropic.EncodeRequest(ir1)
 	if err != nil {
 		t.Fatal(err)
@@ -392,7 +399,27 @@ func TestCrossRequest_ResponsesToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRequestsMatch(t, ir1, ir2)
+	want := &translate.Request{
+		Model:  ir1.Model,
+		System: ir1.System,
+		Messages: []translate.Message{
+			{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []translate.ContentBlock{
+				{Type: "text", Text: "sure"},
+				{Type: "tool_use", ToolUse: &translate.ToolUse{ID: "call_1", Name: "get_weather", Input: json.RawMessage(`{"city":"SF"}`)}},
+			}},
+			{Role: "user", Content: []translate.ContentBlock{{
+				Type: "tool_result",
+				ToolResult: &translate.ToolResult{
+					ToolUseID: "call_1",
+					Content:   []translate.ContentBlock{{Type: "text", Text: "sunny"}},
+				},
+			}}},
+		},
+		Tools:      ir1.Tools,
+		ToolChoice: ir1.ToolChoice,
+	}
+	assertRequestsMatch(t, want, ir2)
 }
 
 // Responses 响应 -> IR -> Anthropic -> IR（含 thinking 与 usage）
@@ -464,5 +491,152 @@ func TestCrossResponse_AnthropicToResponses(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s in %s", want, s)
 		}
+	}
+}
+
+// TestCrossRequest_OpenAIToAnthropic_ParallelToolResults verifies that when
+// an OpenAI client returns multiple parallel tool results (one role:"tool"
+// message per result), EncodeRequest merges them into a single user message
+// for the Anthropic upstream. Without merging, the output would contain two
+// consecutive user messages and Anthropic rejects the request with
+// "roles must alternate".
+func TestCrossRequest_OpenAIToAnthropic_ParallelToolResults(t *testing.T) {
+	src := []byte(`{
+		"model":"gpt-4o",
+		"messages":[
+			{"role":"user","content":"weather in SF and LA"},
+			{"role":"assistant","tool_calls":[
+				{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}},
+				{"id":"call_2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"LA\"}"}}
+			]},
+			{"role":"tool","tool_call_id":"call_1","content":"sunny"},
+			{"role":"tool","tool_call_id":"call_2","content":"rainy"}
+		],
+		"tools":[{"type":"function","function":{"name":"get_weather","description":"w","parameters":{"type":"object"}}}]
+	}`)
+	ir1, err := openai.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ir1.Messages) != 4 {
+		t.Fatalf("ir1 messages len=%d want 4 (user/asst/user/user before merge)", len(ir1.Messages))
+	}
+	antBytes, err := anthropic.EncodeRequest(ir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ant struct {
+		Messages []struct {
+			Role    string            `json:"role"`
+			Content []json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(antBytes, &ant); err != nil {
+		t.Fatal(err)
+	}
+	if len(ant.Messages) != 3 {
+		t.Fatalf("anthropic messages len=%d want 3 (tool results merged into one user msg)", len(ant.Messages))
+	}
+	wantRoles := []string{"user", "assistant", "user"}
+	for i, w := range wantRoles {
+		if ant.Messages[i].Role != w {
+			t.Fatalf("msg[%d] role=%q want %q (roles must alternate)", i, ant.Messages[i].Role, w)
+		}
+	}
+	last := ant.Messages[2]
+	if len(last.Content) != 2 {
+		t.Fatalf("merged user content len=%d want 2 tool_result blocks", len(last.Content))
+	}
+	for i, c := range last.Content {
+		var head struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id"`
+		}
+		if err := json.Unmarshal(c, &head); err != nil {
+			t.Fatalf("merged content[%d] unmarshal: %v", i, err)
+		}
+		if head.Type != "tool_result" {
+			t.Fatalf("merged content[%d] type=%q want tool_result", i, head.Type)
+		}
+	}
+	// round-trip: decode the merged Anthropic request back to IR and confirm
+	// both tool results survive in a single user message.
+	ir2, err := anthropic.DecodeRequest(antBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ir2.Messages) != 3 {
+		t.Fatalf("ir2 messages len=%d want 3", len(ir2.Messages))
+	}
+	merged := ir2.Messages[2]
+	if merged.Role != "user" {
+		t.Fatalf("ir2 msg[2] role=%q want user", merged.Role)
+	}
+	results := 0
+	for _, b := range merged.Content {
+		if b.Type == "tool_result" {
+			results++
+		}
+	}
+	if results != 2 {
+		t.Fatalf("ir2 merged user has %d tool_result blocks want 2", results)
+	}
+}
+
+// TestCrossRequest_ToolChoice_Required_To_Anthropic verifies OpenAI
+// tool_choice:"required" translates to Anthropic {"type":"any"} (both mean
+// "the model must call at least one tool").
+func TestCrossRequest_ToolChoice_Required_To_Anthropic(t *testing.T) {
+	src := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"tool_choice":"required"}`)
+	ir, err := openai.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir.ToolChoice == nil || ir.ToolChoice.Type != "required" {
+		t.Fatalf("ir tool_choice=%+v want required", ir.ToolChoice)
+	}
+	antBytes, err := anthropic.EncodeRequest(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ant struct {
+		TC struct {
+			Type string `json:"type"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(antBytes, &ant); err != nil {
+		t.Fatal(err)
+	}
+	if ant.TC.Type != "any" {
+		t.Fatalf("anthropic tool_choice.type=%q want any", ant.TC.Type)
+	}
+}
+
+// TestCrossRequest_ToolChoice_Any_To_OpenAI verifies Anthropic
+// tool_choice:{"type":"any"} translates to OpenAI "required".
+func TestCrossRequest_ToolChoice_Any_To_OpenAI(t *testing.T) {
+	src := []byte(`{"model":"c","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`)
+	ir, err := anthropic.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir.ToolChoice == nil || ir.ToolChoice.Type != "required" {
+		t.Fatalf("ir tool_choice=%+v want required (any normalized)", ir.ToolChoice)
+	}
+	oaiBytes, err := openai.EncodeRequest(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oai map[string]any
+	if err := json.Unmarshal(oaiBytes, &oai); err != nil {
+		t.Fatal(err)
+	}
+	tc, ok := oai["tool_choice"]
+	if !ok {
+		t.Fatalf("openai request missing tool_choice (should be \"required\")")
+	}
+	s, _ := tc.(string)
+	if s != "required" {
+		t.Fatalf("openai tool_choice=%v want \"required\"", tc)
 	}
 }

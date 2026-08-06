@@ -148,7 +148,14 @@ func decodeAnthropicToolChoice(raw json.RawMessage) *translate.ToolChoice {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &obj); err == nil {
-		return &translate.ToolChoice{Type: obj.Type, Name: obj.Name}
+		tc := &translate.ToolChoice{Type: obj.Type, Name: obj.Name}
+		// Anthropic expresses "must call a tool" as {"type":"any"}; OpenAI uses
+		// "required". Normalize to the IR "required" value so cross-format
+		// encoding works in both directions.
+		if tc.Type == "any" {
+			tc.Type = "required"
+		}
+		return tc
 	}
 	return &translate.ToolChoice{Type: "auto"}
 }

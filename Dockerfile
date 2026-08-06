@@ -10,6 +10,7 @@ RUN npm run build
 FROM golang:alpine AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 COPY . .
 COPY --from=frontend-builder /app/cmd/any-llm/web/dist ./cmd/any-llm/web/dist

@@ -103,7 +103,7 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 	}
 	if req.ToolChoice != nil {
 		switch req.ToolChoice.Type {
-		case "auto", "none":
+		case "auto", "none", "required":
 			out["tool_choice"] = req.ToolChoice.Type
 		case "tool":
 			out["tool_choice"] = map[string]any{
