@@ -43,7 +43,7 @@ func TestVerifyExpiredToken(t *testing.T) {
 }
 
 func TestLoginSuccess(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	req := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(`{"password":"admin"}`))
 	w := httptest.NewRecorder()
 	m.handleLogin(w, req)
@@ -56,8 +56,45 @@ func TestLoginSuccess(t *testing.T) {
 	}
 }
 
+func TestLoginSessionTTL(t *testing.T) {
+	m := NewMiddleware("secret12345678901234", "admin", 2*time.Hour)
+	req := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(`{"password":"admin"}`))
+	w := httptest.NewRecorder()
+	m.handleLogin(w, req)
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "s" {
+		t.Fatalf("cookies=%+v", cookies)
+	}
+	exp, err := VerifySession(m.secret, cookies[0].Value)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	// expiry should be ~2h from login, not the 24h default or the never sentinel
+	if d := time.Until(*exp); d > 3*time.Hour || d < time.Hour {
+		t.Fatalf("expiry %s not within ~2h of login", d)
+	}
+}
+
+func TestLoginSessionTTLZeroNeverExpires(t *testing.T) {
+	m := NewMiddleware("secret12345678901234", "admin", 0)
+	req := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(`{"password":"admin"}`))
+	w := httptest.NewRecorder()
+	m.handleLogin(w, req)
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "s" {
+		t.Fatalf("cookies=%+v", cookies)
+	}
+	exp, err := VerifySession(m.secret, cookies[0].Value)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !exp.Equal(neverExpires) {
+		t.Fatalf("expiry=%s want %s (never)", exp, neverExpires)
+	}
+}
+
 func TestLoginWrongPassword(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	req := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(`{"password":"wrong"}`))
 	w := httptest.NewRecorder()
 	m.handleLogin(w, req)
@@ -67,7 +104,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	req := httptest.NewRequest("POST", "/api/admin/logout", nil)
 	w := httptest.NewRecorder()
 	m.handleLogout(w, req)
@@ -78,7 +115,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestMiddlewareBlocksUnauthenticated(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	}))
@@ -91,7 +128,7 @@ func TestMiddlewareBlocksUnauthenticated(t *testing.T) {
 }
 
 func TestMiddlewareAllowsLogin(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not reach inner handler for /login")
 	}))
@@ -104,7 +141,7 @@ func TestMiddlewareAllowsLogin(t *testing.T) {
 }
 
 func TestMiddlewareAllowsAuthenticated(t *testing.T) {
-	m := NewMiddleware("secret12345678901234", "admin")
+	m := NewMiddleware("secret12345678901234", "admin", 24*time.Hour)
 	// login first to get token
 	lr := httptest.NewRequest("POST", "/api/admin/login", strings.NewReader(`{"password":"admin"}`))
 	lw := httptest.NewRecorder()

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 )
@@ -29,6 +30,8 @@ type Config struct {
 	MasterPassword    string
 	SessionSecret     string
 	SessionSecretFile string
+	// SessionTTL is how long admin login sessions live; 0 means never expire.
+	SessionTTL time.Duration
 	LogFile           string
 	LogLevel          logger.Level
 }
@@ -53,6 +56,7 @@ func Load() (*Config, error) {
 		MasterPassword:    envStr("ANY_LLM_MASTER_PASSWORD", "admin"),
 		SessionSecret:     envStr("ANY_LLM_SESSION_SECRET", ""),
 		SessionSecretFile: envStr("ANY_LLM_SESSION_SECRET_FILE", "./.session-secret"),
+		SessionTTL:        envDuration("ANY_LLM_SESSION_TTL", 24*time.Hour),
 		LogFile:           envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
 		LogLevel:          logLevel,
 	}
@@ -110,6 +114,24 @@ func envInt(key string, def int) int {
 			return n
 		}
 	}
+	return def
+}
+
+// envDuration parses a duration like "24h" (time.ParseDuration); a bare
+// integer is treated as hours ("24" == 24h). On parse failure it warns and
+// falls back to def. 0 means "never expires" — callers decide.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return time.Duration(n) * time.Hour
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: invalid %s=%q (want e.g. 24h or hours); using default %s\n", key, v, def)
 	return def
 }
 

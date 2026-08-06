@@ -19,6 +19,103 @@ type UsageSummary struct {
 	ErrorCount       int    `json:"error_count"`
 }
 
+// UsageDayStat holds one local-day bucket of usage aggregates. Day is the
+// bucket start (local midnight).
+type UsageDayStat struct {
+	Day                 time.Time `json:"day"`
+	RequestCount        int       `json:"request_count"`
+	TotalTokens         int       `json:"total_tokens"`
+	PromptTokens        int       `json:"prompt_tokens"`
+	CompletionTokens    int       `json:"completion_tokens"`
+	CacheReadTokens     int       `json:"cache_read_tokens"`
+	CacheCreationTokens int       `json:"cache_creation_tokens"`
+	ReasoningTokens     int       `json:"reasoning_tokens"`
+	OkCount             int       `json:"ok_count"`
+	ErrorCount          int       `json:"error_count"`
+}
+
+// UsageDailyStats returns per-local-day aggregates for a window of whole
+// days. With no from/to it covers [today-days+1, today]; with both set it
+// covers [from's day, to's day] (capped at 90 days). Days without records are
+// zero-filled. Days are bucketed in the server's local timezone, matching the
+// day windows used by the token-limit checks.
+func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, error) {
+	if days < 1 {
+		days = 14
+	}
+	if days > 90 {
+		days = 90
+	}
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -(days - 1))
+	end := start.AddDate(0, 0, days) // exclusive
+	if from != "" && to != "" {
+		ft, err := parseTimeParam(from)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: invalid from: %w", err)
+		}
+		tt, err := parseTimeParam(to)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: invalid to: %w", err)
+		}
+		start = time.Date(ft.Year(), ft.Month(), ft.Day(), 0, 0, 0, 0, time.Local)
+		end = time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, 1)
+		if end.Before(start) {
+			start, end = end.AddDate(0, 0, -1), start.AddDate(0, 0, 1)
+		}
+		if end.Sub(start) > 90*24*time.Hour {
+			end = start.AddDate(0, 0, 90)
+		}
+	}
+	days = int(end.Sub(start).Hours() / 24)
+	if days < 1 {
+		days = 1
+	}
+	// modernc.org/sqlite stores time.Time as "YYYY-MM-DD HH:MM:SS.nnnnnnnnn
+	// +ZZZZ CST" — not parseable by SQLite's date functions, so the day is
+	// taken from the first 10 chars. PG stores a real TIMESTAMP and uses
+	// date_trunc. Both expressions produce a "YYYY-MM-DD" text bucket.
+	bucketExpr := "substr(created_at, 1, 10)"
+	if db.DialectOf(d) == db.DialectPostgres {
+		bucketExpr = "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')"
+	}
+	rows, err := d.Query(db.Rebind(d, `SELECT `+bucketExpr+` AS bucket,
+		COUNT(*),
+		COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
+		COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END), 0)
+		FROM usage_records WHERE created_at >= ? AND created_at < ? GROUP BY bucket ORDER BY bucket`), start, end)
+	if err != nil {
+		return nil, fmt.Errorf("usage daily stats: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UsageDayStat, 0, days)
+	for i := 0; i < days; i++ {
+		out = append(out, UsageDayStat{Day: start.AddDate(0, 0, i)})
+	}
+	for rows.Next() {
+		var bucket string
+		var s UsageDayStat
+		if err := rows.Scan(&bucket, &s.RequestCount, &s.TotalTokens, &s.PromptTokens, &s.CompletionTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &s.ReasoningTokens, &s.OkCount, &s.ErrorCount); err != nil {
+			return nil, fmt.Errorf("usage daily stats: %w", err)
+		}
+		day, err := time.ParseInLocation("2006-01-02", bucket, time.Local)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: parse bucket %q: %w", bucket, err)
+		}
+		for i := range out {
+			if out[i].Day.Equal(day) {
+				out[i] = s
+				out[i].Day = day
+				break
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
 // SumTokens returns the total tokens consumed in the half-open time window
 // [from, to) for the given ext key or upstream. Pass a non-nil extKeyID to
 // aggregate by ext key, or a non-nil upstreamID to aggregate by upstream.

@@ -118,6 +118,106 @@ func TestUsageSummaryTimeWindow(t *testing.T) {
 	}
 }
 
+func TestUsageDailyStats(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	yesterday := dayStart.Add(-24 * time.Hour)
+	weekAgo := dayStart.AddDate(0, 0, -7)
+
+	// today: one ok + one error
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 100, PromptTokens: 60, CompletionTokens: 40,
+		CacheReadTokens: 10, ReasoningTokens: 5, Status: "ok"})
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 20, Status: "error"})
+	// yesterday: one ok
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 50, Status: "ok", CreatedAt: yesterday.Add(12 * time.Hour)})
+	// 7 days ago: outside a 7-day window, inside a 14-day window
+	InsertUsage(d, &UsageRecord{UpstreamID: &uid, UpstreamName: "u", Model: "m",
+		InFormat: "openai", UpFormat: "openai", TotalTokens: 999, Status: "ok", CreatedAt: weekAgo.Add(12 * time.Hour)})
+
+	stats, err := UsageDailyStats(d, 7, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 7 {
+		t.Fatalf("stats len=%d want 7", len(stats))
+	}
+	// buckets are consecutive local days ending today
+	for i, s := range stats {
+		want := dayStart.AddDate(0, 0, -(6 - i))
+		if !s.Day.Equal(want) {
+			t.Fatalf("stats[%d].Day=%v want %v", i, s.Day, want)
+		}
+	}
+	todayStat := stats[6]
+	if todayStat.RequestCount != 2 || todayStat.OkCount != 1 || todayStat.ErrorCount != 1 {
+		t.Fatalf("today stat=%+v", todayStat)
+	}
+	if todayStat.TotalTokens != 120 || todayStat.PromptTokens != 60 || todayStat.CompletionTokens != 40 {
+		t.Fatalf("today tokens=%+v", todayStat)
+	}
+	if todayStat.CacheReadTokens != 10 || todayStat.ReasoningTokens != 5 {
+		t.Fatalf("today cache/reasoning=%+v", todayStat)
+	}
+	if stats[5].TotalTokens != 50 || stats[5].RequestCount != 1 {
+		t.Fatalf("yesterday stat=%+v", stats[5])
+	}
+	// 7-day window excludes the week-ago record (bucket 0 is 6 days ago)
+	for _, s := range stats {
+		if s.TotalTokens == 999 {
+			t.Fatal("7-day window should exclude the week-ago record")
+		}
+	}
+
+	stats14, err := UsageDailyStats(d, 14, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats14) != 14 {
+		t.Fatalf("stats14 len=%d want 14", len(stats14))
+	}
+	var found bool
+	for _, s := range stats14 {
+		if s.TotalTokens == 999 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("14-day window should include the week-ago record")
+	}
+
+	// days is clamped
+	if s, _ := UsageDailyStats(d, 0, "", ""); len(s) != 14 {
+		t.Fatalf("days=0 len=%d want default 14", len(s))
+	}
+	if s, _ := UsageDailyStats(d, 365, "", ""); len(s) != 90 {
+		t.Fatalf("days=365 len=%d want clamp 90", len(s))
+	}
+
+	// explicit from/to window: yesterday only
+	ystart := dayStart.Add(-24 * time.Hour)
+	statsWin, err := UsageDailyStats(d, 90,
+		ystart.Format("2006-01-02T15:04:05"), dayStart.Add(24*time.Hour-time.Second).Format("2006-01-02T15:04:05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statsWin) != 2 {
+		t.Fatalf("window len=%d want 2", len(statsWin))
+	}
+	if statsWin[0].TotalTokens != 50 || statsWin[1].TotalTokens != 120 {
+		t.Fatalf("window stats=%+v %+v", statsWin[0], statsWin[1])
+	}
+	// invalid from -> error
+	if _, err := UsageDailyStats(d, 14, "nope", dayStart.Format("2006-01-02T15:04:05")); err == nil {
+		t.Fatal("expected error for invalid from")
+	}
+}
+
 func TestUsageRecordsList(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})

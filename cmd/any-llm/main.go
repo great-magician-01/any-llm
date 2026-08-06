@@ -81,7 +81,7 @@ func run() int {
 	gw := gateway.New(writer.DB, writer, client)
 
 	api := webapi.NewAPI(writer.DB, writer, client)
-	authM := auth.NewMiddleware(cfg.SessionSecret, cfg.MasterPassword)
+	authM := auth.NewMiddleware(cfg.SessionSecret, cfg.MasterPassword, cfg.SessionTTL)
 	adminHandler := authM.Wrap(api.Handler())
 
 	frontendFS, err := fs.Sub(frontend, "web/dist")

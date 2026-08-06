@@ -14,7 +14,11 @@ import (
 )
 
 const sessionName = "s"
-const sessionExpiry = 24 * time.Hour
+
+// neverExpires is the signed expiry for session TTLs of 0 (never expire).
+// It round-trips through RFC3339 fine and always parses as valid, so
+// VerifySession needs no special case.
+var neverExpires = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
 
 func SignSession(secret []byte, expiresAt time.Time) (string, error) {
 	mac := hmac.New(sha256.New, secret)
@@ -47,12 +51,16 @@ func VerifySession(secret []byte, token string) (*time.Time, error) {
 type Middleware struct {
 	secret         []byte
 	masterPassword string
+	sessionTTL     time.Duration
 }
 
-func NewMiddleware(secret, masterPassword string) *Middleware {
+// NewMiddleware creates the admin auth middleware. sessionTTL is how long
+// logins stay valid; 0 means sessions never expire.
+func NewMiddleware(secret, masterPassword string, sessionTTL time.Duration) *Middleware {
 	return &Middleware{
 		secret:         []byte(secret),
 		masterPassword: masterPassword,
+		sessionTTL:     sessionTTL,
 	}
 }
 
@@ -105,7 +113,10 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logger.Info("auth login succeeded", "remote", r.RemoteAddr)
-	exp := time.Now().Add(sessionExpiry)
+	exp := time.Now().Add(m.sessionTTL)
+	if m.sessionTTL <= 0 {
+		exp = neverExpires
+	}
 	token, err := SignSession(m.secret, exp)
 	if err != nil {
 		logger.Error("auth login: failed to sign session", "remote", r.RemoteAddr, "err", err)
@@ -126,7 +137,7 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-func (m *Middleware) handleLogout(w http.ResponseWriter, r *http.Request) {
+func (m *Middleware) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionName,
 		Value:    "",
