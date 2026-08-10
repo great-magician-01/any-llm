@@ -137,6 +137,37 @@ CREATE TABLE IF NOT EXISTS response_sessions (
     last_used_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
+
+-- conversation_records 归档每次网关对话（仅 PG；SQLite 不建此表）。
+-- request_ir/response_ir 是归一化 IR 的 JSON（含工具调用与思维链，可查询）；
+-- request_raw/response_raw 是入站请求体与发给客户端的原始字节（保真回放）。
+CREATE TABLE IF NOT EXISTS conversation_records (
+    id BIGSERIAL PRIMARY KEY,
+    ext_key_id BIGINT REFERENCES ext_keys(id),
+    upstream_id BIGINT,
+    upstream_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    in_format TEXT NOT NULL,
+    up_format TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    user_agent TEXT NOT NULL,
+    stream INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    request_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
+    request_raw BYTEA NOT NULL,
+    response_raw BYTEA NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_conv_created ON conversation_records(created_at);
+CREATE INDEX IF NOT EXISTS idx_conv_ext_key ON conversation_records(ext_key_id);
+CREATE INDEX IF NOT EXISTS idx_conv_harness ON conversation_records(harness);
 `
 
 // extraCols lists the columns added after the initial schema, together with
@@ -266,4 +297,11 @@ func dropUpstreamFormatCheck(d *sql.DB) error {
 		}
 		return tx.Commit()
 	}
+}
+
+// MigratePGForTest 对已连接的 PG 执行 PG 迁移脚本。导出供其他包（如 gateway）
+// 的 PG e2e 测试在独立 schema 里建表；生产代码用 OpenPG，不经过此函数。
+func MigratePGForTest(d *sql.DB) error {
+	_, err := d.Exec(migrationPG)
+	return err
 }
