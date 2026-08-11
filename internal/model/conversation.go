@@ -65,3 +65,80 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 	}
 	return nil
 }
+
+// convMetaCols 是列表/详情查询共用的元数据列，不含 request_ir/response_ir/
+// request_raw/response_raw 四个 payload 列（列表页不需要，raw 字节也不出 API）。
+const convMetaCols = `id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
+	harness, user_agent, stream, status,
+	prompt_tokens, completion_tokens, total_tokens,
+	cache_read_tokens, cache_creation_tokens, reasoning_tokens, created_at`
+
+// scanConversation 按 convMetaCols（withIR 时追加 request_ir, response_ir）的
+// 列顺序扫描一行。两种方言都适用：PG 的 JSONB 以 []byte 返回，可赋给 string。
+func scanConversation(scan func(dest ...any) error, r *ConversationRecord, withIR bool) error {
+	var extKeyID, upstreamID sql.NullInt64
+	var stream int
+	dest := []any{&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
+		&r.InFormat, &r.UpFormat, &r.Harness, &r.UserAgent, &stream, &r.Status,
+		&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
+		&r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens, &r.CreatedAt}
+	if withIR {
+		dest = append(dest, &r.RequestIR, &r.ResponseIR)
+	}
+	if err := scan(dest...); err != nil {
+		return err
+	}
+	if extKeyID.Valid {
+		id := extKeyID.Int64
+		r.ExtKeyID = &id
+	}
+	if upstreamID.Valid {
+		id := upstreamID.Int64
+		r.UpstreamID = &id
+	}
+	r.Stream = stream != 0
+	return nil
+}
+
+// ConversationRecordsList 分页列出对话归档（新到旧），只含元数据列。
+// page/size 规范化与 UsageRecordsList 一致。
+func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 200 {
+		size = 50
+	}
+	var total int
+	if err := d.QueryRow("SELECT COUNT(*) FROM conversation_records").Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count conversations: %w", err)
+	}
+	offset := (page - 1) * size
+	rows, err := d.Query(db.Rebind(d, `SELECT `+convMetaCols+`
+		FROM conversation_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list conversations: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ConversationRecord, 0)
+	for rows.Next() {
+		var r ConversationRecord
+		if err := scanConversation(rows.Scan, &r, false); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, nil
+}
+
+// GetConversation 取单条归档，含 request_ir/response_ir；raw 字节不查询
+// （JSON 输出为 null），避免 base64 大响应。不存在时返回 sql.ErrNoRows。
+func GetConversation(d *sql.DB, id int64) (*ConversationRecord, error) {
+	var r ConversationRecord
+	row := d.QueryRow(db.Rebind(d, `SELECT `+convMetaCols+`, request_ir, response_ir
+		FROM conversation_records WHERE id = ?`), id)
+	if err := scanConversation(row.Scan, &r, true); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

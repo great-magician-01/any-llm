@@ -28,6 +28,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/keys", a.handleKeys)
 	mux.HandleFunc("/api/admin/keys/", a.handleKeyItem)
 	mux.HandleFunc("/api/admin/usage/", a.handleUsage)
+	mux.HandleFunc("/api/admin/conversations", a.handleConversations)
+	mux.HandleFunc("/api/admin/conversations/", a.handleConversations)
 	return mux
 }
 

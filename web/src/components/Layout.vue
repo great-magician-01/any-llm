@@ -27,6 +27,7 @@ const menuItems = [
   item('上游管理', 'upstreams', 'layers'),
   item('API 密钥', 'keys', 'key'),
   item('用量统计', 'usage', 'chart'),
+  item('对话记录', 'conversations', 'chat'),
 ]
 </script>
 

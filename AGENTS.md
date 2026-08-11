@@ -78,6 +78,7 @@ All settings load from environment variables. A `.env` file in the working direc
   - Model format in request body: `upstream-name/model-name`
 - `/api/admin/*` — admin API (HMAC session auth, cookie `s`)
   - CRUD for upstreams, models, ext keys; usage summary/records
+  - `GET /api/admin/conversations[?page=&size=]` and `/api/admin/conversations/:id` — read-only access to archived conversations (`conversation_records`, **PG only**); on SQLite the list returns `{"data": [], "total": 0, "disabled": true}` so the frontend can show a hint. Responses never include the raw byte columns
 - `/*` — SPA fallback (serves embedded `web/dist/`; falls back to `index.html` for client-side routing)
 
 ## Gotchas

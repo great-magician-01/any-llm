@@ -14,6 +14,7 @@ const router = createRouter({
         { path: 'upstreams', name: 'upstreams', component: () => import('./views/Upstreams.vue') },
         { path: 'keys', name: 'keys', component: () => import('./views/Keys.vue') },
         { path: 'usage', name: 'usage', component: () => import('./views/Usage.vue') },
+        { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       ],
     },
   ],
