@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -322,5 +323,61 @@ func TestEncodeResponse_CacheUsage(t *testing.T) {
 	}
 	if usage["cache_creation_input_tokens"] != float64(120) {
 		t.Fatalf("cache_creation=%v", usage["cache_creation_input_tokens"])
+	}
+}
+
+// TestHostedToolRoundTrip verifies an Anthropic hosted tool (web_search_20250305,
+// which carries no input_schema but has type/max_uses as direct fields) survives
+// a decode→encode round trip intact — the gateway must not turn it into a plain
+// function tool with "input_schema": null, which upstreams reject with
+// "Invalid schema for function ... null is not of types boolean, object".
+func TestHostedToolRoundTrip(t *testing.T) {
+	in := `{"model":"deepseek-v4-pro","max_tokens":6400,"messages":[{"role":"user","content":[{"type":"text","text":"search"}]}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8,"allowed_domains":null}],"tool_choice":{"type":"auto"}}`
+	req, err := DecodeRequest([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	tools, _ := got["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%v", got["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "web_search_20250305" {
+		t.Fatalf("tool type lost: %s", out)
+	}
+	if tool["max_uses"] != float64(8) {
+		t.Fatalf("max_uses lost: %s", out)
+	}
+	if _, has := tool["input_schema"]; has {
+		t.Fatalf("hosted tool must not carry input_schema: %s", out)
+	}
+}
+
+// TestSchemaLessToolEncodedWithoutNullInputSchema ensures a tool with no
+// InputSchema is emitted without an input_schema key (nil RawMessage marshals
+// to JSON null, which breaks hosted-tool handling upstream).
+func TestSchemaLessToolEncodedWithoutNullInputSchema(t *testing.T) {
+	req := &translate.Request{
+		Model:     "m",
+		Messages:  []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 10,
+		Tools:     []translate.Tool{{Name: "web_search", Type: "web_search_20250305", Extra: map[string]any{"max_uses": 8}}},
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, `"input_schema"`) {
+		t.Fatalf("input_schema should be omitted, got: %s", s)
+	}
+	if !strings.Contains(s, `"web_search_20250305"`) || !strings.Contains(s, `"max_uses":8`) {
+		t.Fatalf("type/extra lost: %s", s)
 	}
 }

@@ -91,13 +91,18 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 		out["stop"] = req.Stop
 	}
 	if len(req.Tools) > 0 {
-		var tools []rawTool
+		var tools []any
 		for _, t := range req.Tools {
-			tools = append(tools, rawTool{Type: "function", Function: rawToolDef{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			}})
+			def := map[string]any{"name": t.Name}
+			if t.Description != "" {
+				def["description"] = t.Description
+			}
+			// hosted 工具没有 schema；输出 "parameters": null 会让上游
+			// 拒绝，省略即可（OpenAI 函数工具 parameters 默认为空对象）。
+			if len(t.InputSchema) > 0 {
+				def["parameters"] = t.InputSchema
+			}
+			tools = append(tools, map[string]any{"type": "function", "function": def})
 		}
 		out["tools"] = tools
 	}

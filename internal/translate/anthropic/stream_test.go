@@ -431,3 +431,41 @@ func TestStreamEncoder_TextAndToolIndicesPreserved(t *testing.T) {
 		t.Fatalf("no index 2 expected (text+tool only), got: %s", joined)
 	}
 }
+
+// TestServerBlockRoundTrip verifies hosted server blocks (server_tool_use and
+// web_search_tool_result) survive the stream decode→encode round trip with
+// their payload intact — the gateway must forward search results to the
+// client instead of stripping them to a bare type.
+func TestServerBlockRoundTrip(t *testing.T) {
+	startRaw := []byte(`{"type":"web_search_tool_result","tool_use_id":"call_1","content":[{"type":"web_search_result","title":"T","url":"https://x","encrypted_content":"abc"}]}`)
+	blk, err := decodeStreamContentBlock(startRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blk.Type != "web_search_tool_result" {
+		t.Fatalf("type=%q", blk.Type)
+	}
+	if blk.Extra == nil || blk.Extra["tool_use_id"] != "call_1" {
+		t.Fatalf("extra lost: %v", blk.Extra)
+	}
+	evt := &translate.StreamEvent{Type: "content_block_start", Index: 2, Block: blk}
+	f, err := EncodeStreamEvent(evt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(f)
+	for _, want := range []string{`"web_search_tool_result"`, `"tool_use_id":"call_1"`, `"encrypted_content":"abc"`, `"https://x"`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("round trip lost %s: %s", want, s)
+		}
+	}
+
+	// server_tool_use 同样保留 id/name/caller。
+	su, err := decodeStreamContentBlock([]byte(`{"type":"server_tool_use","id":"call_1","name":"web_search","input":{},"caller":{"type":"direct"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if su.Extra == nil || su.Extra["id"] != "call_1" || su.Extra["caller"] == nil {
+		t.Fatalf("server_tool_use extra lost: %v", su.Extra)
+	}
+}

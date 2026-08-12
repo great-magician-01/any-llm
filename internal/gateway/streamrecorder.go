@@ -71,10 +71,19 @@ func (s *streamRecorder) Add(ev *translate.StreamEvent) {
 					s.toolArgs[idx] = string(in)
 				}
 			}
-		default: // text 及其余
-			s.blockKind[idx] = "text"
-			if ev.Block.Text != "" {
-				s.textBuf[idx] += ev.Block.Text
+		default: // text 及其余（含 hosted server 块）
+			if ev.Block.Type == "text" || ev.Block.Extra == nil {
+				s.blockKind[idx] = "text"
+				if ev.Block.Text != "" {
+					s.textBuf[idx] += ev.Block.Text
+				}
+				return
+			}
+			// server_tool_use / web_search_tool_result 等未知块：保留真实
+			// type，内容（Extra）序列化后归档。
+			s.blockKind[idx] = ev.Block.Type
+			if b, err := json.Marshal(ev.Block.Extra); err == nil {
+				s.textBuf[idx] += string(b)
 			}
 		}
 	case "content_block_delta":
@@ -130,6 +139,13 @@ func (s *streamRecorder) Content() []translate.ContentBlock {
 			}
 			out = append(out, translate.ContentBlock{Type: "tool_use", ToolUse: tu})
 		default:
+			// 未知块类型（server 块）：还原 Extra 供归档 IR 展示。
+			if kind := s.blockKind[idx]; kind != "text" {
+				var extra map[string]any
+				_ = json.Unmarshal([]byte(s.textBuf[idx]), &extra)
+				out = append(out, translate.ContentBlock{Type: kind, Extra: extra})
+				continue
+			}
 			out = append(out, translate.ContentBlock{Type: "text", Text: s.textBuf[idx]})
 		}
 	}

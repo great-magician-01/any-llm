@@ -43,6 +43,31 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 			InputSchema: t.InputSchema,
 		})
 	}
+	// Hosted tools (web_search_20250305 等) 没有 input_schema，参数是 type/
+	// max_uses 等直接字段——从原始 JSON 里补全 Type 与 Extra，避免同格式
+	// 往返时把 hosted 工具破坏成 input_schema:null 的普通函数工具。
+	if rawTools, ok := all["tools"].([]any); ok {
+		for i := range rawTools {
+			if i >= len(req.Tools) {
+				break
+			}
+			m, _ := rawTools[i].(map[string]any)
+			if typ, ok := m["type"].(string); ok {
+				req.Tools[i].Type = typ
+			}
+			extra := map[string]any{}
+			for k, v := range m {
+				switch k {
+				case "name", "description", "input_schema", "type":
+				default:
+					extra[k] = v
+				}
+			}
+			if len(extra) > 0 {
+				req.Tools[i].Extra = extra
+			}
+		}
+	}
 	if len(known.ToolChoice) > 0 {
 		req.ToolChoice = decodeAnthropicToolChoice(known.ToolChoice)
 	}
@@ -125,9 +150,26 @@ func decodeBlocks(raw json.RawMessage) ([]translate.ContentBlock, error) {
 				Content:   decodeResultContent(tr.Content),
 				IsError:   tr.IsError,
 			}})
+		default:
+			// 未知块类型（server_tool_use / web_search_tool_result 等 hosted
+			// 工具块）：保留 type，其余字段进 Extra 供同格式往返透传。
+			out = append(out, decodeExtraBlock(head.Type, p))
 		}
 	}
 	return out, nil
+}
+
+// decodeExtraBlock 把未知类型的内容块拆成 type + 其余字段。
+func decodeExtraBlock(typ string, raw json.RawMessage) translate.ContentBlock {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return translate.ContentBlock{Type: typ}
+	}
+	delete(m, "type")
+	if len(m) == 0 {
+		m = nil
+	}
+	return translate.ContentBlock{Type: typ, Extra: m}
 }
 
 func decodeResultContent(raw json.RawMessage) []translate.ContentBlock {
