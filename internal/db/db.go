@@ -37,13 +37,15 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
-	if err := dropUpstreamFormatCheck(d); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("drop upstream format check: %w", err)
-	}
 	if err := migrateExtraCols(d); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("migrate extra cols: %w", err)
+	}
+	// 去外键/软删除升级放在 foreign_keys=ON 之前：SQLite 重建期间 REFERENCES
+	// 改写只受 legacy_alter_table 控制，但约束启用后 DROP/重建会受限。
+	if err := migrateSoftDelete(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("migrate soft delete: %w", err)
 	}
 	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		d.Close()
@@ -91,13 +93,13 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
-	if err := dropUpstreamFormatCheck(d); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("drop upstream format check: %w", err)
-	}
 	if err := migrateExtraCols(d); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("migrate extra cols: %w", err)
+	}
+	if err := migrateSoftDelete(d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("migrate soft delete: %w", err)
 	}
 	return d, nil
 }

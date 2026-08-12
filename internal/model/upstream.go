@@ -21,7 +21,7 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 
 func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE id=?`), id).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE id=? AND is_active = 1`), id).
 		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
@@ -31,7 +31,7 @@ func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE name=?`), name).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE name=? AND is_active = 1`), name).
 		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
@@ -41,8 +41,8 @@ func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 
 func ListUpstreams(d *sql.DB) ([]Upstream, error) {
 	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at,
-		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id) AS model_count
-		FROM upstreams u ORDER BY u.id`)
+		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
+		FROM upstreams u WHERE u.is_active = 1 ORDER BY u.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list upstreams: %w", err)
 	}
@@ -67,10 +67,17 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	return nil
 }
 
+// DeleteUpstream 软删除上游及其模型：置 is_active=0 后网关按名称解析即失败，
+// 行保留供用量/归档历史关联。部分唯一索引不占名额，同名可重建。
 func DeleteUpstream(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `DELETE FROM upstreams WHERE id=?`), id)
+	now := time.Now()
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET is_active = 0, updated_at=? WHERE id=? AND is_active = 1`), now, id)
 	if err != nil {
 		return fmt.Errorf("delete upstream %d: %w", id, err)
+	}
+	_, err = d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND is_active = 1`), id)
+	if err != nil {
+		return fmt.Errorf("delete upstream %d models: %w", id, err)
 	}
 	return nil
 }
@@ -79,7 +86,7 @@ const DefaultModelContextLength = 200000
 const DefaultModelMaxOutputLength = 200000
 
 func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
-	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual, context_length, max_output_length FROM upstream_models WHERE upstream_id=? ORDER BY model_name`), upstreamID)
+	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual, context_length, max_output_length FROM upstream_models WHERE upstream_id=? AND is_active = 1 ORDER BY model_name`), upstreamID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -108,7 +115,9 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	if maxOutputLength <= 0 {
 		maxOutputLength = DefaultModelMaxOutputLength
 	}
-	_, err := d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`),
+	// 唯一性由「仅活跃行」的部分唯一索引保证；WHERE 子句与索引谓词对应，
+	// 已软删除的同名模型不触发冲突（先由 ReplaceModels 复活再插入新行时也如此）。
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`),
 		upstreamID, modelName, m, contextLength, maxOutputLength)
 	if err != nil {
 		return fmt.Errorf("add model: %w", err)
@@ -123,7 +132,7 @@ func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int) error 
 	if maxOutputLength <= 0 {
 		maxOutputLength = DefaultModelMaxOutputLength
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=? WHERE id=?`),
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=? WHERE id=? AND is_active = 1`),
 		contextLength, maxOutputLength, id)
 	if err != nil {
 		return fmt.Errorf("update model: %w", err)
@@ -131,8 +140,9 @@ func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int) error 
 	return nil
 }
 
+// DeleteModel 软删除：模型立即从列表与网关路由中消失，行保留供历史关联。
 func DeleteModel(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `DELETE FROM upstream_models WHERE id=?`), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE id=? AND is_active = 1`), id)
 	if err != nil {
 		return fmt.Errorf("delete model: %w", err)
 	}
@@ -148,7 +158,7 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 	// Preserve user-configured lengths across re-fetch: snapshot the current
 	// non-manual rows before deleting them.
 	prev := make(map[string][2]int)
-	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length FROM upstream_models WHERE upstream_id=?`), upstreamID)
+	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length FROM upstream_models WHERE upstream_id=? AND is_active = 1`), upstreamID)
 	if err != nil {
 		return fmt.Errorf("snapshot models: %w", err)
 	}
@@ -162,7 +172,9 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 		prev[name] = [2]int{cl, ml}
 	}
 	rows.Close()
-	if _, err := tx.Exec(db.Rebind(d, `DELETE FROM upstream_models WHERE upstream_id=? AND manual=0`), upstreamID); err != nil {
+	// 同步删除改为软删除：行保留，若模型随后重新出现在上游列表里可复活，
+	// 避免重复行累积。
+	if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND manual=0 AND is_active = 1`), upstreamID); err != nil {
 		return fmt.Errorf("delete non-manual: %w", err)
 	}
 	for _, n := range names {
@@ -170,7 +182,11 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 		if p, ok := prev[n]; ok {
 			cl, ml = p[0], p[1]
 		}
-		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,0,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`), upstreamID, n, cl, ml); err != nil {
+		// 复活已软删除的同名自动模型（保留历史 id），再按需插入新行。
+		if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, context_length=?, max_output_length=? WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), cl, ml, upstreamID, n); err != nil {
+			return fmt.Errorf("revive model %s: %w", n, err)
+		}
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,0,?,?) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`), upstreamID, n, cl, ml); err != nil {
 			return fmt.Errorf("insert model %s: %w", n, err)
 		}
 	}

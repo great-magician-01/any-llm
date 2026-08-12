@@ -28,21 +28,20 @@ func pgTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
+	schema := fmt.Sprintf("any_llm_test_%d", time.Now().UnixNano())
+	// search_path 走连接参数而非 SET：pgx 连接池里 SET 只影响单条连接，
+	// 池内其他连接会漏配。
+	cfg.RuntimeParams["search_path"] = schema
 	d := stdlib.OpenDB(*cfg)
 	if err := d.Ping(); err != nil {
 		d.Close()
 		t.Fatalf("ping: %v", err)
 	}
-	schema := fmt.Sprintf("any_llm_test_%d", time.Now().UnixNano())
 	if _, err := d.Exec(fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
 		d.Close()
 		t.Fatalf("create schema: %v", err)
 	}
-	if _, err := d.Exec(fmt.Sprintf("SET search_path TO %s", schema)); err != nil {
-		d.Close()
-		t.Fatalf("set search_path: %v", err)
-	}
-	if _, err := d.Exec(migrationPG); err != nil {
+	if err := MigratePGForTest(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 		d.Close()
 		t.Fatalf("migrate: %v", err)
@@ -350,7 +349,7 @@ func getUpstreamByNameE2E(d *sql.DB, name string) (struct {
 		Name, BaseURL, APIKey, Format string
 		CreatedAt, UpdatedAt          time.Time
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=?`), name).
+	err := d.QueryRow(Rebind(d, `SELECT id, name, base_url, api_key, format, created_at, updated_at FROM upstreams WHERE name=? AND is_active = 1`), name).
 		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.CreatedAt, &u.UpdatedAt)
 	return u, err
 }
@@ -361,8 +360,8 @@ func listUpstreamsE2E(d *sql.DB) ([]struct {
 	ModelCount int64
 }, error) {
 	rows, err := d.Query(`SELECT u.id, u.name,
-		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id) AS model_count
-		FROM upstreams u ORDER BY u.id`)
+		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
+		FROM upstreams u WHERE u.is_active = 1 ORDER BY u.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +386,11 @@ func listUpstreamsE2E(d *sql.DB) ([]struct {
 }
 
 func deleteUpstreamE2E(d *sql.DB, id int64) error {
-	_, err := d.Exec(Rebind(d, `DELETE FROM upstreams WHERE id=?`), id)
+	_, err := d.Exec(Rebind(d, `UPDATE upstreams SET is_active = 0 WHERE id=? AND is_active = 1`), id)
+	if err != nil {
+		return err
+	}
+	_, err = d.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND is_active = 1`), id)
 	return err
 }
 
@@ -396,7 +399,7 @@ func addModelE2E(d *sql.DB, upstreamID int64, name string, manual bool) error {
 	if manual {
 		m = 1
 	}
-	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) DO NOTHING`),
+	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`),
 		upstreamID, name, m)
 	return err
 }
@@ -407,7 +410,7 @@ func listModelsE2E(d *sql.DB, upstreamID int64) ([]struct {
 	ModelName  string
 	Manual     int
 }, error) {
-	rows, err := d.Query(Rebind(d, `SELECT id, upstream_id, model_name, manual FROM upstream_models WHERE upstream_id=? ORDER BY model_name`), upstreamID)
+	rows, err := d.Query(Rebind(d, `SELECT id, upstream_id, model_name, manual FROM upstream_models WHERE upstream_id=? AND is_active = 1 ORDER BY model_name`), upstreamID)
 	if err != nil {
 		return nil, err
 	}
@@ -439,11 +442,14 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(Rebind(d, `DELETE FROM upstream_models WHERE upstream_id=? AND manual=0`), upstreamID); err != nil {
+	if _, err := tx.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND manual=0 AND is_active = 1`), upstreamID); err != nil {
 		return err
 	}
 	for _, n := range names {
-		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) DO NOTHING`), upstreamID, n); err != nil {
+		if _, err := tx.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 1 WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), upstreamID, n); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`), upstreamID, n); err != nil {
 			return err
 		}
 	}
@@ -510,7 +516,7 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	Label   string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +549,7 @@ func touchExtKeyE2E(d *sql.DB, id int64) error {
 }
 
 func deleteExtKeyE2E(d *sql.DB, id int64) error {
-	_, err := d.Exec(Rebind(d, `DELETE FROM ext_keys WHERE id=?`), id)
+	_, err := d.Exec(Rebind(d, `UPDATE ext_keys SET is_active = 0 WHERE id=? AND is_active = 1`), id)
 	return err
 }
 
@@ -701,4 +707,166 @@ func generateKeyE2E() (string, error) {
 		b[i] = chars[n.Int64()]
 	}
 	return "all-sk-" + string(b), nil
+}
+
+// TestPG_SoftDeleteMigrationFromOldSchema 在旧版 schema（内联 UNIQUE、外键、
+// format CHECK）上跑当前迁移管线，验证：约束全部移除、is_active 列就位
+// （存量行默认活跃）、部分唯一索引生效、软删除后同名可重建。
+func TestPG_SoftDeleteMigrationFromOldSchema(t *testing.T) {
+	dsn := os.Getenv("DB_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("set DB_TEST_PG_DSN to run postgres e2e tests")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	schema := fmt.Sprintf("any_llm_oldmig_test_%d", time.Now().UnixNano())
+	// search_path 走连接参数而非 SET：pgx 连接池里 SET 只影响单条连接。
+	cfg.RuntimeParams["search_path"] = schema
+	d := stdlib.OpenDB(*cfg)
+	if err := d.Ping(); err != nil {
+		d.Close()
+		t.Fatalf("ping: %v", err)
+	}
+	if _, err := d.Exec(fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
+		d.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
+		d.Close()
+	})
+
+	oldDDL := `
+CREATE TABLE upstreams (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    base_url TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    format TEXT NOT NULL CHECK(format IN ('openai','anthropic')),
+    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE upstream_models (
+    id BIGSERIAL PRIMARY KEY,
+    upstream_id BIGINT NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+    model_name TEXT NOT NULL,
+    manual INTEGER NOT NULL DEFAULT 0,
+    context_length INTEGER NOT NULL DEFAULT 200000,
+    max_output_length INTEGER NOT NULL DEFAULT 200000,
+    UNIQUE(upstream_id, model_name)
+);
+CREATE TABLE ext_keys (
+    id BIGSERIAL PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP(0)
+);
+CREATE TABLE usage_records (
+    id BIGSERIAL PRIMARY KEY,
+    ext_key_id BIGINT REFERENCES ext_keys(id),
+    upstream_id BIGINT,
+    upstream_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    in_format TEXT NOT NULL,
+    up_format TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE conversation_records (
+    id BIGSERIAL PRIMARY KEY,
+    ext_key_id BIGINT REFERENCES ext_keys(id),
+    upstream_id BIGINT,
+    upstream_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    in_format TEXT NOT NULL,
+    up_format TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    user_agent TEXT NOT NULL,
+    stream INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    request_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
+    response_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
+    request_raw BYTEA NOT NULL,
+    response_raw BYTEA NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
+	if _, err := d.Exec(oldDDL); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x','k1','openai')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (1,'m1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-old','legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO usage_records (ext_key_id, upstream_id, upstream_name, model, in_format, up_format) VALUES (1, 1, 'u1', 'm1', 'anthropic', 'openai')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 与 OpenPG 相同的迁移管线
+	if _, err := d.Exec(migrationPG); err != nil {
+		t.Fatalf("migrationPG: %v", err)
+	}
+	if err := migrateExtraCols(d); err != nil {
+		t.Fatalf("extraCols: %v", err)
+	}
+	if err := migrateSoftDelete(d); err != nil {
+		t.Fatalf("soft delete migrate: %v", err)
+	}
+
+	// CHECK 已移除：可插入 responses
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u2','http://y','k2','responses')`); err != nil {
+		t.Fatalf("CHECK not dropped: %v", err)
+	}
+	// 外键已移除：坏 id 可插入
+	if _, err := d.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (999,'m2')`); err != nil {
+		t.Fatalf("FK not dropped: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO usage_records (ext_key_id, upstream_name, model, in_format, up_format) VALUES (999,'x','y','z','w')`); err != nil {
+		t.Fatalf("usage FK not dropped: %v", err)
+	}
+	// 存量行默认活跃
+	var active int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE is_active = 1`).Scan(&active); err != nil || active != 2 {
+		t.Fatalf("existing rows should default active: n=%d err=%v", active, err)
+	}
+	// 部分唯一索引：活跃行重名被拒；软删除后同名可重建
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://z','k3','openai')`); err == nil {
+		t.Fatal("duplicate active name should be rejected")
+	}
+	if _, err := d.Exec(`UPDATE upstreams SET is_active = 0 WHERE name='u1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://z2','k4','openai')`); err != nil {
+		t.Fatalf("re-create same name after soft delete: %v", err)
+	}
+	// 旧数据完好
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE model_name='m1'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("old rows kept: n=%d err=%v", n, err)
+	}
 }

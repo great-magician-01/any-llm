@@ -98,8 +98,9 @@ func TestOpenPG_FreshCreatesAllTables(t *testing.T) {
 	}
 }
 
-// 旧库（含 CHECK 约束）迁移后：约束移除、数据完好、会话表已建
-func TestOpenSQLite_DropsFormatCheckAndKeepsData(t *testing.T) {
+// 旧库（含 CHECK 约束、外键、内联 UNIQUE）迁移后：约束全部移除、数据完好、
+// 软删除列与部分唯一索引就位、会话表已建
+func TestOpenSQLite_DropsConstraintsAndKeepsData(t *testing.T) {
 	oldSchema := `
 CREATE TABLE IF NOT EXISTS upstreams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +121,34 @@ CREATE TABLE IF NOT EXISTS upstream_models (
     context_length INTEGER NOT NULL DEFAULT 200000,
     max_output_length INTEGER NOT NULL DEFAULT 200000,
     UNIQUE(upstream_id, model_name)
+);
+CREATE TABLE IF NOT EXISTS ext_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME
+);
+CREATE TABLE IF NOT EXISTS usage_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ext_key_id INTEGER REFERENCES ext_keys(id),
+    upstream_id INTEGER,
+    upstream_name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    in_format TEXT NOT NULL,
+    up_format TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    stream INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 	path := filepath.Join(t.TempDir(), "old.db")
 	d, err := sql.Open("sqlite", path)
@@ -138,6 +167,12 @@ CREATE TABLE IF NOT EXISTS upstream_models (
 	if _, err := d.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (1,'m1')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-old','legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO usage_records (ext_key_id, upstream_id, upstream_name, model, in_format, up_format) VALUES (1, 1, 'u1', 'm1', 'anthropic', 'openai')`); err != nil {
+		t.Fatal(err)
+	}
 	d.Close()
 
 	got, err := OpenSQLite(path)
@@ -146,7 +181,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
 	}
 	defer got.Close()
 
-	// 约束已移除：可插入 responses
+	// CHECK 已移除：可插入 responses
 	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u3','http://z','k3','responses')`); err != nil {
 		t.Fatalf("insert responses format failed: %v", err)
 	}
@@ -159,34 +194,52 @@ CREATE TABLE IF NOT EXISTS upstream_models (
 	if err := got.QueryRow(`SELECT id FROM upstreams WHERE name='u1'`).Scan(&id1); err != nil || id1 != 1 {
 		t.Fatalf("row id preserved: id=%d err=%v", id1, err)
 	}
-	// 重建后 FK 仍指向新 upstreams（而非被删的 upstreams_bak）：
-	// (1) upstream_models 的 stored schema 不得引用 backup 表
-	// （legacy_alter_table 偏差的关键回归点：没有它 RENAME 会把 REFERENCES
-	// 改写成 upstreams_bak，此断言失败）
-	var mSQL string
-	if err := got.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='upstream_models'`).Scan(&mSQL); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(mSQL, "upstreams_bak") {
-		t.Fatalf("upstream_models still references backup table:\n%s", mSQL)
-	}
-	// (2) join 可见（表本身完好）
+	// join 可见（表本身完好）
 	var cnt int
 	if err := got.QueryRow(`SELECT COUNT(*) FROM upstream_models m JOIN upstreams u ON u.id = m.upstream_id WHERE m.model_name='m1' AND u.name='u1'`).Scan(&cnt); err != nil || cnt != 1 {
 		t.Fatalf("model join after rebuild: cnt=%d err=%v", cnt, err)
 	}
-	// (3) FK 约束仍被强制：坏 upstream_id 必须失败（若 FK 悬空指向已删的
-	// upstreams_bak 也会报错，但错误不同，此断言不能单独区分两种情形）
-	if _, err := got.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (999, 'm2')`); err == nil {
-		t.Fatal("FK not enforced after rebuild: upstream_models may still reference upstreams_bak")
+	// 所有表 schema 均无 REFERENCES/内联 UNIQUE/CHECK，且软删除表带 is_active
+	for table, wantActiveCol := range map[string]bool{
+		"upstreams": true, "upstream_models": true, "ext_keys": true, "usage_records": false,
+	} {
+		var sqlText string
+		if err := got.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&sqlText); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(sqlText, "REFERENCES") || strings.Contains(sqlText, "CHECK(") || strings.Contains(sqlText, "UNIQUE") {
+			t.Fatalf("%s still has constraints: %s", table, sqlText)
+		}
+		if strings.Contains(sqlText, "upstreams_bak") || strings.Contains(sqlText, "ext_keys_bak") {
+			t.Fatalf("%s references backup table: %s", table, sqlText)
+		}
+		if wantActiveCol && !strings.Contains(sqlText, "is_active") {
+			t.Fatalf("%s missing is_active: %s", table, sqlText)
+		}
 	}
-	// (4) 级联删除真实生效（FK 端到端指向重建后的 upstreams）
-	if _, err := got.Exec(`DELETE FROM upstreams WHERE id=1`); err != nil {
-		t.Fatalf("delete upstream after rebuild: %v", err)
+	// 外键已移除：坏 upstream_id / ext_key_id 不再被拒绝
+	if _, err := got.Exec(`INSERT INTO upstream_models (upstream_id, model_name) VALUES (999, 'm2')`); err != nil {
+		t.Fatalf("no FK expected, insert bad upstream_id: %v", err)
 	}
-	var cascadeN int
-	if err := got.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE model_name='m1'`).Scan(&cascadeN); err != nil || cascadeN != 0 {
-		t.Fatalf("cascade delete after rebuild: n=%d err=%v", cascadeN, err)
+	if _, err := got.Exec(`INSERT INTO usage_records (ext_key_id, upstream_name, model, in_format, up_format) VALUES (999, 'x', 'y', 'z', 'w')`); err != nil {
+		t.Fatalf("no FK expected, insert bad ext_key_id: %v", err)
+	}
+	// 部分唯一索引存在；软删除后同名可重建
+	for _, idx := range []string{"idx_upstreams_name", "idx_upstream_models_uid_name", "idx_ext_keys_key"} {
+		var name string
+		if err := got.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&name); err != nil {
+			t.Fatalf("partial unique index %s missing: %v", idx, err)
+		}
+	}
+	if _, err := got.Exec(`UPDATE upstreams SET is_active = 0 WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x2','k1b','openai')`); err != nil {
+		t.Fatalf("re-create same name after soft delete: %v", err)
+	}
+	// 活跃行唯一性仍被强制
+	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x3','k1c','openai')`); err == nil {
+		t.Fatal("duplicate active name should violate partial unique index")
 	}
 	// 会话表已建
 	var tname string
