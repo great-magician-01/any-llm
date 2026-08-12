@@ -31,19 +31,18 @@ func pgConvTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
+	schema := fmt.Sprintf("any_llm_conv_test_%d", time.Now().UnixNano())
+	// search_path 走连接参数而非 SET：pgx 连接池里 SET 只影响单条连接，
+	// 网关的异步 writer 等其他连接会漏配（曾导致查询打到默认 schema）。
+	cfg.RuntimeParams["search_path"] = schema
 	d := stdlib.OpenDB(*cfg)
 	if err := d.Ping(); err != nil {
 		d.Close()
 		t.Fatalf("ping: %v", err)
 	}
-	schema := fmt.Sprintf("any_llm_conv_test_%d", time.Now().UnixNano())
 	if _, err := d.Exec(fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
 		d.Close()
 		t.Fatalf("create schema: %v", err)
-	}
-	if _, err := d.Exec(fmt.Sprintf("SET search_path TO %s", schema)); err != nil {
-		d.Close()
-		t.Fatalf("set search_path: %v", err)
 	}
 	if err := db.MigratePGForTest(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
@@ -133,10 +132,12 @@ func TestPGConvNonStream(t *testing.T) {
 	if string(respRaw) != mockBody {
 		t.Errorf("response_raw mismatch:\n got %s\nwant %s", respRaw, mockBody)
 	}
-	if !strings.Contains(reqIR, `"Model":"gpt-4o"`) {
+	// 注意：jsonb 经 PG 输出时格式为 `"Model": "gpt-4o"`（冒号后带空格），
+	// 断言不依赖紧凑格式。
+	if !strings.Contains(reqIR, `"Model"`) || !strings.Contains(reqIR, `"gpt-4o"`) {
 		t.Errorf("request_ir missing model: %s", reqIR)
 	}
-	if !strings.Contains(respIR, `"content":"ok"`) && !strings.Contains(respIR, `"Text":"ok"`) {
+	if !strings.Contains(respIR, `"ok"`) {
 		t.Errorf("response_ir missing content: %s", respIR)
 	}
 	if extKeyID != k.ID {
