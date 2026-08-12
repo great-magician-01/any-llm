@@ -8,7 +8,10 @@ import "strings"
 func detectHarness(ua string) string {
 	u := strings.ToLower(ua)
 	switch {
-	case strings.Contains(u, "claude-code"):
+	case strings.Contains(u, "claude-code"), strings.Contains(u, "claude-cli"):
+		// Claude Code 真实 UA 是 "claude-cli/x.y.z (external, cli)"，
+		// 与文档/测试里常见的 "claude-code" 写法并列匹配，统一归为
+		// 规范名 claude-code。
 		return "claude-code"
 	case strings.Contains(u, "codex"):
 		return "codex"

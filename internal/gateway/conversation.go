@@ -17,6 +17,11 @@ import (
 // 512 缓冲的 writer channel 内存。
 const convRawCap = 64 << 20 // 64 MiB
 
+// convReqRawCap 限制归档的请求体原始字节上限。请求体本身没有大小限制
+// （io.ReadAll 整包读入），归档闭包又会在 writer 队列里再持有它一份，
+// 只保留前缀即可满足回放定位用途。
+const convReqRawCap = 1 << 20 // 1 MiB
+
 // convCtx 贯穿单个请求的对话记录上下文。SQLite 时恒为 nil（记录关闭），
 // 所有 finish 调用对 nil 接收者直接返回，零开销。
 type convCtx struct {
@@ -95,6 +100,18 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 	if c.tee != nil {
 		respRaw = c.tee.buf.Bytes()
 	}
+	// 错误路径（上游报错/编码失败/客户端断连）tee 未安装或缓冲为空时
+	// Bytes() 返回 nil，插入会变成 NULL 违反 NOT NULL 约束导致整条记录
+	// 丢弃——统一兜底为空字节。
+	if respRaw == nil {
+		respRaw = []byte{}
+	}
+	// 请求体只保留前缀（拷贝，避免闭包持有整包底层数组）。
+	reqRaw := c.reqRaw
+	if len(reqRaw) > convReqRawCap {
+		reqRaw = reqRaw[:convReqRawCap]
+	}
+	reqRaw = append([]byte(nil), reqRaw...)
 	rec := &model.ConversationRecord{
 		ExtKeyID:            c.extKeyID,
 		UpstreamID:          c.upstreamID,
@@ -114,7 +131,7 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 		ReasoningTokens:     usage.ReasoningTokens,
 		RequestIR:           string(c.reqIRJSON),
 		ResponseIR:          string(respJSON),
-		RequestRaw:          c.reqRaw,
+		RequestRaw:          reqRaw,
 		ResponseRaw:         respRaw,
 		CreatedAt:           c.createdAt,
 	}
