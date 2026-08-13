@@ -114,7 +114,7 @@ func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, m
 	if enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=?`),
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=? AND is_active = 1`),
 		label, en, dailyLimit, monthlyLimit, id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
@@ -123,7 +123,7 @@ func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, m
 }
 
 func TouchExtKey(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=?`), time.Now(), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=? AND is_active = 1`), time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("touch ext key: %w", err)
 	}

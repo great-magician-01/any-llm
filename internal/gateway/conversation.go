@@ -106,12 +106,12 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 	if respRaw == nil {
 		respRaw = []byte{}
 	}
-	// 请求体只保留前缀（拷贝，避免闭包持有整包底层数组）。
+	// 请求体只保留前缀：截断时顺手拷贝，避免归档闭包持有整包底层数组；
+	// 未超上限直接引用，省去逐请求拷贝。
 	reqRaw := c.reqRaw
 	if len(reqRaw) > convReqRawCap {
-		reqRaw = reqRaw[:convReqRawCap]
+		reqRaw = append([]byte(nil), reqRaw[:convReqRawCap]...)
 	}
-	reqRaw = append([]byte(nil), reqRaw...)
 	rec := &model.ConversationRecord{
 		ExtKeyID:            c.extKeyID,
 		UpstreamID:          c.upstreamID,
