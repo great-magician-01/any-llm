@@ -4,7 +4,7 @@
 
 - **Monorepo**: Go backend (root, module `github.com/great-magician-01/any-llm`) + Vue 3 SPA frontend (`web/`)
 - **Backend**: single-binary Go app with embedded frontend via `//go:embed web/dist` (relative to `cmd/any-llm/`)
-- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite
+- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite. Two parallel page sets: classic dark theme (`web/src/views/`, routes `/login`, `/dashboard`, ...) and a glassmorphism set (`web/src/glass/`, same pages under the `/glass` route prefix, e.g. `/glass/dashboard`) — glass views reuse `web/src/api`, `web/src/utils` and shared components (`StatCard`, `BarChart`, ...), adapting via CSS-var overrides in `web/src/glass/glass.css` + a nested `n-config-provider` in `web/src/glass/GlassShell.vue`; `body.glass-mode` (toggled by the router) styles teleported popups
 - **DB**: SQLite (`modernc.org/sqlite`, pure Go, no CGO) or PostgreSQL (`jackc/pgx/v5`); selected via `DB_TYPE`. Tables auto-created on startup via `db.OpenSQLite` / `db.OpenPG`
 - **No frameworks** on backend: stdlib `net/http` only
 - **Translation layer**: requests flow through an IR (`internal/translate/`) — OpenAI/Anthropic in/out, any upstream format

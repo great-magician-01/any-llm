@@ -2,8 +2,8 @@
 import { h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import client from '../api/client'
-import BrandMark from './BrandMark.vue'
-import AppIcon, { type IconName } from './AppIcon.vue'
+import BrandMark from '../components/BrandMark.vue'
+import AppIcon, { type IconName } from '../components/AppIcon.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -11,7 +11,7 @@ const route = useRoute()
 async function logout() {
   await client.post('/logout')
   localStorage.removeItem('authed')
-  router.push('/login')
+  router.push('/glass/login')
 }
 
 function item(label: string, key: string, icon: IconName) {
@@ -23,11 +23,11 @@ function item(label: string, key: string, icon: IconName) {
 }
 
 const menuItems = [
-  item('概览', 'dashboard', 'dashboard'),
-  item('上游管理', 'upstreams', 'layers'),
-  item('API 密钥', 'keys', 'key'),
-  item('用量统计', 'usage', 'chart'),
-  item('对话记录', 'conversations', 'chat'),
+  item('概览', 'glass-dashboard', 'dashboard'),
+  item('上游管理', 'glass-upstreams', 'layers'),
+  item('API 密钥', 'glass-keys', 'key'),
+  item('用量统计', 'glass-usage', 'chart'),
+  item('对话记录', 'glass-conversations', 'chat'),
 ]
 </script>
 
@@ -58,9 +58,9 @@ const menuItems = [
             <span>退出登录</span>
           </button>
         </div>
-        <div class="theme-switch" @click="router.push('/glass/dashboard')">
+        <div class="theme-switch" @click="router.push('/dashboard')">
           <AppIcon name="swap" :size="14" />
-          <span>切换到毛玻璃版</span>
+          <span>切换到经典版</span>
         </div>
       </div>
     </n-layout-sider>
@@ -75,7 +75,9 @@ const menuItems = [
 <style scoped>
 .sider {
   border-right: 1px solid var(--border-soft);
-  background: linear-gradient(180deg, rgba(91, 140, 255, 0.05) 0%, rgba(10, 15, 29, 0) 240px);
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 .sider-inner {
   display: flex;
@@ -130,7 +132,7 @@ const menuItems = [
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 0 10px rgba(91, 140, 255, 0.4);
+  box-shadow: 0 0 10px rgba(123, 163, 255, 0.4);
 }
 .admin-name {
   font-size: 13px;
@@ -153,8 +155,8 @@ const menuItems = [
     background 0.15s ease;
 }
 .logout-btn:hover {
-  color: #fb7185;
-  background: rgba(251, 113, 133, 0.08);
+  color: #fc8a9b;
+  background: rgba(251, 113, 133, 0.1);
 }
 .theme-switch {
   margin-top: 10px;
@@ -165,7 +167,7 @@ const menuItems = [
   padding: 7px 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.05);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text-3);
   font-size: 12px;
   cursor: pointer;
@@ -176,8 +178,8 @@ const menuItems = [
 }
 .theme-switch:hover {
   color: var(--brand-hover);
-  border-color: rgba(91, 140, 255, 0.4);
-  background: rgba(91, 140, 255, 0.1);
+  border-color: rgba(123, 163, 255, 0.4);
+  background: rgba(123, 163, 255, 0.1);
 }
 .content {
   background: transparent;

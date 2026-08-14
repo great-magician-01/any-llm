@@ -22,4 +22,16 @@ describe('router auth guard', () => {
     await router.push('/login')
     expect(router.currentRoute.value.name).toBe('dashboard')
   })
+
+  it('redirects unauthenticated users of /glass pages to /glass/login', async () => {
+    await router.push('/glass/usage')
+    expect(router.currentRoute.value.name).toBe('glass-login')
+  })
+
+  it('bounces authenticated users away from /glass/login', async () => {
+    localStorage.setItem('authed', '1')
+    await router.push('/glass/keys')
+    await router.push('/glass/login')
+    expect(router.currentRoute.value.name).toBe('glass-dashboard')
+  })
 })

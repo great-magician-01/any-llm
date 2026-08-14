@@ -9,9 +9,14 @@ const client = axios.create({
 client.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err.response?.status === 401 && window.location.hash !== '#/login') {
-      localStorage.removeItem('authed')
-      window.location.hash = '#/login'
+    if (err.response?.status === 401) {
+      // 玻璃套件（#/glass/*）回到玻璃登录页，经典版回到 #/login
+      const isGlass = window.location.hash.startsWith('#/glass')
+      const loginHash = isGlass ? '#/glass/login' : '#/login'
+      if (window.location.hash !== loginHash) {
+        localStorage.removeItem('authed')
+        window.location.hash = loginHash
+      }
     }
     return Promise.reject(err)
   },

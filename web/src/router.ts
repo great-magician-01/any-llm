@@ -17,6 +17,26 @@ const router = createRouter({
         { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
       ],
     },
+    {
+      // 毛玻璃风格页面套件：与经典版一一对应，仅视觉风格不同
+      path: '/glass',
+      component: () => import('./glass/GlassShell.vue'),
+      children: [
+        { path: 'login', name: 'glass-login', component: () => import('./glass/views/GlassLogin.vue') },
+        {
+          path: '',
+          component: () => import('./glass/GlassLayout.vue'),
+          children: [
+            { path: '', redirect: '/glass/dashboard' },
+            { path: 'dashboard', name: 'glass-dashboard', component: () => import('./glass/views/GlassDashboard.vue') },
+            { path: 'upstreams', name: 'glass-upstreams', component: () => import('./glass/views/GlassUpstreams.vue') },
+            { path: 'keys', name: 'glass-keys', component: () => import('./glass/views/GlassKeys.vue') },
+            { path: 'usage', name: 'glass-usage', component: () => import('./glass/views/GlassUsage.vue') },
+            { path: 'conversations', name: 'glass-conversations', component: () => import('./glass/views/GlassConversations.vue') },
+          ],
+        },
+      ],
+    },
   ],
 })
 
@@ -24,11 +44,14 @@ router.beforeEach((to, _from) => {
   // Session cookie is HttpOnly, so JS cannot read it; use a localStorage flag
   // set on login as a UI hint. Real auth is still enforced by the API (401).
   const hasSession = localStorage.getItem('authed') === '1'
-  if (to.name !== 'login' && !hasSession) {
-    return { name: 'login' }
+  const isGlass = to.path.startsWith('/glass')
+  const loginName = isGlass ? 'glass-login' : 'login'
+  const homeName = isGlass ? 'glass-dashboard' : 'dashboard'
+  if (to.name !== loginName && !hasSession) {
+    return { name: loginName }
   }
-  if (to.name === 'login' && hasSession) {
-    return { name: 'dashboard' }
+  if (to.name === loginName && hasSession) {
+    return { name: homeName }
   }
 })
 
@@ -47,7 +70,9 @@ router.onError((error) => {
   }
 })
 
-router.afterEach(() => {
+router.afterEach((to) => {
+  // 玻璃套件的浮层（Modal/Popover/Message 等 teleport 到 body）靠 body.glass-mode 加毛玻璃
+  document.body.classList.toggle('glass-mode', to.path.startsWith('/glass'))
   sessionStorage.removeItem('reloaded-on-import-fail')
 })
 
