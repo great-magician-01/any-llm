@@ -6,23 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
 func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream) ([]string, error) {
-	var url string
-	switch u.Format {
-	case "anthropic":
-		// Anthropic's models endpoint is /v1/models (base_url typically without /v1).
-		// Some providers (e.g. DeepSeek) do not expose a models listing on their
-		// anthropic-compat path; fetch will simply 404 there.
-		url = strings.TrimRight(u.BaseURL, "/") + "/v1/models"
-	default:
-		url = strings.TrimRight(u.BaseURL, "/") + "/models"
-	}
+	// Anthropic's models endpoint is /v1/models; endpointURL inserts the /v1
+	// when the base URL doesn't already carry it. Some providers (e.g.
+	// DeepSeek) do not expose a models listing on their anthropic-compat
+	// path; fetch will simply 404 there.
+	url := endpointURL(u, "/models")
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		logger.Error("fetch models: create request", "url", url, "err", err)

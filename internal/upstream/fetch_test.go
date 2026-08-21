@@ -33,6 +33,9 @@ func TestFetchModels_OpenAI(t *testing.T) {
 
 func TestFetchModels_Anthropic(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
 		if r.Header.Get("x-api-key") != "sk-ant" {
 			t.Fatalf("x-api-key=%s", r.Header.Get("x-api-key"))
 		}

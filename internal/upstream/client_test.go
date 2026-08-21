@@ -48,7 +48,7 @@ func TestCall_NonStreamOpenAI(t *testing.T) {
 
 func TestCall_NonStreamAnthropic(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/messages" {
+		if r.URL.Path != "/v1/messages" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		if r.Header.Get("x-api-key") != "sk-ant" {
@@ -384,6 +384,43 @@ func TestUpstreamError_Message(t *testing.T) {
 			}
 			if got := ue.ErrorType(); got != tc.wantTyp {
 				t.Fatalf("ErrorType()=%q want %q", got, tc.wantTyp)
+			}
+		})
+	}
+}
+
+func TestEndpointURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		base    string
+		format  string
+		path    string
+		wantURL string
+	}{
+		{name: "anthropic bare host gets /v1", base: "https://api.anthropic.com", format: "anthropic", path: "/messages",
+			wantURL: "https://api.anthropic.com/v1/messages"},
+		{name: "anthropic trailing slash gets /v1", base: "https://api.anthropic.com/", format: "anthropic", path: "/messages",
+			wantURL: "https://api.anthropic.com/v1/messages"},
+		{name: "anthropic existing /v1 not doubled", base: "https://api.anthropic.com/v1", format: "anthropic", path: "/messages",
+			wantURL: "https://api.anthropic.com/v1/messages"},
+		{name: "anthropic existing /v1/ not doubled", base: "https://api.anthropic.com/v1/", format: "anthropic", path: "/messages",
+			wantURL: "https://api.anthropic.com/v1/messages"},
+		{name: "anthropic proxy subpath gets /v1 appended", base: "https://api.deepseek.com/anthropic", format: "anthropic", path: "/messages",
+			wantURL: "https://api.deepseek.com/anthropic/v1/messages"},
+		{name: "anthropic versioned proxy path untouched", base: "https://gw.example.com/v1/anthropic", format: "anthropic", path: "/messages",
+			wantURL: "https://gw.example.com/v1/anthropic/messages"},
+		{name: "openai never inserts /v1", base: "https://api.openai.com/v1", format: "openai", path: "/chat/completions",
+			wantURL: "https://api.openai.com/v1/chat/completions"},
+		{name: "responses never inserts /v1", base: "https://api.openai.com/v1", format: "responses", path: "/responses",
+			wantURL: "https://api.openai.com/v1/responses"},
+		{name: "anthropic models endpoint", base: "https://api.anthropic.com", format: "anthropic", path: "/models",
+			wantURL: "https://api.anthropic.com/v1/models"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := &model.Upstream{BaseURL: tc.base, Format: tc.format}
+			if got := endpointURL(u, tc.path); got != tc.wantURL {
+				t.Fatalf("endpointURL=%q want %q", got, tc.wantURL)
 			}
 		})
 	}

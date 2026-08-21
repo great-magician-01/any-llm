@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -93,7 +94,7 @@ func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.R
 		return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
 	}
 
-	url := strings.TrimRight(u.BaseURL, "/") + path
+	url := endpointURL(u, path)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -297,6 +298,34 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 		result.streamErr = fmt.Errorf("stream scan error: %w", err)
 		logger.Warn("stream scan error", "format", format, "err", err)
 	}
+}
+
+// endpointURL joins an upstream's base URL with an endpoint path. Anthropic
+// upstreams follow the SDK convention that the base URL excludes the version
+// prefix (e.g. https://api.anthropic.com), so "/v1" is inserted when the base
+// URL's path has no v1 segment; a base URL that already has one (ending in
+// /v1, or containing a /v1/ segment on a versioned proxy path) is left as-is.
+// openai/responses base URLs are expected to include the version prefix
+// themselves, matching the OpenAI SDK convention.
+func endpointURL(u *model.Upstream, path string) string {
+	base := strings.TrimRight(u.BaseURL, "/")
+	if u.Format == "anthropic" && !pathHasV1Segment(base) {
+		base += "/v1"
+	}
+	return base + path
+}
+
+func pathHasV1Segment(rawurl string) bool {
+	p := rawurl
+	if parsed, err := url.Parse(rawurl); err == nil {
+		p = parsed.Path
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "v1" {
+			return true
+		}
+	}
+	return false
 }
 
 func injectStreamOptions(body []byte) []byte {
