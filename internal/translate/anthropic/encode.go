@@ -70,11 +70,26 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 		out["stop_sequences"] = req.Stop
 	}
 	if len(req.Tools) > 0 {
-		var tools []rawTool
+		var tools []map[string]any
 		for _, t := range req.Tools {
-			tools = append(tools, rawTool{
-				Name: t.Name, Description: t.Description, InputSchema: t.InputSchema,
-			})
+			m := map[string]any{"name": t.Name}
+			if t.Description != "" {
+				m["description"] = t.Description
+			}
+			if t.Type != "" {
+				m["type"] = t.Type
+			}
+			// hosted 工具（web_search_20250305 等）没有 input_schema；
+			// 输出 null 会让上游把工具当成 schema 为 null 的函数而报 400。
+			if len(t.InputSchema) > 0 {
+				m["input_schema"] = t.InputSchema
+			}
+			for k, v := range t.Extra {
+				if _, exists := m[k]; !exists {
+					m[k] = v
+				}
+			}
+			tools = append(tools, m)
 		}
 		out["tools"] = tools
 	}
@@ -134,6 +149,15 @@ func encodeBlocks(blocks []translate.ContentBlock) []map[string]any {
 				"content":     encodeResultContent(b.ToolResult.Content),
 				"is_error":    b.ToolResult.IsError,
 			})
+		default:
+			// 未知块类型（含 hosted server 块）原样透传。
+			m := map[string]any{"type": b.Type}
+			for k, v := range b.Extra {
+				if _, exists := m[k]; !exists {
+					m[k] = v
+				}
+			}
+			parts = append(parts, m)
 		}
 	}
 	return parts
@@ -168,6 +192,15 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 			content = append(content, map[string]any{
 				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
 			})
+		default:
+			// hosted server 块（web_search_tool_result 等）原样透传。
+			m := map[string]any{"type": b.Type}
+			for k, v := range b.Extra {
+				if _, exists := m[k]; !exists {
+					m[k] = v
+				}
+			}
+			content = append(content, m)
 		}
 	}
 	out := map[string]any{

@@ -37,6 +37,11 @@ type ContentBlock struct {
 	Image      *Image
 	ToolUse    *ToolUse
 	ToolResult *ToolResult
+	// Extra carries format-specific fields for block types without an IR
+	// equivalent (e.g. Anthropic hosted server blocks like
+	// web_search_tool_result / server_tool_use), so same-format round trips
+	// don't lose them. Known block types ignore it.
+	Extra map[string]any
 }
 
 type Image struct {
@@ -61,6 +66,14 @@ type Tool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	// Type is the tool type for formats that distinguish one; empty for plain
+	// function tools. Anthropic hosted tools use types like
+	// "web_search_20250305" and carry no InputSchema.
+	Type string
+	// Extra holds format-specific tool fields with no IR equivalent (e.g.
+	// Anthropic hosted-tool params max_uses / allowed_domains /
+	// blocked_domains), preserved on same-format round trips.
+	Extra map[string]any
 }
 
 type ToolChoice struct {

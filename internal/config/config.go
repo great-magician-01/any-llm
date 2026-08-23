@@ -32,8 +32,8 @@ type Config struct {
 	SessionSecretFile string
 	// SessionTTL is how long admin login sessions live; 0 means never expire.
 	SessionTTL time.Duration
-	LogFile           string
-	LogLevel          logger.Level
+	LogFile    string
+	LogLevel   logger.Level
 }
 
 func Load() (*Config, error) {

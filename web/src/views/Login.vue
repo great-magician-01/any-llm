@@ -59,6 +59,7 @@ async function login() {
         {{ error }}
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
+      <button class="switch-link" @click="router.push('/glass/login')">切换到毛玻璃版</button>
     </div>
   </div>
 </template>
@@ -178,5 +179,18 @@ async function login() {
   font-size: 11px;
   letter-spacing: 0.08em;
   color: #5b6b82;
+}
+.switch-link {
+  margin-top: 12px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: #5b6b82;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.switch-link:hover {
+  color: var(--brand-hover);
 }
 </style>

@@ -66,6 +66,29 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	// 固定对外模型（别名）：以别名本身作为模型 id，客户端可发现并直接请求。
+	aliases, err := model.ListAliases(g.db)
+	if err != nil {
+		logger.Warn("gateway: list aliases failed, skipping", "err", err)
+	} else {
+		for _, a := range aliases {
+			hasUsable := false
+			for _, b := range a.Bindings {
+				if b.UpstreamName != "" { // 绑定指向的上游仍活跃
+					hasUsable = true
+					break
+				}
+			}
+			if !hasUsable {
+				continue
+			}
+			data = append(data, modelObj{
+				ID:      a.Name,
+				Object:  "model",
+				Created: a.CreatedAt.Unix(),
+			})
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }
@@ -107,9 +130,58 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
+	// 固定对外模型（别名）：对整个 model 字符串精确匹配，命中后按绑定优先级
+	// 得到候选链，dispatch 内逐候选尝试并自动故障转移。别名优先于
+	// 'name/model' 直连拆分（管理员显式配置即可遮蔽直连路由）。
+	found, targets, err := model.ResolveAliasTargets(g.db, probe.Model)
+	if err != nil {
+		logger.Error("gateway: resolve model alias DB error", "model", probe.Model, "err", err)
+		WriteError(w, 500, inFormat, "failed to resolve model alias: "+err.Error(), "internal_error")
+		return
+	}
+	if found {
+		if len(targets) == 0 {
+			WriteError(w, 404, inFormat, "model alias '"+probe.Model+"' has no available bindings", "not_found_error")
+			return
+		}
+		if g.writeLimitError(w, inFormat, k, "", g.checkKeyLimits(k)) {
+			return
+		}
+		// 上游限额在 dispatch（流式会先 flush 200 头部）之前过滤：超限的候选
+		// 直接跳过；全部超限则 429。
+		usable := make([]model.AliasTarget, 0, len(targets))
+		var firstLimit *limitError
+		for i := range targets {
+			err := g.checkUpstreamLimits(targets[i].Upstream)
+			if err == nil {
+				usable = append(usable, targets[i])
+				continue
+			}
+			if le, ok := err.(*limitError); ok {
+				logger.Info("alias candidate skipped: token limit exceeded",
+					"alias", probe.Model, "key_id", k.ID,
+					"upstream", targets[i].Upstream.Name, "scope", le.scope,
+					"used", le.used, "limit", le.limit,
+				)
+				if firstLimit == nil {
+					firstLimit = le
+				}
+				continue
+			}
+			g.writeLimitError(w, inFormat, k, targets[i].Upstream.Name, err)
+			return
+		}
+		if len(usable) == 0 {
+			WriteError(w, 429, inFormat, firstLimit.message, "rate_limit_error")
+			return
+		}
+		g.dispatch(w, r, inFormat, k, usable, body)
+		return
+	}
+
 	name, realModel, ok := splitModel(probe.Model)
 	if !ok {
-		WriteError(w, 400, inFormat, "model must be in 'name/model' format", "invalid_request_error")
+		WriteError(w, 400, inFormat, "model must be in 'name/model' format or match a configured alias", "invalid_request_error")
 		return
 	}
 
@@ -119,22 +191,14 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
-	if err := g.checkTokenLimits(k, u); err != nil {
-		if le, ok := err.(*limitError); ok {
-			WriteError(w, 429, inFormat, le.message, "rate_limit_error")
-			logger.Info("token limit exceeded",
-				"key_id", k.ID, "key_label", k.Label,
-				"upstream", u.Name, "scope", le.scope,
-				"used", le.used, "limit", le.limit,
-			)
-			return
-		}
-		logger.Error("gateway: check token limits DB error", "key_id", k.ID, "upstream", u.Name, "err", err)
-		WriteError(w, 500, inFormat, "failed to check token limits: "+err.Error(), "internal_error")
+	if g.writeLimitError(w, inFormat, k, u.Name, g.checkKeyLimits(k)) {
+		return
+	}
+	if g.writeLimitError(w, inFormat, k, u.Name, g.checkUpstreamLimits(u)) {
 		return
 	}
 
-	g.dispatch(w, r, inFormat, k, u, realModel, body)
+	g.dispatch(w, r, inFormat, k, []model.AliasTarget{{Upstream: u, ModelName: realModel}}, body)
 }
 
 // limitError indicates an ext key or upstream has exceeded its daily or
@@ -148,11 +212,31 @@ type limitError struct {
 
 func (e *limitError) Error() string { return e.message }
 
-// checkTokenLimits verifies the ext key and upstream are within their daily
-// and monthly token quotas, based on usage_records aggregated over local-day /
-// local-month windows ending at the current time. A limit of 0 means unbounded.
-// Returns a *limitError when exceeded, or a wrapped error on DB failure.
-func (g *Gateway) checkTokenLimits(k *model.ExtKey, u *model.Upstream) error {
+// writeLimitError 把限额检查错误写成 HTTP 响应；err 为 nil 时返回 false。
+// 超限返回 429 并记日志，DB 错误返回 500。upstreamName 仅用于日志（key 级
+// 限额没有对应上游时可传空串）。
+func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *model.ExtKey, upstreamName string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if le, ok := err.(*limitError); ok {
+		WriteError(w, 429, inFormat, le.message, "rate_limit_error")
+		logger.Info("token limit exceeded",
+			"key_id", k.ID, "key_label", k.Label,
+			"upstream", upstreamName, "scope", le.scope,
+			"used", le.used, "limit", le.limit,
+		)
+		return true
+	}
+	logger.Error("gateway: check token limits DB error", "key_id", k.ID, "upstream", upstreamName, "err", err)
+	WriteError(w, 500, inFormat, "failed to check token limits: "+err.Error(), "internal_error")
+	return true
+}
+
+// checkKeyLimits verifies the ext key is within its daily and monthly token
+// quotas. A limit of 0 means unbounded. Returns a *limitError when exceeded,
+// or a wrapped error on DB failure.
+func (g *Gateway) checkKeyLimits(k *model.ExtKey) error {
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -179,6 +263,19 @@ func (g *Gateway) checkTokenLimits(k *model.ExtKey, u *model.Upstream) error {
 				message: "monthly token limit exceeded for API key"}
 		}
 	}
+	return nil
+}
+
+// checkUpstreamLimits verifies the upstream is within its daily and monthly
+// token quotas. A limit of 0 means unbounded. Returns a *limitError when
+// exceeded, or a wrapped error on DB failure.
+func (g *Gateway) checkUpstreamLimits(u *model.Upstream) error {
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
 	if u.DailyTokenLimit > 0 {
 		used, err := model.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)
 		if err != nil {

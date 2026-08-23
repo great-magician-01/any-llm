@@ -4,7 +4,7 @@
 
 - **Monorepo**: Go backend (root, module `github.com/great-magician-01/any-llm`) + Vue 3 SPA frontend (`web/`)
 - **Backend**: single-binary Go app with embedded frontend via `//go:embed web/dist` (relative to `cmd/any-llm/`)
-- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite
+- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite. Two parallel page sets: classic dark theme (`web/src/views/`, routes `/login`, `/dashboard`, ...) and a glassmorphism set (`web/src/glass/`, same pages under the `/glass` route prefix, e.g. `/glass/dashboard`) — glass views reuse `web/src/api`, `web/src/utils` and shared components (`StatCard`, `BarChart`, ...), adapting via CSS-var overrides in `web/src/glass/glass.css` + a nested `n-config-provider` in `web/src/glass/GlassShell.vue`; `body.glass-mode` (toggled by the router) styles teleported popups
 - **DB**: SQLite (`modernc.org/sqlite`, pure Go, no CGO) or PostgreSQL (`jackc/pgx/v5`); selected via `DB_TYPE`. Tables auto-created on startup via `db.OpenSQLite` / `db.OpenPG`
 - **No frameworks** on backend: stdlib `net/http` only
 - **Translation layer**: requests flow through an IR (`internal/translate/`) — OpenAI/Anthropic in/out, any upstream format
@@ -75,9 +75,10 @@ All settings load from environment variables. A `.env` file in the working direc
 
 - `/v1/*` — public gateway (ext-key auth via `Authorization: Bearer all-sk-...`)
   - `GET /v1/models`, `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic)
-  - Model format in request body: `upstream-name/model-name`
+  - Model format in request body: `upstream-name/model-name`, **or a model alias** (fixed external name): the full model string is exact-matched against active aliases first (aliases take precedence, even names containing `/`); an alias resolves to an ordered binding list of `upstream + real model` that is tried in `priority` order with automatic failover (upstream-limit-exceeded candidates are skipped before dispatch; once stream events flow, no failover). Usage records store the **actual** upstream model per attempt.
 - `/api/admin/*` — admin API (HMAC session auth, cookie `s`)
-  - CRUD for upstreams, models, ext keys; usage summary/records
+  - CRUD for upstreams, models, ext keys, model aliases (`/api/admin/aliases`); usage summary/records
+  - `GET /api/admin/conversations[?page=&size=]` and `/api/admin/conversations/:id` — read-only access to archived conversations (`conversation_records`, **PG only**); on SQLite the list returns `{"data": [], "total": 0, "disabled": true}` so the frontend can show a hint. Responses never include the raw byte columns
 - `/*` — SPA fallback (serves embedded `web/dist/`; falls back to `index.html` for client-side routing)
 
 ## Gotchas

@@ -245,7 +245,15 @@ func blockToRaw(b translate.ContentBlock) map[string]any {
 		}
 		return map[string]any{"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input)}
 	}
-	return map[string]any{"type": b.Type}
+	// Unknown block types (server_tool_use / web_search_tool_result 等 hosted
+	// 工具块)：透传 Extra 里的原始字段。
+	m := map[string]any{"type": b.Type}
+	for k, v := range b.Extra {
+		if _, exists := m[k]; !exists {
+			m[k] = v
+		}
+	}
+	return m
 }
 
 // decodeStreamContentBlock decodes a single content_block object from an SSE
@@ -285,6 +293,9 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 			ID: tu.ID, Name: tu.Name, Input: tu.Input,
 		}}, nil
 	}
-	// Unknown block type: preserve type, drop content fields we don't understand.
-	return &translate.ContentBlock{Type: head.Type}, nil
+	// Unknown block type: preserve type and keep the rest of the fields in
+	// Extra so hosted server blocks (web_search_tool_result etc.) survive the
+	// same-format round trip instead of being stripped to a bare type.
+	b := decodeExtraBlock(head.Type, raw)
+	return &b, nil
 }

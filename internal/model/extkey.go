@@ -45,7 +45,7 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	k := &ExtKey{}
 	var enabled int
 	var lastUsed sql.NullTime
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
 		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
@@ -62,7 +62,7 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 	k := &ExtKey{}
 	var enabled int
 	var lastUsed sql.NullTime
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE id=?`), id).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
 		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
@@ -76,7 +76,7 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 }
 
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
@@ -99,8 +99,10 @@ func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
 	return out, nil
 }
 
+// DeleteExtKey 软删除：置 is_active=0 后该 key 立即失效（认证查询过滤），
+// 行保留供用量/归档历史关联。同名 key 值不会被重新生成，无需重建名额。
 func DeleteExtKey(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `DELETE FROM ext_keys WHERE id=?`), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET is_active = 0 WHERE id=? AND is_active = 1`), id)
 	if err != nil {
 		return fmt.Errorf("delete ext key: %w", err)
 	}
@@ -112,7 +114,7 @@ func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, m
 	if enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=?`),
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=? AND is_active = 1`),
 		label, en, dailyLimit, monthlyLimit, id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
@@ -121,7 +123,7 @@ func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, m
 }
 
 func TouchExtKey(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=?`), time.Now(), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=? AND is_active = 1`), time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("touch ext key: %w", err)
 	}

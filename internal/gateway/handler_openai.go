@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -15,23 +16,32 @@ import (
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
-func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, u *model.Upstream, realModel string, body []byte) {
+// dispatch 按候选链依次尝试调用上游。直连路由是单候选的特例；别名路由可含
+// 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
+// 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, body []byte) {
+	first := targets[0]
 	logger.Info("completion request",
 		"key_id", key.ID,
 		"key_label", key.Label,
-		"upstream", u.Name,
-		"upstream_format", u.Format,
-		"model", realModel,
+		"upstream", first.Upstream.Name,
+		"upstream_format", first.Upstream.Format,
+		"model", first.ModelName,
+		"candidates", len(targets),
 		"in_format", inFormat,
 		"stream", bodyHasStream(body),
 	)
 	irReq, err := decodeInbound(body, inFormat)
 	if err != nil {
 		WriteError(w, 400, inFormat, "failed to decode request: "+err.Error(), "invalid_request_error")
-		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
+		g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
 		return
 	}
-	irReq.Model = realModel
+	irReq.Model = first.ModelName
+
+	// 对话归档（仅 PG）：在 responses session 合并 irReq 之前快照请求 IR，
+	// 各次候选调用的 newConvCtx 共用这份快照。
+	reqIRJSON := g.snapshotRequestIR(irReq)
 
 	var sess *sessionCtx
 	if inFormat == "responses" {
@@ -40,12 +50,14 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			hist, ok, err := g.sessions.Get(pid)
 			if err != nil {
 				WriteError(w, 500, inFormat, "session lookup failed: "+err.Error(), "internal_error")
-				g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
+				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
 				return
 			}
 			if !ok {
 				WriteError(w, 400, inFormat, "unknown previous_response_id: "+pid, "invalid_previous_response_id")
-				g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, false, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
+				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
 				return
 			}
 			sess.prev = hist
@@ -61,25 +73,37 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	}
 
 	if irReq.Stream {
-		g.handleStream(w, r, inFormat, key, u, realModel, irReq, sess)
+		g.handleStream(w, r, inFormat, key, targets, irReq, reqIRJSON, body, sess)
 		return
 	}
 
-	result, err := g.client.Call(r.Context(), u, irReq, r.Header)
-	if err != nil {
-		if ue, ok := err.(*upstream.UpstreamError); ok {
-			WriteError(w, ue.StatusCode, inFormat, ue.Message(), mapErrorType(inFormat, ue.StatusCode, ue.ErrorType()))
-		} else {
-			WriteError(w, 502, inFormat, "upstream call failed: "+err.Error(), "upstream_error")
+	// 非流式：按序尝试，任一候选成功即返回；全部失败回最后一个错误。
+	var lastErr error
+	for i := range targets {
+		t := &targets[i]
+		irReq.Model = t.ModelName
+		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body)
+		result, err := g.client.Call(r.Context(), t.Upstream, irReq, r.Header)
+		if err != nil {
+			if len(targets) > 1 {
+				logger.Warn("candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
+			}
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, false, "error")
+			rec.finish("error", translate.Usage{}, nil)
+			lastErr = err
+			continue
 		}
-		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, irReq.Stream, "error")
+		if sess != nil {
+			result.Response.ID = sess.respID
+		}
+		g.handleNonStream(w, inFormat, result, key, t.Upstream, t.ModelName, irReq.Stream, sess, rec)
 		return
 	}
-
-	if sess != nil {
-		result.Response.ID = sess.respID
+	if ue, ok := lastErr.(*upstream.UpstreamError); ok {
+		WriteError(w, ue.StatusCode, inFormat, ue.Message(), mapErrorType(inFormat, ue.StatusCode, ue.ErrorType()))
+	} else {
+		WriteError(w, 502, inFormat, "upstream call failed: "+lastErr.Error(), "upstream_error")
 	}
-	g.handleNonStream(w, inFormat, result, key, u, realModel, irReq.Stream, sess)
 }
 
 func bodyHasStream(body []byte) bool {
@@ -90,7 +114,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -105,6 +129,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 		WriteError(w, 500, inFormat, "failed to encode response", "internal_error")
 		logger.Error("non-stream encode failed", "in_format", inFormat, "err", err)
 		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, "error")
+		rec.finish("error", result.Response.Usage, result.Response)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -114,6 +139,11 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	}
 	usage := result.Usage()
 	g.recordUsage(key, u, realModel, inFormat, usage, false, "ok")
+	// 非流式：发给客户端的原始字节就是 out。
+	if rec != nil {
+		rec.tee = &teeWriter{buf: bytes.NewBuffer(out)}
+	}
+	rec.finish("ok", usage, result.Response)
 	logger.Info("completion done",
 		"upstream", u.Name,
 		"model", realModel,
@@ -124,12 +154,53 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	)
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, u *model.Upstream, realModel string, irReq *translate.Request, sess *sessionCtx) {
+// callWithKeepalive 在流式头部已 flush 后执行一次上游调用；等待期间按
+// keepalive ticker 向客户端发 ping。clientGone=true 表示客户端上下文先结束
+// （上游调用随 r.Context() 取消，带缓冲的 callCh 保证 goroutine 不泄漏）。
+func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, writePing func(), u *model.Upstream, irReq *translate.Request, streamStart time.Time) (result *upstream.Result, err error, clientGone bool) {
+	type callRet struct {
+		result *upstream.Result
+		err    error
+	}
+	callCh := make(chan callRet, 1)
+	go func() {
+		res, err := g.client.Call(r.Context(), u, irReq, r.Header)
+		callCh <- callRet{res, err}
+	}()
+	for {
+		select {
+		case ret := <-callCh:
+			if ret.err != nil {
+				logger.Warn("upstream call returned with error", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", ret.err)
+			} else {
+				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds())
+			}
+			return ret.result, ret.err, false
+		case <-keepalive.C:
+			writePing()
+		case <-r.Context().Done():
+			logger.Info("client context done (before call returned)", "elapsed_ms", time.Since(streamStart).Milliseconds())
+			return nil, nil, true
+		}
+	}
+}
+
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
-		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
+		t := targets[0]
+		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body).finish("error", translate.Usage{}, nil)
 		return
+	}
+	// 对话归档：flusher 断言之后安装 tee，捕获发给客户端的全部字节。
+	// 多候选共享一个 tee（keep-alive 与后续帧都在同一缓冲），各次尝试创建的
+	// rec 引用它。
+	var tee *teeWriter
+	if reqIRJSON != nil {
+		tee = newTeeWriter(w, convRawCap)
+		w = tee
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -137,22 +208,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	w.WriteHeader(200)
 	flusher.Flush()
 	streamStart := time.Now()
-	logger.Info("stream header flushed", "upstream", u.Name, "model", realModel)
-
-	var encoder interface {
-		Encode(evt *translate.StreamEvent) ([][]byte, error)
-	}
-	switch inFormat {
-	case "anthropic":
-		// Stateful encoder: rewrites content_block indices to a 0-based
-		// contiguous sequence (the spec requires it; an OpenAI-only-tool-call
-		// upstream starts at index 1).
-		encoder = anthropic.NewStreamEncoder()
-	case "responses":
-		encoder = responses.NewStreamEncoder(realModel, sess.respID)
-	default:
-		encoder = openai.NewStreamEncoder(realModel)
-	}
+	logger.Info("stream header flushed", "upstream", targets[0].Upstream.Name, "model", targets[0].ModelName, "candidates", len(targets))
 
 	pingCount := 0
 	writePing := func() {
@@ -170,62 +226,57 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		logger.Info("ping sent", "n", pingCount, "elapsed_ms", time.Since(streamStart).Milliseconds())
 	}
 
-	type callRet struct {
-		result *upstream.Result
-		err    error
-	}
-	callCh := make(chan callRet, 1)
-	go func() {
-		result, err := g.client.Call(r.Context(), u, irReq, r.Header)
-		callCh <- callRet{result, err}
-	}()
-
 	keepalive := time.NewTicker(500 * time.Millisecond)
 	defer keepalive.Stop()
 
+	// 第一阶段：按序尝试候选，直到某次调用成功建立。期间客户端只看到
+	// keep-alive 延续；某候选调用失败后转移到下一个候选对客户端透明。
+	// 一旦进入事件转发阶段（有内容帧流出）就不再转移。
 	var result *upstream.Result
-	var callErr error
-	callDone := false
-	clientGone := false
-
-	for !callDone {
-		select {
-		case ret := <-callCh:
-			result, callErr = ret.result, ret.err
-			callDone = true
-			if callErr != nil {
-				logger.Warn("upstream call returned with error", "elapsed_ms", time.Since(streamStart).Milliseconds(), "err", callErr)
-			} else {
-				logger.Info("call returned", "elapsed_ms", time.Since(streamStart).Milliseconds())
-			}
-		case <-keepalive.C:
-			writePing()
-		case <-r.Context().Done():
-			clientGone = true
-			callDone = true
-			logger.Info("client context done (before call returned)", "elapsed_ms", time.Since(streamStart).Milliseconds())
+	var win *model.AliasTarget
+	var rec *convCtx
+	var lastErr error
+	for i := range targets {
+		t := &targets[i]
+		irReq.Model = t.ModelName
+		rec = g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body)
+		if rec != nil {
+			rec.tee = tee
 		}
+		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, t.Upstream, irReq, streamStart)
+		if clientGone {
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+			rec.finish("error", translate.Usage{}, nil)
+			logger.Info("completion done",
+				"upstream", t.Upstream.Name, "model", t.ModelName, "stream", true,
+				"input_tokens", 0, "output_tokens", 0, "status", "error", "reason", "client_gone_before_call_done",
+			)
+			return
+		}
+		if err != nil {
+			lastErr = err
+			if len(targets) > 1 {
+				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
+			}
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+			rec.finish("error", translate.Usage{}, nil)
+			continue
+		}
+		result, win = res, t
+		break
 	}
 
-	if clientGone {
-		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
-		logger.Info("completion done",
-			"upstream", u.Name, "model", realModel, "stream", true,
-			"input_tokens", 0, "output_tokens", 0, "status", "error", "reason", "client_gone_before_call_done",
-		)
-		return
-	}
-
-	if callErr != nil {
+	if result == nil {
+		// 全部候选失败：头部已 200，只能写带内错误帧。
 		var msg, errType string
 		var status int
-		if ue, ok := callErr.(*upstream.UpstreamError); ok {
+		if ue, ok := lastErr.(*upstream.UpstreamError); ok {
 			msg, errType, status = ue.Message(), mapErrorType(inFormat, ue.StatusCode, ue.ErrorType()), ue.StatusCode
 		} else {
-			msg, errType, status = "upstream call failed: "+callErr.Error(), "upstream_error", 502
+			msg, errType, status = "upstream call failed: "+lastErr.Error(), "upstream_error", 502
 		}
 		logger.Error("upstream call failed after stream header sent",
-			"upstream", u.Name, "model", realModel, "status", status, "err", msg, "in_format", inFormat)
+			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "status", status, "err", msg, "in_format", inFormat)
 		if inFormat == "anthropic" {
 			payload, _ := json.Marshal(map[string]any{
 				"type":  "error",
@@ -245,12 +296,30 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			w.Write([]byte("data: " + string(payload) + "\n\n"))
 		}
 		flusher.Flush()
-		g.recordUsage(key, u, realModel, inFormat, translate.Usage{}, true, "error")
 		logger.Info("completion done",
-			"upstream", u.Name, "model", realModel, "stream", true,
+			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "stream", true,
 			"input_tokens", 0, "output_tokens", 0, "status", "error",
 		)
 		return
+	}
+
+	u := win.Upstream
+	realModel := win.ModelName
+
+	// 命中候选确定后再建编码器（此前只写过 keep-alive，无内容帧）。
+	var encoder interface {
+		Encode(evt *translate.StreamEvent) ([][]byte, error)
+	}
+	switch inFormat {
+	case "anthropic":
+		// Stateful encoder: rewrites content_block indices to a 0-based
+		// contiguous sequence (the spec requires it; an OpenAI-only-tool-call
+		// upstream starts at index 1).
+		encoder = anthropic.NewStreamEncoder()
+	case "responses":
+		encoder = responses.NewStreamEncoder(realModel, sess.respID)
+	default:
+		encoder = openai.NewStreamEncoder(realModel)
 	}
 
 	if result.Response != nil {
@@ -272,12 +341,14 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		if encErr != nil {
 			logger.Error("stream non-stream response encode failed", "in_format", inFormat, "err", encErr)
 			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, true, "error")
+			rec.finish("error", result.Response.Usage, result.Response)
 			return
 		}
 		w.Write(out)
 		flusher.Flush()
 		usage := result.Usage()
 		g.recordUsage(key, u, realModel, inFormat, usage, true, "ok")
+		rec.finish("ok", usage, result.Response)
 		logger.Info("completion done",
 			"upstream", u.Name, "model", realModel, "stream", true,
 			"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "status", "ok",
@@ -297,6 +368,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		case ev, ok := <-result.Stream:
 			if !ok {
 				goto done
+			}
+			// 对话归档：累积原始 IR 事件（不喂下面合成的 content_block_start，
+			// streamRecorder 的 ensureKind 已对缺失 start 做惰性开块）。
+			if rec != nil {
+				rec.acc.Add(ev)
 			}
 			logger.FileOnly().Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(streamStart).Milliseconds())
 			// Synthesize content_block_start if upstream omitted it (e.g. deepseek).
@@ -376,6 +452,21 @@ done:
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}
 	g.recordUsage(key, u, realModel, inFormat, usage, true, status)
+	// 对话归档：用流累积器还原完整响应（含思维链真签名、工具调用），
+	// clientGonePost / StreamErr 时部分对话以 error 状态如实记录。
+	if rec != nil {
+		id := rec.acc.msgID
+		if sess != nil {
+			id = sess.respID
+		}
+		rec.finish(status, usage, &translate.Response{
+			ID:         id,
+			Model:      realModel,
+			Content:    rec.acc.Content(),
+			StopReason: rec.acc.stopReason,
+			Usage:      usage,
+		})
+	}
 	logger.Info("completion done",
 		"upstream", u.Name,
 		"model", realModel,

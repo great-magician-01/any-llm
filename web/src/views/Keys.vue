@@ -5,6 +5,7 @@ import type { DataTableColumns } from 'naive-ui'
 import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
 import { listUpstreams, listModels } from '../api/upstreams'
 import { formatInt } from '../utils/format'
+import { buildOmpYaml } from '../utils/ompConfig'
 import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
@@ -101,7 +102,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 210,
+    width: 260,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
@@ -113,6 +114,15 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
               trigger: () =>
                 h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOpencodeConfig(row.key, e) }, { default: () => 'opencode' }),
               default: () => '复制 opencode 配置 JSON（含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOmpConfig(row.key, e) }, { default: () => 'OMP' }),
+              default: () => '复制 Oh My Pi 配置 YAML（含此密钥）',
             },
           ),
           h(
@@ -208,22 +218,29 @@ async function del(id: number) {
   }
 }
 
-// opencode custom provider config: aggregate every upstream's models into
-// the models map so the copied JSON works out of the box.
-async function buildOpencodeConfig(apiKey: string): Promise<string> {
+// Aggregate every upstream's models (shared by the opencode / OMP exporters).
+// The model id is `upstream-name/model-name`, matching the gateway's /v1/models.
+async function collectUpstreamModels() {
   const ups = await listUpstreams()
-  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
+  const out: Array<{ upstream: string; model_name: string; context_length: number; max_output_length: number }> = []
   await Promise.all(ups.map(async (u) => {
     if (u.id == null) return
     const ms = await listModels(u.id).catch(() => [])
     for (const m of ms) {
-      const id = `${u.name}/${m.model_name}`
-      models[id] = {
-        name: id,
-        limit: { context: m.context_length, output: m.max_output_length },
-      }
+      out.push({ upstream: u.name, model_name: m.model_name, context_length: m.context_length, max_output_length: m.max_output_length })
     }
   }))
+  return out
+}
+
+// opencode custom provider config: aggregate every upstream's models into
+// the models map so the copied JSON works out of the box.
+async function buildOpencodeConfig(apiKey: string): Promise<string> {
+  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
+  for (const m of await collectUpstreamModels()) {
+    const id = `${m.upstream}/${m.model_name}`
+    models[id] = { name: id, limit: { context: m.context_length, output: m.max_output_length } }
+  }
   const cfg: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
     provider: {
@@ -241,10 +258,28 @@ async function buildOpencodeConfig(apiKey: string): Promise<string> {
   return JSON.stringify(cfg, null, 2)
 }
 
+async function buildOmpConfig(apiKey: string): Promise<string> {
+  const rows = await collectUpstreamModels()
+  return buildOmpYaml({
+    baseUrl: origin.value,
+    apiKey,
+    models: rows.map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
+  })
+}
+
 async function copyOpencodeConfig(apiKey: string, evt?: MouseEvent) {
   try {
     const json = await buildOpencodeConfig(apiKey)
     await copyKey(json, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function copyOmpConfig(apiKey: string, evt?: MouseEvent) {
+  try {
+    const yaml = await buildOmpConfig(apiKey)
+    await copyKey(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -388,6 +423,10 @@ onMounted(load)
           <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 opencode 配置 JSON（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 Oh My Pi 配置 YAML（含此密钥）
           </n-button>
         </template>
         <template #footer>

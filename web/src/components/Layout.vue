@@ -25,8 +25,10 @@ function item(label: string, key: string, icon: IconName) {
 const menuItems = [
   item('概览', 'dashboard', 'dashboard'),
   item('上游管理', 'upstreams', 'layers'),
+  item('模型别名', 'aliases', 'link'),
   item('API 密钥', 'keys', 'key'),
   item('用量统计', 'usage', 'chart'),
+  item('对话记录', 'conversations', 'chat'),
 ]
 </script>
 
@@ -56,6 +58,10 @@ const menuItems = [
             <AppIcon name="logout" :size="15" />
             <span>退出登录</span>
           </button>
+        </div>
+        <div class="theme-switch" @click="router.push('/glass/dashboard')">
+          <AppIcon name="swap" :size="14" />
+          <span>切换到毛玻璃版</span>
         </div>
       </div>
     </n-layout-sider>
@@ -150,6 +156,29 @@ const menuItems = [
 .logout-btn:hover {
   color: #fb7185;
   background: rgba(251, 113, 133, 0.08);
+}
+.theme-switch {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.05);
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.theme-switch:hover {
+  color: var(--brand-hover);
+  border-color: rgba(91, 140, 255, 0.4);
+  background: rgba(91, 140, 255, 0.1);
 }
 .content {
   background: transparent;

@@ -92,12 +92,18 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 	if len(req.Tools) > 0 {
 		var tools []any
 		for _, t := range req.Tools {
-			tools = append(tools, map[string]any{
-				"type":        "function",
-				"name":        t.Name,
-				"description": t.Description,
-				"parameters":  t.InputSchema,
-			})
+			m := map[string]any{
+				"type": "function",
+				"name": t.Name,
+			}
+			if t.Description != "" {
+				m["description"] = t.Description
+			}
+			// 同 openai 编码器：无 schema 时省略 parameters，避免 null。
+			if len(t.InputSchema) > 0 {
+				m["parameters"] = t.InputSchema
+			}
+			tools = append(tools, m)
 		}
 		out["tools"] = tools
 	}

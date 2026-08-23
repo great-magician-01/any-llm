@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/translate"
@@ -234,5 +235,34 @@ func TestEncodeResponse_NoCacheNoDetails(t *testing.T) {
 	}
 	if rr.Usage.PromptCacheHitTokens != 0 {
 		t.Fatalf("hit should be 0: %+v", rr.Usage)
+	}
+}
+
+// TestEncodeRequest_NoParametersForSchemaLessTool verifies a tool without an
+// InputSchema is emitted without a parameters key — a nil json.RawMessage
+// would otherwise serialize as "parameters": null, which upstreams reject.
+func TestEncodeRequest_NoParametersForSchemaLessTool(t *testing.T) {
+	req := &translate.Request{
+		Model:     "gpt-4o",
+		Messages:  []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Tools:     []translate.Tool{{Name: "web_search", Type: "web_search_20250305"}},
+		MaxTokens: 10,
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"parameters"`) {
+		t.Fatalf("parameters should be omitted for schema-less tools: %s", out)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	tools, _ := m["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%v", m["tools"])
+	}
+	fn, _ := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "web_search" {
+		t.Fatalf("tool lost: %s", out)
 	}
 }

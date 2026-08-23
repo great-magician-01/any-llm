@@ -1,0 +1,128 @@
+/*
+ * 毛玻璃页面套件样式（仅作用于 /glass 路由树）。
+ * 所有选择器都以 .glass-root 或 body.glass-mode 开头，不会泄漏到经典版页面。
+ */
+
+/* ---- 设计变量：覆盖 style.css 中的经典版变量，让共享组件自动适配 ---- */
+.glass-root {
+  --brand: #7ba3ff;
+  --brand-2: #4ed8f0;
+  --brand-hover: #95b7ff;
+  --grad: linear-gradient(135deg, #7ba3ff 0%, #4ed8f0 100%);
+  --bg: transparent;
+  --surface: rgba(255, 255, 255, 0.07);
+  --surface-2: rgba(255, 255, 255, 0.1);
+  --border: rgba(255, 255, 255, 0.16);
+  --border-soft: rgba(255, 255, 255, 0.1);
+  --text: #f5f8ff;
+  --text-2: #dbe4f3;
+  --text-3: #9fb0c9;
+  --text-4: #687992;
+
+  position: relative;
+  min-height: 100vh;
+  isolation: isolate;
+}
+
+/* ---- 极光背景层 ---- */
+.glass-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 700px at 80% -20%, rgba(64, 100, 220, 0.28), transparent 60%),
+    radial-gradient(1000px 640px at -15% 115%, rgba(34, 211, 238, 0.16), transparent 60%),
+    linear-gradient(160deg, #0a1024 0%, #0d1330 45%, #0a1a2e 100%);
+}
+.glass-bg::before,
+.glass-bg::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(110px);
+  animation: glass-drift 18s ease-in-out infinite alternate;
+}
+.glass-bg::before {
+  width: 560px;
+  height: 560px;
+  top: -160px;
+  right: -100px;
+  background: radial-gradient(circle, rgba(123, 163, 255, 0.5), transparent 65%);
+}
+.glass-bg::after {
+  width: 520px;
+  height: 520px;
+  bottom: -180px;
+  left: -120px;
+  background: radial-gradient(circle, rgba(78, 216, 240, 0.38), transparent 65%);
+  animation-delay: -9s;
+}
+@keyframes glass-drift {
+  from {
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    transform: translate(-50px, 50px) scale(1.12);
+  }
+}
+.glass-bg-noise {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 35%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 35%, transparent 80%);
+}
+
+/* ---- 卡片 / 面板：半透明 + 背景模糊 + 顶部高光 ---- */
+.glass-root .n-card {
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow:
+    0 12px 36px rgba(3, 8, 24, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+.glass-root .panel {
+  box-shadow:
+    0 12px 36px rgba(3, 8, 24, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+/* ---- 输入 / 表格等内嵌表面 ---- */
+.glass-root .n-input,
+.glass-root .n-base-selection,
+.glass-root .n-data-table,
+.glass-root .n-pagination .n-pagination-item {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* ---- 统计卡片悬停微光（共享组件 StatCard 使用 --surface 变量，此处补动效） ---- */
+.glass-root .stat-card:hover {
+  border-color: rgba(123, 163, 255, 0.45);
+  box-shadow:
+    0 10px 28px rgba(3, 8, 24, 0.4),
+    0 0 24px rgba(123, 163, 255, 0.12);
+}
+
+/*
+ * ---- teleport 到 body 的浮层（Modal / Popover / Dropdown / Message 等） ----
+ * naive-ui 的主题变量以内联 CSS var 形式挂在组件根节点上，颜色由 config provider 生效；
+ * 这里的 backdrop-filter 只能靠全局选择器，故用 body.glass-mode 限定。
+ */
+body.glass-mode .n-modal .n-card,
+body.glass-mode .n-dialog,
+body.glass-mode .n-popover,
+body.glass-mode .n-dropdown-menu,
+body.glass-mode .n-message,
+body.glass-mode .n-notification,
+body.glass-mode .n-select-menu,
+body.glass-mode .n-date-panel,
+body.glass-mode .n-cascader-menu {
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+}
