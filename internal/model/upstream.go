@@ -69,7 +69,9 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 
 // DeleteUpstream 软删除上游及其模型：置 is_active=0 后网关按名称解析即失败，
 // 行保留供用量/归档历史关联。部分唯一索引不占名额，同名可重建。
-// 两条 UPDATE 包在一个事务里，避免上游已删而模型残留活跃孤儿行。
+// 上游的别名绑定一并软删（网关解析别名时本就会跳过不活跃上游的绑定，这里
+// 顺手清掉，避免管理端列表残留指向死上游的绑定）。
+// 三条 UPDATE 包在一个事务里，避免上游已删而模型/绑定残留活跃孤儿行。
 func DeleteUpstream(d *sql.DB, id int64) error {
 	now := time.Now()
 	tx, err := d.Begin()
@@ -82,6 +84,9 @@ func DeleteUpstream(d *sql.DB, id int64) error {
 	}
 	if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND is_active = 1`), id); err != nil {
 		return fmt.Errorf("delete upstream %d models: %w", id, err)
+	}
+	if _, err := tx.Exec(db.Rebind(d, `UPDATE model_alias_bindings SET is_active = 0 WHERE upstream_id=? AND is_active = 1`), id); err != nil {
+		return fmt.Errorf("delete upstream %d alias bindings: %w", id, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete upstream %d: %w", id, err)

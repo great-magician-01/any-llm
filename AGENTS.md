@@ -75,9 +75,9 @@ All settings load from environment variables. A `.env` file in the working direc
 
 - `/v1/*` — public gateway (ext-key auth via `Authorization: Bearer all-sk-...`)
   - `GET /v1/models`, `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic)
-  - Model format in request body: `upstream-name/model-name`
+  - Model format in request body: `upstream-name/model-name`, **or a model alias** (fixed external name): the full model string is exact-matched against active aliases first (aliases take precedence, even names containing `/`); an alias resolves to an ordered binding list of `upstream + real model` that is tried in `priority` order with automatic failover (upstream-limit-exceeded candidates are skipped before dispatch; once stream events flow, no failover). Usage records store the **actual** upstream model per attempt.
 - `/api/admin/*` — admin API (HMAC session auth, cookie `s`)
-  - CRUD for upstreams, models, ext keys; usage summary/records
+  - CRUD for upstreams, models, ext keys, model aliases (`/api/admin/aliases`); usage summary/records
   - `GET /api/admin/conversations[?page=&size=]` and `/api/admin/conversations/:id` — read-only access to archived conversations (`conversation_records`, **PG only**); on SQLite the list returns `{"data": [], "total": 0, "disabled": true}` so the frontend can show a hint. Responses never include the raw byte columns
 - `/*` — SPA fallback (serves embedded `web/dist/`; falls back to `index.html` for client-side routing)
 

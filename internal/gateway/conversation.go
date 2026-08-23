@@ -42,16 +42,28 @@ type convCtx struct {
 	tee          *teeWriter      // 流请求安装后非 nil
 }
 
-// newConvCtx 在 PG 上为请求创建记录上下文；非 PG（或 marshal 失败）返回 nil。
-// 必须在 dispatch 里 irReq.Model = realModel 之后、responses session 合并
-// irReq 之前调用，保证 request_ir 是客户端原始请求的归一化快照。
-func (g *Gateway) newConvCtx(r *http.Request, key *model.ExtKey, u *model.Upstream, realModel, inFormat string, irReq *translate.Request, body []byte) *convCtx {
+// snapshotRequestIR 在 dispatch 解码后、responses session 合并前对请求 IR 做
+// 一次 JSON 快照，供故障转移各次候选调用的 newConvCtx 共用（保证 request_ir
+// 是客户端原始请求而非合并历史后的形态）。非 PG 或 marshal 失败返回 nil，
+// 后续 newConvCtx 随之返回 nil（归档关闭）。
+func (g *Gateway) snapshotRequestIR(irReq *translate.Request) []byte {
 	if db.DialectOf(g.db) != db.DialectPostgres {
 		return nil
 	}
-	reqIRJSON, err := json.Marshal(irReq)
+	b, err := json.Marshal(irReq)
 	if err != nil {
 		logger.Warn("conversation: request IR marshal failed, skipping record", "err", err)
+		return nil
+	}
+	return b
+}
+
+// newConvCtx 在 PG 上为一次候选调用创建记录上下文；reqIRJSON 为 nil（非 PG
+// 或快照失败）时返回 nil。reqIRJSON 必须是 dispatch 在 responses session 合并
+// irReq 之前的快照（见 snapshotRequestIR），保证 request_ir 是客户端原始请求
+// 的归一化快照。
+func (g *Gateway) newConvCtx(r *http.Request, key *model.ExtKey, u *model.Upstream, realModel, inFormat string, reqIRJSON []byte, stream bool, body []byte) *convCtx {
+	if reqIRJSON == nil {
 		return nil
 	}
 	ua := r.Header.Get("User-Agent")
@@ -62,7 +74,7 @@ func (g *Gateway) newConvCtx(r *http.Request, key *model.ExtKey, u *model.Upstre
 		inFormat:  inFormat,
 		harness:   detectHarness(ua),
 		userAgent: ua,
-		stream:    irReq.Stream,
+		stream:    stream,
 		reqIRJSON: reqIRJSON,
 		reqRaw:    body,
 	}
@@ -76,7 +88,7 @@ func (g *Gateway) newConvCtx(r *http.Request, key *model.ExtKey, u *model.Upstre
 		c.upstreamName = u.Name
 		c.upFormat = u.Format
 	}
-	if irReq.Stream {
+	if stream {
 		c.acc = newStreamRecorder()
 	}
 	return c

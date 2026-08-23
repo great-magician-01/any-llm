@@ -25,6 +25,7 @@ function item(label: string, key: string, icon: IconName) {
 const menuItems = [
   item('概览', 'dashboard', 'dashboard'),
   item('上游管理', 'upstreams', 'layers'),
+  item('模型别名', 'aliases', 'link'),
   item('API 密钥', 'keys', 'key'),
   item('用量统计', 'usage', 'chart'),
   item('对话记录', 'conversations', 'chat'),

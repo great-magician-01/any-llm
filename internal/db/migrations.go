@@ -80,6 +80,26 @@ CREATE TABLE IF NOT EXISTS response_sessions (
     last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
+
+-- model_aliases：固定对外模型名。客户端用别名请求，网关按绑定优先级
+-- 依次尝试 model_alias_bindings 里的「上游+真实模型」，实现对外名称不变、
+-- 内里自由切换与故障转移。
+CREATE TABLE IF NOT EXISTS model_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS model_alias_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias_id INTEGER NOT NULL,
+    upstream_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
 `
 
 const migrationPG = `
@@ -148,6 +168,23 @@ CREATE TABLE IF NOT EXISTS response_sessions (
     last_used_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
+
+CREATE TABLE IF NOT EXISTS model_aliases (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS model_alias_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    alias_id BIGINT NOT NULL,
+    upstream_id BIGINT NOT NULL,
+    model_name TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
 
 -- conversation_records 归档每次网关对话（仅 PG；SQLite 不建此表）。
 -- request_ir/response_ir 是归一化 IR 的 JSON（含工具调用与思维链，可查询）；
@@ -457,6 +494,8 @@ func uniqueIndexDDL() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstreams_name ON upstreams(name) WHERE is_active = 1`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_models_uid_name ON upstream_models(upstream_id, model_name) WHERE is_active = 1`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_key ON ext_keys(key) WHERE is_active = 1`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_aliases_name ON model_aliases(name) WHERE is_active = 1`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_bindings_order ON model_alias_bindings(alias_id, priority) WHERE is_active = 1`,
 	}
 }
 
