@@ -11,6 +11,9 @@ import (
 // 历史记录靠存储的 name/id 关联），唯一性用「仅活跃行」的部分唯一索引实现
 // ——软删除的行不占唯一名额，同名资源删除后可重建。usage_records /
 // conversation_records 等归档表只存 id/name 快照，不依赖引用完整性。
+//
+// 注意：这里的 CREATE TABLE 与 sqliteSoftDeleteSpecs 里的重建 DDL 是重复的，
+// 新增/修改列时两处（及各自的 insertCols/selectExprs）必须同步。
 const migrationSQLite = `
 CREATE TABLE IF NOT EXISTS upstreams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +80,26 @@ CREATE TABLE IF NOT EXISTS response_sessions (
     last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
+
+-- model_aliases：固定对外模型名。客户端用别名请求，网关按绑定优先级
+-- 依次尝试 model_alias_bindings 里的「上游+真实模型」，实现对外名称不变、
+-- 内里自由切换与故障转移。
+CREATE TABLE IF NOT EXISTS model_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS model_alias_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias_id INTEGER NOT NULL,
+    upstream_id INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
 `
 
 const migrationPG = `
@@ -145,6 +168,23 @@ CREATE TABLE IF NOT EXISTS response_sessions (
     last_used_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
+
+CREATE TABLE IF NOT EXISTS model_aliases (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS model_alias_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    alias_id BIGINT NOT NULL,
+    upstream_id BIGINT NOT NULL,
+    model_name TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
 
 -- conversation_records 归档每次网关对话（仅 PG；SQLite 不建此表）。
 -- request_ir/response_ir 是归一化 IR 的 JSON（含工具调用与思维链，可查询）；
@@ -272,6 +312,9 @@ func migrateSoftDeletePG(d *sql.DB) error {
 		`ALTER TABLE upstream_models ADD COLUMN IF NOT EXISTS is_active INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE ext_keys ADD COLUMN IF NOT EXISTS is_active INTEGER NOT NULL DEFAULT 1`,
 		// 去掉所有外键
+		// 注意：按 PG 默认约束名 DROP；若旧库约束是手工建的、命名非默认，
+		// 这里 DROP 不到，旧 UNIQUE/FK 会与部分唯一索引并存（软删除后同名
+		// 重建会被旧约束拒绝），需要人工处理。
 		`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_format_check`,
 		`ALTER TABLE upstream_models DROP CONSTRAINT IF EXISTS upstream_models_upstream_id_fkey`,
 		`ALTER TABLE usage_records DROP CONSTRAINT IF EXISTS usage_records_ext_key_id_fkey`,
@@ -451,6 +494,8 @@ func uniqueIndexDDL() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstreams_name ON upstreams(name) WHERE is_active = 1`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_models_uid_name ON upstream_models(upstream_id, model_name) WHERE is_active = 1`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_key ON ext_keys(key) WHERE is_active = 1`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_aliases_name ON model_aliases(name) WHERE is_active = 1`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_bindings_order ON model_alias_bindings(alias_id, priority) WHERE is_active = 1`,
 	}
 }
 

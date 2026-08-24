@@ -44,4 +44,15 @@ describe('api client 401 interceptor', () => {
 
     expect(window.location.hash).toBe('#/login')
   })
+
+  it('redirects to #/glass/login on 401 when on glass pages', async () => {
+    window.location.hash = '#/glass/keys'
+    localStorage.setItem('authed', '1')
+    client.defaults.adapter = rejectWith(401)
+
+    await expect(client.get('/keys')).rejects.toBeTruthy()
+
+    expect(localStorage.getItem('authed')).toBeNull()
+    expect(window.location.hash).toBe('#/glass/login')
+  })
 })

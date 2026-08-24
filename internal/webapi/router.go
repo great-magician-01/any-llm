@@ -25,6 +25,8 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/admin/upstreams", a.handleUpstreams)
 	mux.HandleFunc("/api/admin/upstreams/", a.handleUpstreamItem)
+	mux.HandleFunc("/api/admin/aliases", a.handleAliases)
+	mux.HandleFunc("/api/admin/aliases/", a.handleAliasItem)
 	mux.HandleFunc("/api/admin/keys", a.handleKeys)
 	mux.HandleFunc("/api/admin/keys/", a.handleKeyItem)
 	mux.HandleFunc("/api/admin/usage/", a.handleUsage)
@@ -80,6 +82,40 @@ func (a *API) handleUpstreamItem(w http.ResponseWriter, r *http.Request) {
 		a.handleModels(w, r, id, parts[2:])
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (a *API) handleAliases(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		a.listAliases(w, r)
+	case "POST":
+		a.createAlias(w, r)
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
+func (a *API) handleAliasItem(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/aliases/")
+	if path == "" || strings.Contains(path, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	id := parseID(path)
+	if id == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case "GET":
+		a.getAlias(w, r, id)
+	case "PUT":
+		a.updateAlias(w, r, id)
+	case "DELETE":
+		a.deleteAlias(w, r, id)
+	default:
+		http.Error(w, "method not allowed", 405)
 	}
 }
 

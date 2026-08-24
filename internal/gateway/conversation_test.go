@@ -11,12 +11,16 @@ import (
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
-// SQLite 上 newConvCtx 必须返回 nil——结构性证明对话归档是 PG-only。
+// SQLite 上 snapshotRequestIR/newConvCtx 必须返回 nil——结构性证明对话归档是 PG-only。
 func TestConversationDisabledOnSQLite(t *testing.T) {
 	g, _ := setupGateway(t)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o"}`))
 	req.Header.Set("User-Agent", "claude-code/1.0")
-	rec := g.newConvCtx(req, nil, nil, "gpt-4o", "openai", nil, []byte("{}"))
+	snap := g.snapshotRequestIR(&translate.Request{Model: "gpt-4o"})
+	if snap != nil {
+		t.Fatalf("snapshotRequestIR on SQLite = %q, want nil (PG-only)", snap)
+	}
+	rec := g.newConvCtx(req, nil, nil, "gpt-4o", "openai", snap, false, []byte("{}"))
 	if rec != nil {
 		t.Fatalf("newConvCtx on SQLite = %+v, want nil (PG-only)", rec)
 	}

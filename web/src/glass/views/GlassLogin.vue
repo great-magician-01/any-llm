@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import client from '../api/client'
-import BrandMark from '../components/BrandMark.vue'
+import client from '../../api/client'
+import BrandMark from '../../components/BrandMark.vue'
 
 const router = useRouter()
 const password = ref('')
@@ -15,7 +15,7 @@ async function login() {
   try {
     await client.post('/login', { password: password.value })
     localStorage.setItem('authed', '1')
-    router.push('/')
+    router.push('/glass/dashboard')
   } catch {
     error.value = '密码错误'
   } finally {
@@ -26,10 +26,6 @@ async function login() {
 
 <template>
   <div class="login-page">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="grid-overlay"></div>
-
     <div class="login-card">
       <div class="logo-glow">
         <BrandMark :size="52" />
@@ -59,7 +55,7 @@ async function login() {
         {{ error }}
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
-      <button class="switch-link" @click="router.push('/glass/login')">切换到毛玻璃版</button>
+      <button class="switch-link" @click="router.push('/login')">切换到经典版</button>
     </div>
   </div>
 </template>
@@ -73,60 +69,19 @@ async function login() {
   justify-content: center;
   padding: 24px;
   overflow: hidden;
-  background: #060a13;
-}
-.orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(90px);
-  opacity: 0.5;
-  animation: drift 14s ease-in-out infinite alternate;
-}
-.orb-1 {
-  width: 480px;
-  height: 480px;
-  top: -160px;
-  right: -80px;
-  background: radial-gradient(circle, rgba(91, 140, 255, 0.55), transparent 65%);
-}
-.orb-2 {
-  width: 420px;
-  height: 420px;
-  bottom: -140px;
-  left: -100px;
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.4), transparent 65%);
-  animation-delay: -7s;
-}
-@keyframes drift {
-  from {
-    transform: translate(0, 0) scale(1);
-  }
-  to {
-    transform: translate(-40px, 40px) scale(1.12);
-  }
-}
-.grid-overlay {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 75%);
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 75%);
 }
 .login-card {
   position: relative;
   width: 380px;
   padding: 44px 38px 30px;
-  background: rgba(14, 21, 38, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 22px;
   box-shadow:
-    0 24px 64px rgba(2, 6, 18, 0.6),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+    0 24px 64px rgba(3, 8, 24, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -138,7 +93,7 @@ async function login() {
   left: 24px;
   right: 24px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(91, 140, 255, 0.7), rgba(34, 211, 238, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgba(123, 163, 255, 0.8), rgba(78, 216, 240, 0.8), transparent);
 }
 .logo-glow {
   padding: 6px;
@@ -148,10 +103,10 @@ async function login() {
 @keyframes pulse {
   0%,
   100% {
-    filter: drop-shadow(0 0 10px rgba(91, 140, 255, 0.35));
+    filter: drop-shadow(0 0 10px rgba(123, 163, 255, 0.35));
   }
   50% {
-    filter: drop-shadow(0 0 22px rgba(34, 211, 238, 0.5));
+    filter: drop-shadow(0 0 22px rgba(78, 216, 240, 0.5));
   }
 }
 .title {
@@ -163,13 +118,13 @@ async function login() {
 .subtitle {
   margin: 6px 0 28px;
   font-size: 13px;
-  color: #8fa0b8;
+  color: var(--text-3);
   letter-spacing: 0.04em;
 }
 .login-btn {
   margin-top: 16px;
   font-weight: 600;
-  box-shadow: 0 6px 20px rgba(91, 140, 255, 0.35);
+  box-shadow: 0 6px 20px rgba(123, 163, 255, 0.35);
 }
 .login-alert {
   margin-top: 14px;
@@ -178,14 +133,14 @@ async function login() {
   margin: 26px 0 0;
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #5b6b82;
+  color: var(--text-4);
 }
 .switch-link {
   margin-top: 12px;
   padding: 4px 8px;
   border: none;
   background: transparent;
-  color: #5b6b82;
+  color: var(--text-4);
   font-size: 12px;
   cursor: pointer;
   transition: color 0.15s ease;
