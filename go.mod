@@ -1,6 +1,6 @@
 module github.com/great-magician-01/any-llm
 
-go 1.25.5
+go 1.26.4
 
 require (
 	github.com/jackc/pgx/v5 v5.4.3
