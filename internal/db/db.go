@@ -78,7 +78,7 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 		}
 		connConfig.RuntimeParams["search_path"] = cfg.Schema
 	}
-	d := stdlib.OpenDB(*connConfig)
+	d := stdlib.OpenDB(*connConfig, stdlib.OptionAfterConnect(registerLocalTimestamp))
 	if err := d.Ping(); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)

@@ -43,7 +43,7 @@ func (s *SessionStore) Get(id string) ([]translate.Message, bool, error) {
 		_, _ = s.db.Exec(db.Rebind(s.db, `DELETE FROM response_sessions WHERE id = ?`), id)
 		return nil, false, nil
 	}
-	if _, err := s.db.Exec(db.Rebind(s.db, `UPDATE response_sessions SET last_used_at = ? WHERE id = ?`), time.Now().UTC(), id); err != nil {
+	if _, err := s.db.Exec(db.Rebind(s.db, `UPDATE response_sessions SET last_used_at = ? WHERE id = ?`), time.Now(), id); err != nil {
 		logger.Warn("session touch failed", "id", id, "err", err)
 	}
 	var msgs []translate.Message
@@ -54,15 +54,17 @@ func (s *SessionStore) Get(id string) ([]translate.Message, bool, error) {
 }
 
 // Put 保存（或覆盖）会话，并惰性清扫过期会话。
-// 时间统一用 Go time.Time（UTC）绑定写入：SQLite CURRENT_TIMESTAMP 只有秒级
-// 精度，亚秒间隔写入的两行会落在同一秒，`last_used_at < ?` 的字符串比较无法
-// 区分；绑定参数带亚秒精度，写入与清扫共用同一驱动格式，比较才严格按时间序。
+// 时间统一用 Go time.Time（服务器本地时区）绑定写入，与全库其它表一致：
+// PG 的 timestamp 列由驱动 codec 存取均为本地墙钟（见 internal/db/pgtime.go）。
+// 不用 SQLite CURRENT_TIMESTAMP 默认值：它只有秒级精度，亚秒间隔写入的两行
+// 会落在同一秒，`last_used_at < ?` 的字符串比较无法区分；绑定参数带亚秒精度，
+// 写入与清扫共用同一驱动格式，比较才严格按时间序。
 func (s *SessionStore) Put(id string, msgs []translate.Message) error {
 	data, err := json.Marshal(msgs)
 	if err != nil {
 		return fmt.Errorf("session encode: %w", err)
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	_, err = s.db.Exec(
 		db.Rebind(s.db, `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
 		 VALUES (?, ?, ?, ?)
@@ -73,7 +75,7 @@ func (s *SessionStore) Put(id string, msgs []translate.Message) error {
 		return fmt.Errorf("session put: %w", err)
 	}
 	if _, err := s.db.Exec(db.Rebind(s.db, `DELETE FROM response_sessions WHERE last_used_at < ?`),
-		time.Now().UTC().Add(-s.ttl)); err != nil {
+		time.Now().Add(-s.ttl)); err != nil {
 		logger.Warn("session sweep failed", "err", err)
 	}
 	return nil
