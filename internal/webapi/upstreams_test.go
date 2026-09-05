@@ -262,7 +262,7 @@ func TestCreateUpstream_ExplicitDisabled(t *testing.T) {
 		}
 		var resp struct {
 			ID      int64 `json:"id"`
-			Enabled bool   `json:"enabled"`
+			Enabled bool  `json:"enabled"`
 		}
 		json.Unmarshal(w.Body.Bytes(), &resp)
 		return resp.ID, resp.Enabled
