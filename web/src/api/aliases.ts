@@ -5,6 +5,7 @@ export interface AliasBinding {
   alias_id?: number
   upstream_id: number
   upstream_name?: string
+  upstream_enabled?: boolean
   model_name: string
   priority: number
 }

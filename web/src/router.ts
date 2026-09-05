@@ -31,6 +31,7 @@ const router = createRouter({
             { path: '', redirect: '/glass/dashboard' },
             { path: 'dashboard', name: 'glass-dashboard', component: () => import('./glass/views/GlassDashboard.vue') },
             { path: 'upstreams', name: 'glass-upstreams', component: () => import('./glass/views/GlassUpstreams.vue') },
+            { path: 'aliases', name: 'glass-aliases', component: () => import('./glass/views/GlassAliases.vue') },
             { path: 'keys', name: 'glass-keys', component: () => import('./glass/views/GlassKeys.vue') },
             { path: 'usage', name: 'glass-usage', component: () => import('./glass/views/GlassUsage.vue') },
             { path: 'conversations', name: 'glass-conversations', component: () => import('./glass/views/GlassConversations.vue') },

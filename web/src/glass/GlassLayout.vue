@@ -25,6 +25,7 @@ function item(label: string, key: string, icon: IconName) {
 const menuItems = [
   item('概览', 'glass-dashboard', 'dashboard'),
   item('上游管理', 'glass-upstreams', 'layers'),
+  item('模型别名', 'glass-aliases', 'link'),
   item('API 密钥', 'glass-keys', 'key'),
   item('用量统计', 'glass-usage', 'chart'),
   item('对话记录', 'glass-conversations', 'chat'),

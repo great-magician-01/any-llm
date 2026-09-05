@@ -2,9 +2,9 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useMessage, NPopconfirm, NButton, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSelect, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '../api/aliases'
-import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '../api/upstreams'
-import AppIcon from '../components/AppIcon.vue'
+import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '../../api/aliases'
+import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '../../api/upstreams'
+import AppIcon from '../../components/AppIcon.vue'
 
 const message = useMessage()
 const aliases = ref<ModelAlias[]>([])
@@ -275,7 +275,7 @@ onMounted(load)
 .alias-chip {
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border-soft);
   font-size: 12px;
   color: var(--text-2);
@@ -283,7 +283,7 @@ onMounted(load)
 .code-chip {
   padding: 1px 6px;
   border-radius: 5px;
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-2);
   font-size: 12px;
 }

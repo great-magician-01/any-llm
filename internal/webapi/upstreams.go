@@ -30,6 +30,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		BaseURL           string `json:"base_url"`
 		APIKey            string `json:"api_key"`
 		Format            string `json:"format"`
+		Enabled           *bool  `json:"enabled"`
 		DailyTokenLimit   int    `json:"daily_token_limit"`
 		MonthlyTokenLimit int    `json:"monthly_token_limit"`
 		FetchModels       bool   `json:"fetch_models"`
@@ -60,6 +61,23 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		logger.Error("admin: create upstream DB write failed", "name", req.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
+	}
+	// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
+	// 配置好模型与别名后再上线」的流程。读回完整行再改存，遵守 UpdateUpstream
+	// 的「先 Get 再存」约定。
+	if req.Enabled != nil && !*req.Enabled {
+		if err := a.writeSync(func(d *sql.DB) error {
+			nu, e := model.GetUpstreamByID(d, id)
+			if e != nil {
+				return e
+			}
+			nu.Enabled = false
+			return model.UpdateUpstream(d, nu)
+		}); err != nil {
+			logger.Error("admin: disable new upstream failed", "id", id, "err", err)
+			writeSyncErr(w, 400, err)
+			return
+		}
 	}
 	if req.FetchModels && a.client != nil {
 		u.ID = id
@@ -98,6 +116,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		BaseURL           string `json:"base_url"`
 		APIKey            string `json:"api_key"`
 		Format            string `json:"format"`
+		Enabled           *bool  `json:"enabled"`
 		DailyTokenLimit   *int   `json:"daily_token_limit"`
 		MonthlyTokenLimit *int   `json:"monthly_token_limit"`
 	}
@@ -141,6 +160,9 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	if req.MonthlyTokenLimit != nil {
 		u.MonthlyTokenLimit = *req.MonthlyTokenLimit
+	}
+	if req.Enabled != nil {
+		u.Enabled = *req.Enabled
 	}
 	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
 		logger.Error("admin: update upstream DB write failed", "id", id, "name", u.Name, "err", err)

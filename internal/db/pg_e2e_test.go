@@ -255,6 +255,11 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 	} else {
 		t.Fatal("created_at zero on PG")
 	}
+	// PG timestamp 列存的是本地墙钟；扫描结果必须标为本地时区
+	//（pgtime.go 的 codec 重标定），否则 JSON 输出会误标为 UTC。
+	if records[0].CreatedAt.Location() != time.Local {
+		t.Fatalf("created_at location = %v, want Local", records[0].CreatedAt.Location())
+	}
 }
 
 func TestPG_E2E_WriterPath(t *testing.T) {

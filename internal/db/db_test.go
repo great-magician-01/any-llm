@@ -51,6 +51,11 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 			t.Fatalf("table %s missing: %v", table, err)
 		}
 	}
+	// 新库 upstreams 带启用开关列
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='enabled'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.enabled missing: n=%d err=%v", n, err)
+	}
 }
 
 func TestOpenPG_DSNEncodesSpecialChars(t *testing.T) {
@@ -189,6 +194,11 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	var n int
 	if err := got.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name IN ('u1','u2')`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("old rows: n=%d err=%v", n, err)
+	}
+	// enabled 列经 extraCols 回填后随重建保留，老行默认启用
+	var enabled int
+	if err := got.QueryRow(`SELECT enabled FROM upstreams WHERE name='u1'`).Scan(&enabled); err != nil || enabled != 1 {
+		t.Fatalf("enabled backfill: v=%d err=%v", enabled, err)
 	}
 	var id1 int64
 	if err := got.QueryRow(`SELECT id FROM upstreams WHERE name='u1'`).Scan(&id1); err != nil || id1 != 1 {
