@@ -307,3 +307,49 @@ func TestUpdateIgnoresSoftDeleted(t *testing.T) {
 		t.Fatalf("soft-deleted row was updated: %s", name)
 	}
 }
+
+// TestUpstreamDisableEnable verifies 禁用与删除的差别：行与模型都保留
+// （含按名解析，网关靠 Enabled 字段返回明确错误），重新启用即恢复。
+func TestUpstreamDisableEnable(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	AddModel(d, uid, "m1", false, 0, 0)
+
+	// 新建默认启用
+	u, _ := GetUpstreamByID(d, uid)
+	if !u.Enabled {
+		t.Fatal("new upstream should default to enabled")
+	}
+
+	// 禁用：行仍可查（含按名），模型不受影响（未 tombstone）
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := GetUpstreamByID(d, uid)
+	if got.Enabled {
+		t.Fatal("upstream should be disabled")
+	}
+	byName, err := GetUpstreamByName(d, "u")
+	if err != nil || byName.Enabled {
+		t.Fatalf("byName=%+v err=%v", byName, err)
+	}
+	list, _ := ListUpstreams(d)
+	if len(list) != 1 || list[0].Enabled {
+		t.Fatalf("list=%+v", list)
+	}
+	models, _ := ListModels(d, uid)
+	if len(models) != 1 {
+		t.Fatalf("models after disable len=%d", len(models))
+	}
+
+	// 重新启用恢复
+	got.Enabled = true
+	if err := UpdateUpstream(d, got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := GetUpstreamByID(d, uid)
+	if !again.Enabled {
+		t.Fatal("upstream should be re-enabled")
+	}
+}

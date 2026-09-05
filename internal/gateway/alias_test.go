@@ -224,6 +224,55 @@ func TestAliasCandidateSkippedByUpstreamLimit(t *testing.T) {
 	}
 }
 
+// 首选候选上游被禁用：解析时直接跳过（不 dispatch、不记失败 usage），落到第二候选。
+func TestAliasCandidateDisabledFallback(t *testing.T) {
+	good := okUpstreamServer(t, "from-second")
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
+	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
+	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+		{UpstreamID: uid1, ModelName: "m1"},
+		{UpstreamID: uid2, ModelName: "m2"},
+	}})
+	u, _ := model.GetUpstreamByID(d, uid1)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+
+	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-second") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 禁用跳过不产生 usage：只有成功的 1 条
+	_, total, _ := model.UsageRecordsList(d, 1, 10)
+	if total != 1 {
+		t.Fatalf("usage records=%d want 1 (ok only, disabled candidate never dispatched)", total)
+	}
+}
+
+// 别名候选全部被禁用 → 404 no available bindings（与全部删除一致）。
+func TestAliasAllCandidatesDisabled(t *testing.T) {
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
+	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
+	u, _ := model.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+
+	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[]}`)
+	if w.Code != 404 {
+		t.Fatalf("status=%d want 404, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no available bindings") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
 // /v1/models 包含有可用绑定的别名。
 func TestModelsEndpointIncludesAliases(t *testing.T) {
 	g, d := setupGateway(t)

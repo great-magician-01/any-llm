@@ -21,26 +21,32 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 
 func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE id=? AND is_active = 1`), id).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
+	var enabled int
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE id=? AND is_active = 1`), id).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
 	}
+	u.Enabled = enabled != 0
 	return u, nil
 }
 
+// GetUpstreamByName 不过滤 enabled（软删除仍过滤）：网关直连路径需要拿到
+// 禁用的上游行以返回明确的「已禁用」错误，而非笼统的 not found。
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE name=? AND is_active = 1`), name).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
+	var enabled int
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, created_at, updated_at FROM upstreams WHERE name=? AND is_active = 1`), name).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
+	u.Enabled = enabled != 0
 	return u, nil
 }
 
 func ListUpstreams(d *sql.DB) ([]Upstream, error) {
-	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at,
+	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
 		FROM upstreams u WHERE u.is_active = 1 ORDER BY u.id`)
 	if err != nil {
@@ -50,17 +56,25 @@ func ListUpstreams(d *sql.DB) ([]Upstream, error) {
 	out := make([]Upstream, 0)
 	for rows.Next() {
 		var u Upstream
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
+		var enabled int
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
 			return nil, err
 		}
+		u.Enabled = enabled != 0
 		out = append(out, u)
 	}
 	return out, nil
 }
 
+// UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
+// （enabled 等未赋值字段会把已有值清掉）。
 func UpdateUpstream(d *sql.DB, u *Upstream) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, daily_token_limit=?, monthly_token_limit=?, updated_at=? WHERE id=? AND is_active = 1`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, time.Now(), u.ID)
+	en := 0
+	if u.Enabled {
+		en = 1
+	}
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, updated_at=? WHERE id=? AND is_active = 1`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, en, u.DailyTokenLimit, u.MonthlyTokenLimit, time.Now(), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}

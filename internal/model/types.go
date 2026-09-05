@@ -8,6 +8,7 @@ type Upstream struct {
 	BaseURL           string    `json:"base_url"`
 	APIKey            string    `json:"api_key"`
 	Format            string    `json:"format"`
+	Enabled           bool      `json:"enabled"`
 	DailyTokenLimit   int       `json:"daily_token_limit"`
 	MonthlyTokenLimit int       `json:"monthly_token_limit"`
 	ModelCount        int       `json:"model_count"`

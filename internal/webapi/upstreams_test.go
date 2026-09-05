@@ -245,3 +245,85 @@ func TestUpdateUpstream_ResponsesFormat(t *testing.T) {
 		t.Fatalf("format not updated: %q", u.Format)
 	}
 }
+
+// TestCreateUpstream_ExplicitDisabled 创建时可显式 enabled=false（预建禁用、
+// 配置好模型与别名后再启用）；字段缺省时默认启用（与 DB 默认一致）。
+func TestCreateUpstream_ExplicitDisabled(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) (int64, bool) {
+		t.Helper()
+		body, _ := json.Marshal(extra)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			ID      int64 `json:"id"`
+			Enabled bool  `json:"enabled"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID, resp.Enabled
+	}
+
+	id, enabled := create(map[string]any{"name": "off", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": false})
+	if enabled {
+		t.Fatal("response should report disabled")
+	}
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.Enabled {
+		t.Fatal("stored upstream should be disabled")
+	}
+
+	id, enabled = create(map[string]any{"name": "on", "base_url": "https://x", "api_key": "k", "format": "openai"})
+	if !enabled {
+		t.Fatal("response should report enabled")
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if !u.Enabled {
+		t.Fatal("stored upstream should default to enabled")
+	}
+}
+
+// TestUpdateUpstream_EnableDisable verifies the PATCH-style enabled toggle:
+// explicit value flips the state, absent field (old clients sending the full
+// form without enabled) preserves it.
+func TestUpdateUpstream_EnableDisable(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	do := func(body map[string]any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	if w := do(map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("disable status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.Enabled {
+		t.Fatal("upstream should be disabled")
+	}
+
+	// enabled 缺省（旧客户端全量表单不含该字段）→ 保持禁用，其余字段照常更新
+	if w := do(map[string]any{"name": "u2"}); w.Code != 200 {
+		t.Fatalf("rename status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if u.Enabled || u.Name != "u2" {
+		t.Fatalf("after rename u=%+v", u)
+	}
+
+	if w := do(map[string]any{"enabled": true}); w.Code != 200 {
+		t.Fatalf("enable status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if !u.Enabled {
+		t.Fatal("upstream should be re-enabled")
+	}
+}

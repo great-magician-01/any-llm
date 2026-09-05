@@ -131,3 +131,53 @@ func TestResolveAliasTargets(t *testing.T) {
 		t.Fatalf("empty: found=%v targets=%v err=%v", found, targets, err)
 	}
 }
+
+// TestResolveAliasSkipsDisabledUpstream 禁用（非删除）上游的绑定在网关解析时
+// 被跳过、故障转移到下一候选；listBindings 仍返回绑定与上游名（管理端展示用），
+// 仅 UpstreamEnabled=false。
+func TestResolveAliasSkipsDisabledUpstream(t *testing.T) {
+	d := testDB(t)
+	uid1, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})
+	uid2, _ := CreateUpstream(d, &Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
+	id, _ := CreateAlias(d, &ModelAlias{Name: "fixed", Bindings: []AliasBinding{
+		{UpstreamID: uid1, ModelName: "m1"},
+		{UpstreamID: uid2, ModelName: "m2"},
+	}})
+
+	u1, _ := GetUpstreamByID(d, uid1)
+	u1.Enabled = false
+	if err := UpdateUpstream(d, u1); err != nil {
+		t.Fatal(err)
+	}
+
+	found, targets, err := ResolveAliasTargets(d, "fixed")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if len(targets) != 1 || targets[0].Upstream.Name != "u2" || !targets[0].Upstream.Enabled {
+		t.Fatalf("targets=%+v", targets)
+	}
+
+	// 管理端视角：绑定仍在、上游名完好，仅 UpstreamEnabled 标记
+	got, _ := GetAliasByID(d, id)
+	if len(got.Bindings) != 2 {
+		t.Fatalf("bindings=%+v", got.Bindings)
+	}
+	if got.Bindings[0].UpstreamName != "u1" || got.Bindings[0].UpstreamEnabled {
+		t.Fatalf("binding[0]=%+v", got.Bindings[0])
+	}
+	if !got.Bindings[1].UpstreamEnabled {
+		t.Fatalf("binding[1]=%+v", got.Bindings[1])
+	}
+
+	// 全部禁用 → found=true 但无可用绑定
+	u2, _ := GetUpstreamByID(d, uid2)
+	u2.Enabled = false
+	if err := UpdateUpstream(d, u2); err != nil {
+		t.Fatal(err)
+	}
+	found, targets, err = ResolveAliasTargets(d, "fixed")
+	if err != nil || !found || len(targets) != 0 {
+		t.Fatalf("all disabled: found=%v targets=%v err=%v", found, targets, err)
+	}
+}
