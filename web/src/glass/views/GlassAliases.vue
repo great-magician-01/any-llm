@@ -53,6 +53,8 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
       row.bindings.forEach((b, i) => {
         if (i > 0) nodes.push(h(AppIcon, { name: 'arrow', size: 12, style: 'color: var(--text-4); flex: none' }))
         const dead = !b.upstream_name
+        // 上游被禁用（而非删除）：名字仍在，但网关解析时会跳过该绑定
+        const off = !!b.upstream_name && b.upstream_enabled === false
         nodes.push(
           h(
             NTooltip,
@@ -61,10 +63,10 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
               trigger: () =>
                 h(
                   NTag,
-                  { size: 'small', bordered: false, type: dead ? 'error' : i === 0 ? 'success' : 'default' },
+                  { size: 'small', bordered: false, type: dead ? 'error' : off ? 'warning' : i === 0 ? 'success' : 'default' },
                   { default: () => `${b.upstream_name || '上游#' + b.upstream_id} / ${b.model_name}` },
                 ),
-              default: () => (dead ? '该绑定指向的上游已被删除，请求时会跳过' : i === 0 ? '首选绑定' : `第 ${i + 1} 顺位（前面全部失败时兜底）`),
+              default: () => (dead ? '该绑定指向的上游已被删除，请求时会跳过' : off ? '该绑定指向的上游已被禁用，请求时会跳过' : i === 0 ? '首选绑定' : `第 ${i + 1} 顺位（前面全部失败时兜底）`),
             },
           ),
         )

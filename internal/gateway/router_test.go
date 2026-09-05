@@ -102,6 +102,68 @@ func TestRouteInvalidModelFormat(t *testing.T) {
 	}
 }
 
+// 直连请求禁用的上游 → 404，错误消息明确说明已禁用（区别于 not found）。
+func TestRouteDisabledUpstream(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u, _ := model.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := model.CreateExtKey(d, "l", 0, 0)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"off/m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("status=%d want 404, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "is disabled") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+// /v1/models 不列出禁用上游的模型，也不列出仅指向禁用上游的别名。
+func TestModelsEndpointExcludesDisabled(t *testing.T) {
+	g, d := setupGateway(t)
+	off, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	on, _ := model.CreateUpstream(d, &model.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, off, "m1", false, 0, 0)
+	model.AddModel(d, on, "m2", false, 0, 0)
+	model.CreateAlias(d, &model.ModelAlias{Name: "dead-alias", Bindings: []model.AliasBinding{{UpstreamID: off, ModelName: "m1"}}})
+	model.CreateAlias(d, &model.ModelAlias{Name: "live-alias", Bindings: []model.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
+
+	u, _ := model.GetUpstreamByID(d, off)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	ids := map[string]bool{}
+	for _, m := range resp.Data {
+		ids[m.ID] = true
+	}
+	if ids["off/m1"] || ids["dead-alias"] {
+		t.Fatalf("disabled upstream leaked to /v1/models: %+v", ids)
+	}
+	if !ids["on/m2"] || !ids["live-alias"] {
+		t.Fatalf("enabled upstream missing: %+v", ids)
+	}
+}
+
 // /v1/responses 走 responses 入站格式：无 key 401、错误形状与 openai 一致
 func TestResponsesRoute(t *testing.T) {
 	gw, _ := setupGateway(t) // router_test.go 的现有辅助：(*Gateway, *sql.DB)

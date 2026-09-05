@@ -53,6 +53,9 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	var data []modelObj
 	for _, u := range upstreams {
+		if !u.Enabled { // 禁用的上游不对外暴露模型（行保留，重新启用即恢复）
+			continue
+		}
 		models, err := model.ListModels(g.db, u.ID)
 		if err != nil {
 			logger.Warn("gateway: list models failed, skipping upstream", "upstream", u.Name, "upstream_id", u.ID, "err", err)
@@ -74,7 +77,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		for _, a := range aliases {
 			hasUsable := false
 			for _, b := range a.Bindings {
-				if b.UpstreamName != "" { // 绑定指向的上游仍活跃
+				if b.UpstreamName != "" && b.UpstreamEnabled { // 绑定指向的上游仍活跃且启用
 					hasUsable = true
 					break
 				}
@@ -188,6 +191,10 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	u, err := model.GetUpstreamByName(g.db, name)
 	if err != nil {
 		WriteError(w, 404, inFormat, "upstream '"+name+"' not found", "not_found_error")
+		return
+	}
+	if !u.Enabled {
+		WriteError(w, 404, inFormat, "upstream '"+name+"' is disabled", "not_found_error")
 		return
 	}
 

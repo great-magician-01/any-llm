@@ -20,14 +20,17 @@ type ModelAlias struct {
 }
 
 // AliasBinding 别名的一条候选绑定。Priority 升序即尝试顺序（0 最先）。
-// UpstreamName 由联查填充，仅用于展示。
+// UpstreamName / UpstreamEnabled 由联查填充，仅用于展示：指向的上游被禁用
+// （而非删除）时 UpstreamName 仍在，UpstreamEnabled=false 供 /v1/models
+// 判断别名可用性与管理端提示。
 type AliasBinding struct {
-	ID           int64  `json:"id"`
-	AliasID      int64  `json:"alias_id"`
-	UpstreamID   int64  `json:"upstream_id"`
-	UpstreamName string `json:"upstream_name,omitempty"`
-	ModelName    string `json:"model_name"`
-	Priority     int    `json:"priority"`
+	ID              int64  `json:"id"`
+	AliasID         int64  `json:"alias_id"`
+	UpstreamID      int64  `json:"upstream_id"`
+	UpstreamName    string `json:"upstream_name,omitempty"`
+	UpstreamEnabled bool   `json:"upstream_enabled"`
+	ModelName       string `json:"model_name"`
+	Priority        int    `json:"priority"`
 }
 
 // AliasTarget 是网关故障转移循环的一个候选：解析后的上游与其上的真实模型。
@@ -117,10 +120,11 @@ func ListAliases(d *sql.DB) ([]ModelAlias, error) {
 }
 
 // listBindings 取绑定并联查上游名（含指向上游已软删除的绑定，供管理端展示）；
-// 网关解析用 ResolveAliasTargets，会跳过上游不活跃的绑定。
+// 网关解析用 ResolveAliasTargets，会跳过上游不活跃或已禁用的绑定。
 func listBindings(d *sql.DB, where string, args ...any) ([]AliasBinding, error) {
 	rows, err := d.Query(db.Rebind(d, `SELECT b.id, b.alias_id, b.upstream_id, b.model_name, b.priority,
-		COALESCE((SELECT u.name FROM upstreams u WHERE u.id = b.upstream_id AND u.is_active = 1), '') AS upstream_name
+		COALESCE((SELECT u.name FROM upstreams u WHERE u.id = b.upstream_id AND u.is_active = 1), '') AS upstream_name,
+		COALESCE((SELECT u.enabled FROM upstreams u WHERE u.id = b.upstream_id AND u.is_active = 1), 0) AS upstream_enabled
 		FROM model_alias_bindings b `+where+` ORDER BY b.priority, b.id`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list alias bindings: %w", err)
@@ -129,18 +133,21 @@ func listBindings(d *sql.DB, where string, args ...any) ([]AliasBinding, error) 
 	out := make([]AliasBinding, 0)
 	for rows.Next() {
 		var b AliasBinding
-		if err := rows.Scan(&b.ID, &b.AliasID, &b.UpstreamID, &b.ModelName, &b.Priority, &b.UpstreamName); err != nil {
+		var upstreamEnabled int
+		if err := rows.Scan(&b.ID, &b.AliasID, &b.UpstreamID, &b.ModelName, &b.Priority, &b.UpstreamName, &upstreamEnabled); err != nil {
 			return nil, err
 		}
+		b.UpstreamEnabled = upstreamEnabled != 0
 		out = append(out, b)
 	}
 	return out, rows.Err()
 }
 
 // ResolveAliasTargets 网关热路径：按对外名称精确匹配活跃别名，返回按优先级
-// 排序的候选链；绑定指向的上游若已删除/不活跃则跳过。found=false 表示别名
-// 不存在（调用方回落到 name/model 直连拆分）；found=true 但 targets 为空表示
-// 别名存在但无可用绑定。
+// 排序的候选链；绑定指向的上游若已删除/不活跃/已禁用则跳过（禁用的候选直接
+// 从链中消失，故障转移自然落到下一候选）。found=false 表示别名不存在（调用
+// 方回落到 name/model 直连拆分）；found=true 但 targets 为空表示别名存在但
+// 无可用绑定。
 func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTarget, err error) {
 	var aliasID int64
 	err = d.QueryRow(db.Rebind(d, `SELECT id FROM model_aliases WHERE name=? AND is_active = 1`), name).Scan(&aliasID)
@@ -150,8 +157,8 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 	if err != nil {
 		return false, nil, fmt.Errorf("resolve alias %q: %w", name, err)
 	}
-	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at, b.model_name
-		FROM model_alias_bindings b JOIN upstreams u ON u.id = b.upstream_id AND u.is_active = 1
+	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at, b.model_name
+		FROM model_alias_bindings b JOIN upstreams u ON u.id = b.upstream_id AND u.is_active = 1 AND u.enabled = 1
 		WHERE b.alias_id = ? AND b.is_active = 1 ORDER BY b.priority, b.id`), aliasID)
 	if err != nil {
 		return true, nil, fmt.Errorf("resolve alias %q bindings: %w", name, err)
@@ -159,11 +166,13 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 	defer rows.Close()
 	for rows.Next() {
 		t := AliasTarget{Upstream: &Upstream{}}
+		var enabled int
 		if err := rows.Scan(&t.Upstream.ID, &t.Upstream.Name, &t.Upstream.BaseURL, &t.Upstream.APIKey, &t.Upstream.Format,
-			&t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt,
+			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt,
 			&t.ModelName); err != nil {
 			return true, nil, err
 		}
+		t.Upstream.Enabled = enabled != 0
 		targets = append(targets, t)
 	}
 	return true, targets, rows.Err()

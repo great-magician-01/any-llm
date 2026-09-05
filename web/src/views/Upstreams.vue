@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NText, useMessage } from 'naive-ui'
+import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
 import { formatInt } from '../utils/format'
@@ -9,7 +9,7 @@ import AppIcon from '../components/AppIcon.vue'
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true })
 const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
@@ -82,13 +82,21 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true } }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true } }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
 function edit(u: Upstream) { editing.value = u; form.value = { ...u }; showForm.value = true }
 function add() { editing.value = null; resetForm(); showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
+async function toggleEnabled(row: Upstream, v: boolean) {
+  try {
+    await updateUpstream(row.id as number, { enabled: v })
+    row.enabled = v // 响应式行对象，直接改即可；失败时不改，开关弹回原状态
+  } catch (e) {
+    message.error((v ? '启用失败：' : '禁用失败：') + errMsg(e))
+  }
+}
 async function fetchM(id: number) {
   if (fetchingId.value !== null) return
   fetchingId.value = id
@@ -222,6 +230,8 @@ const columns: DataTableColumns<Upstream> = [
     ])
   }},
   { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
+      value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   { title: '地址', key: 'base_url', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
@@ -321,6 +331,7 @@ onMounted(load)
               <n-radio value="responses">Responses</n-radio>
             </n-radio-group>
           </n-form-item>
+          <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
           <n-form-item label="单日 token 上限">
             <n-input-number
               v-model:value="form.daily_token_limit"
