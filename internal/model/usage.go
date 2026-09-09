@@ -10,13 +10,13 @@ import (
 )
 
 type UsageSummary struct {
-	GroupKey         string  `json:"group_key"`
-	RequestCount     int     `json:"request_count"`
-	TotalTokens      int     `json:"total_tokens"`
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	OkCount          int     `json:"ok_count"`
-	ErrorCount       int     `json:"error_count"`
+	GroupKey         string `json:"group_key"`
+	RequestCount     int    `json:"request_count"`
+	TotalTokens      int    `json:"total_tokens"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	OkCount          int    `json:"ok_count"`
+	ErrorCount       int    `json:"error_count"`
 	// 平均输出速度（token/s）：按组内成功记录的 completion_tokens 总耗时加权，
 	// 无有效计时记录时为 0。
 	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
