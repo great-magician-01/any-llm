@@ -40,6 +40,12 @@ export function localISO(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
 }
 
+/** "110.00" + "CNY" -> "¥110.00"；USD 用 $，其他币种前缀币种代码，金额保留原始字符串避免精度问题 */
+export function formatMoney(amount: string, currency: string): string {
+  const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency ? currency + ' ' : ''
+  return symbol + amount
+}
+
 /** 后端 created_at -> "YYYY-MM-DD HH:mm:ss" */
 export function formatTime(iso: string): string {
   const d = new Date(iso)

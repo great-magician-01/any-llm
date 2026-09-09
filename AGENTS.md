@@ -59,6 +59,7 @@ All settings load from environment variables. A `.env` file in the working direc
 | `ANY_LLM_SESSION_SECRET` | auto-gen | if unset, a random secret is generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` so sessions survive restarts; falls back to ephemeral (with warning) if the file is unwritable |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | where the auto-generated session secret is persisted (0600); only used when `ANY_LLM_SESSION_SECRET` is unset |
 | `ANY_LLM_SESSION_TTL` | `24h` | admin login session expiry; Go duration (`24h`, `168h`) or plain hours (`24`); `0` = never expire |
+| `ANY_LLM_BALANCE_INTERVAL` | `10m` | vendor balance/quota snapshot polling interval; Go duration (`10m`, `30m`) or plain hours; `0` = disable periodic polling (manual refresh still works) |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
@@ -79,12 +80,13 @@ All settings load from environment variables. A `.env` file in the working direc
   - Upstreams can be **disabled** via admin (`PUT /api/admin/upstreams/:id` with `{"enabled": false}`; the same optional field on create pre-disables a new upstream) — a lighter alternative to delete: alias bindings skip disabled upstreams (failover kicks in, all-disabled aliases 404 "has no available bindings"), direct `name/model` requests get 404 "upstream 'x' is disabled", and `/v1/models` omits them. Unlike delete, models and alias bindings are preserved so re-enabling restores service.
 - `/api/admin/*` — admin API (HMAC session auth, cookie `s`)
   - CRUD for upstreams, models, ext keys, model aliases (`/api/admin/aliases`); usage summary/records
+  - `GET /api/admin/balances` — latest vendor balance/quota snapshot per upstream; `GET /api/admin/upstreams/:id/balances[?page=&size=]` — paginated snapshot history; `POST /api/admin/upstreams/:id/balances/refresh` — live fetch + archive (400 for unsupported vendors, 502 on vendor API failure). Snapshots live in `balance_snapshots`; a background poller (`internal/upstream/balance_poller.go`, interval `ANY_LLM_BALANCE_INTERVAL`, plus one run at boot) archives every supported, enabled upstream. Vendor is identified by base-URL host: `api.deepseek.com` → `GET /user/balance`, `api.kimi.com` → `GET /coding/v1/usages`; payloads are normalized JSON (`{"kind":"balance",...}` / `{"kind":"quota",...}`)
   - `GET /api/admin/conversations[?page=&size=]` and `/api/admin/conversations/:id` — read-only access to archived conversations (`conversation_records`, **PG only**); on SQLite the list returns `{"data": [], "total": 0, "disabled": true}` so the frontend can show a hint. Responses never include the raw byte columns
 - `/*` — SPA fallback (serves embedded `web/dist/`; falls back to `index.html` for client-side routing)
 
 ## Gotchas
 
-- **Graceful shutdown**: `main.go` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain, then force-close). Deferred cleanup runs LIFO: `writer.Stop` (drains queued usage writes) → `db.Close` → `logger.Close`. Server sets `ReadHeaderTimeout` (10s) but **no WriteTimeout** — SSE streams are long-lived.
+- **Graceful shutdown**: `main.go` uses `signal.NotifyContext` + `http.Server.Shutdown` (30s drain, then force-close). Deferred cleanup runs LIFO: `poller.Stop` (stops balance snapshot polling) → `writer.Stop` (drains queued usage writes) → `db.Close` → `logger.Close`. Server sets `ReadHeaderTimeout` (10s) but **no WriteTimeout** — SSE streams are long-lived.
 - **`cmd/any-llm/web/dist/` must exist** when compiling the Go binary (`//go:embed web/dist`) — `npm run build` copies it there; CI stubs it with an empty `index.html`
 - **Ext key format**: `all-sk-` prefix + 32 base62 chars
 - **Session auth**: HMAC-SHA256, expiry from `ANY_LLM_SESSION_TTL` (default 24h, `0` = never — signed as a year-9999 expiry so verification needs no special case); secret persisted in `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`, gitignored) when env unset
