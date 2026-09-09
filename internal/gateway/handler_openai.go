@@ -34,7 +34,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	irReq, err := decodeInbound(body, inFormat)
 	if err != nil {
 		WriteError(w, 400, inFormat, "failed to decode request: "+err.Error(), "invalid_request_error")
-		g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
+		g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
 		return
 	}
 	irReq.Model = first.ModelName
@@ -50,13 +50,13 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			hist, ok, err := g.sessions.Get(pid)
 			if err != nil {
 				WriteError(w, 500, inFormat, "session lookup failed: "+err.Error(), "internal_error")
-				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
 				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
 				return
 			}
 			if !ok {
 				WriteError(w, 400, inFormat, "unknown previous_response_id: "+pid, "invalid_previous_response_id")
-				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
 				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
 				return
 			}
@@ -83,12 +83,14 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		t := &targets[i]
 		irReq.Model = t.ModelName
 		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body)
+		callStart := time.Now()
 		result, err := g.client.Call(r.Context(), t.Upstream, irReq, r.Header)
+		callDur := time.Since(callStart)
 		if err != nil {
 			if len(targets) > 1 {
 				logger.Warn("candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, false, "error")
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			lastErr = err
 			continue
@@ -96,7 +98,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		if sess != nil {
 			result.Response.ID = sess.respID
 		}
-		g.handleNonStream(w, inFormat, result, key, t.Upstream, t.ModelName, irReq.Stream, sess, rec)
+		g.handleNonStream(w, inFormat, result, key, t.Upstream, t.ModelName, irReq.Stream, sess, rec, callDur)
 		return
 	}
 	if ue, ok := lastErr.(*upstream.UpstreamError); ok {
@@ -114,7 +116,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -128,7 +130,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	if err != nil {
 		WriteError(w, 500, inFormat, "failed to encode response", "internal_error")
 		logger.Error("non-stream encode failed", "in_format", inFormat, "err", err)
-		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, "error")
+		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, callDur, "error")
 		rec.finish("error", result.Response.Usage, result.Response)
 		return
 	}
@@ -138,7 +140,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 		g.saveSession(sess, result.Response.Content)
 	}
 	usage := result.Usage()
-	g.recordUsage(key, u, realModel, inFormat, usage, false, "ok")
+	g.recordUsage(key, u, realModel, inFormat, usage, false, callDur, "ok")
 	// 非流式：发给客户端的原始字节就是 out。
 	if rec != nil {
 		rec.tee = &teeWriter{buf: bytes.NewBuffer(out)}
@@ -150,6 +152,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 		"stream", false,
 		"input_tokens", usage.InputTokens,
 		"output_tokens", usage.OutputTokens,
+		"duration_ms", callDur.Milliseconds(),
 		"status", "ok",
 	)
 }
@@ -190,7 +193,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
 		t := targets[0]
-		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, 0, "error")
 		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body).finish("error", translate.Usage{}, nil)
 		return
 	}
@@ -234,6 +237,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	// 一旦进入事件转发阶段（有内容帧流出）就不再转移。
 	var result *upstream.Result
 	var win *model.AliasTarget
+	var winStart time.Time // 命中候选的调用开始时刻，作为该次调用的计时起点
 	var rec *convCtx
 	var lastErr error
 	for i := range targets {
@@ -243,9 +247,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		if rec != nil {
 			rec.tee = tee
 		}
+		callStart := time.Now()
 		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, t.Upstream, irReq, streamStart)
+		callDur := time.Since(callStart)
 		if clientGone {
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			logger.Info("completion done",
 				"upstream", t.Upstream.Name, "model", t.ModelName, "stream", true,
@@ -258,11 +264,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			if len(targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, "error")
+			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			continue
 		}
-		result, win = res, t
+		result, win, winStart = res, t, callStart
 		break
 	}
 
@@ -340,14 +346,14 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 		if encErr != nil {
 			logger.Error("stream non-stream response encode failed", "in_format", inFormat, "err", encErr)
-			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, true, "error")
+			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, true, time.Since(winStart), "error")
 			rec.finish("error", result.Response.Usage, result.Response)
 			return
 		}
 		w.Write(out)
 		flusher.Flush()
 		usage := result.Usage()
-		g.recordUsage(key, u, realModel, inFormat, usage, true, "ok")
+		g.recordUsage(key, u, realModel, inFormat, usage, true, time.Since(winStart), "ok")
 		rec.finish("ok", usage, result.Response)
 		logger.Info("completion done",
 			"upstream", u.Name, "model", realModel, "stream", true,
@@ -451,7 +457,8 @@ done:
 		status = "error"
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}
-	g.recordUsage(key, u, realModel, inFormat, usage, true, status)
+	callDur := time.Since(winStart)
+	g.recordUsage(key, u, realModel, inFormat, usage, true, callDur, status)
 	// 对话归档：用流累积器还原完整响应（含思维链真签名、工具调用），
 	// clientGonePost / StreamErr 时部分对话以 error 状态如实记录。
 	if rec != nil {
@@ -473,6 +480,7 @@ done:
 		"stream", true,
 		"input_tokens", usage.InputTokens,
 		"output_tokens", usage.OutputTokens,
+		"duration_ms", callDur.Milliseconds(),
 		"status", status,
 	)
 }
@@ -488,7 +496,7 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	}
 }
 
-func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, status string) {
+func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
 	total := usage.InputTokens + usage.OutputTokens
 	rec := &model.UsageRecord{
 		UpstreamName:        u.Name,
@@ -501,6 +509,7 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 		CacheReadTokens:     usage.CacheReadTokens,
 		CacheCreationTokens: usage.CacheCreationTokens,
 		ReasoningTokens:     usage.ReasoningTokens,
+		DurationMs:          dur.Milliseconds(),
 		Stream:              stream,
 		Status:              status,
 	}

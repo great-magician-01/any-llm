@@ -3,7 +3,7 @@ import { ref, computed, onMounted, h } from 'vue'
 import { NTag } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { fetchSummary, fetchRecords, fetchDaily, type UsageSummary, type UsageRecord, type UsageDayStat } from '../api/usage'
-import { formatCompact, formatInt, formatPercent, formatTime, localISO } from '../utils/format'
+import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '../utils/format'
 import StatCard from '../components/StatCard.vue'
 import AppIcon from '../components/AppIcon.vue'
 import BarChart from '../components/BarChart.vue'
@@ -157,20 +157,24 @@ const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
     key: 'rate',
     render: (row) => h('span', { class: 'mono' }, formatPercent(row.ok_count, row.request_count)),
   },
+  {
+    title: '平均 Token/s',
+    key: 'avg_tokens_per_sec',
+    render: (row) => h('span', { class: 'mono', style: row.avg_tokens_per_sec > 0 ? 'color: var(--brand-hover)' : '' }, row.avg_tokens_per_sec > 0 ? row.avg_tokens_per_sec.toFixed(1) : '—'),
+  },
 ])
 
 const recordColumns: DataTableColumns<UsageRecord> = [
   { title: '时间', key: 'created_at', width: 165, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.created_at)) },
-  { title: '上游', key: 'upstream_name' },
-  { title: '模型', key: 'model', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
+  { title: '上游', key: 'upstream_name', width: 130, ellipsis: { tooltip: true } },
+  { title: '模型', key: 'model', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
   { title: '入格式', key: 'in_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false }, { default: () => row.in_format }) },
   { title: '出格式', key: 'up_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.up_format }) },
   { title: '总 Token', key: 'total_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600' }, formatInt(row.total_tokens)) },
   { title: '输入', key: 'prompt_tokens', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.prompt_tokens)) },
   { title: '输出', key: 'completion_tokens', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.completion_tokens)) },
   { title: '缓存命中', key: 'cache_read_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: row.cache_read_tokens > 0 ? 'color: #34d399' : '' }, formatInt(row.cache_read_tokens)) },
-  { title: '缓存写入', key: 'cache_creation_tokens', width: 90, render: (row) => h('span', { class: 'mono' }, formatInt(row.cache_creation_tokens)) },
-  { title: '推理', key: 'reasoning_tokens', width: 80, render: (row) => h('span', { class: 'mono', style: row.reasoning_tokens > 0 ? 'color: var(--brand-hover)' : '' }, formatInt(row.reasoning_tokens)) },
+  { title: 'Token/s', key: 'speed', width: 90, render: (row) => h('span', { class: 'mono', style: row.duration_ms > 0 && row.completion_tokens > 0 ? 'color: var(--brand-hover); font-weight: 600' : '' }, formatSpeed(row.completion_tokens, row.duration_ms)) },
   {
     title: '状态',
     key: 'status',

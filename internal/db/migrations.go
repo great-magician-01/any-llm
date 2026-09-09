@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -154,6 +155,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -240,6 +242,7 @@ var extraCols = []struct {
 	{"usage_records", "cache_read_tokens", "0"},
 	{"usage_records", "cache_creation_tokens", "0"},
 	{"usage_records", "reasoning_tokens", "0"},
+	{"usage_records", "duration_ms", "0"},
 }
 
 // migrateExtraCols ensures columns added after the initial schema exist on
@@ -431,12 +434,13 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 		    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 		    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+		    duration_ms INTEGER NOT NULL DEFAULT 0,
 		    stream INTEGER NOT NULL DEFAULT 0,
 		    status TEXT NOT NULL DEFAULT 'ok',
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		insertCols:  []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "stream", "status", "created_at"},
-		selectExprs: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "stream", "status", "created_at"},
+		insertCols:  []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
+		selectExprs: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
 	},
 }
 

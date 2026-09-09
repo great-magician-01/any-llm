@@ -17,6 +17,9 @@ type UsageSummary struct {
 	CompletionTokens int    `json:"completion_tokens"`
 	OkCount          int    `json:"ok_count"`
 	ErrorCount       int    `json:"error_count"`
+	// 平均输出速度（token/s）：按组内成功记录的 completion_tokens 总耗时加权，
+	// 无有效计时记录时为 0。
+	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
 }
 
 // UsageDayStat holds one local-day bucket of usage aggregates. Day is the
@@ -153,12 +156,12 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		 prompt_tokens, completion_tokens, total_tokens,
 		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-		 stream, status, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		 duration_ms, stream, status, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
 		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
-		stream, r.Status, ts)
+		r.DurationMs, stream, r.Status, ts)
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}
@@ -178,7 +181,9 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		groupCol = "model"
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
-		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)
+		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),
+		COALESCE(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN completion_tokens ELSE 0 END) * 1000.0
+			/ NULLIF(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN duration_ms ELSE 0 END), 0), 0)
 		FROM usage_records`, groupCol)
 	var conditions []string
 	var args []any
@@ -211,7 +216,7 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 	for rows.Next() {
 		var s UsageSummary
 		if err := rows.Scan(&s.GroupKey, &s.RequestCount, &s.TotalTokens, &s.PromptTokens,
-			&s.CompletionTokens, &s.OkCount, &s.ErrorCount); err != nil {
+			&s.CompletionTokens, &s.OkCount, &s.ErrorCount, &s.AvgTokensPerSec); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -252,7 +257,7 @@ func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
 	rows, err := d.Query(db.Rebind(d, `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		prompt_tokens, completion_tokens, total_tokens,
 		cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-		stream, status, created_at
+		duration_ms, stream, status, created_at
 		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list usage: %w", err)
@@ -267,7 +272,7 @@ func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
 		if err := rows.Scan(&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
 			&r.InFormat, &r.UpFormat, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
 			&r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens,
-			&stream, &r.Status, &r.CreatedAt); err != nil {
+			&r.DurationMs, &stream, &r.Status, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		if extKeyID.Valid {

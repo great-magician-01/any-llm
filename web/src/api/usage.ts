@@ -3,13 +3,14 @@ import client from './client'
 export interface UsageSummary {
   group_key: string; request_count: number; total_tokens: number
   prompt_tokens: number; completion_tokens: number; ok_count: number; error_count: number
+  avg_tokens_per_sec: number
 }
 
 export interface UsageRecord {
   id: number; upstream_name: string; model: string; in_format: string; up_format: string
   prompt_tokens: number; completion_tokens: number; total_tokens: number
   cache_read_tokens: number; cache_creation_tokens: number; reasoning_tokens: number
-  stream: boolean; status: string; created_at: string
+  duration_ms: number; stream: boolean; status: string; created_at: string
 }
 
 export interface UsageDayStat {
