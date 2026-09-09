@@ -102,6 +102,18 @@ CREATE TABLE IF NOT EXISTS model_alias_bindings (
     priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1
 );
+
+-- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
+-- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    upstream_id INTEGER NOT NULL,
+    upstream_name TEXT NOT NULL,
+    vendor TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
 const migrationPG = `
@@ -220,6 +232,18 @@ CREATE TABLE IF NOT EXISTS conversation_records (
 CREATE INDEX IF NOT EXISTS idx_conv_created ON conversation_records(created_at);
 CREATE INDEX IF NOT EXISTS idx_conv_ext_key ON conversation_records(ext_key_id);
 CREATE INDEX IF NOT EXISTS idx_conv_harness ON conversation_records(harness);
+
+-- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
+-- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    upstream_id BIGINT NOT NULL,
+    upstream_name TEXT NOT NULL,
+    vendor TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
 // extraCols lists the columns added after the initial schema, together with
