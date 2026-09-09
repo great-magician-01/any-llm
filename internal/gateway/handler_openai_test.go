@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
@@ -14,6 +15,7 @@ import (
 
 func TestCompletion_NonStreamOpenAI(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
 	}))
@@ -46,6 +48,10 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 	}
 	if records[0].TotalTokens != 15 {
 		t.Fatalf("recorded tokens=%d", records[0].TotalTokens)
+	}
+	// 上游 mock 固定 sleep 50ms，调用耗时应被记录（留 10ms 余量防计时粒度误差）
+	if records[0].DurationMs < 40 {
+		t.Fatalf("recorded duration_ms=%d, want >= 40", records[0].DurationMs)
 	}
 }
 
