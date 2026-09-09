@@ -67,7 +67,7 @@ Every request ends in `recordUsage` (via the async writer, so it never blocks th
 
 ### Auth — two independent schemes
 
-- **Admin** (`internal/auth`): password login → HMAC-SHA256 session cookie `s` (24h expiry, path-scoped to `/api/admin`). Session secret is auto-generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`) so sessions survive restarts.
+- **Admin** (`internal/auth`): password login → HMAC-SHA256 session cookie `s` (24h expiry, path-scoped to `/api/admin`), sliding — re-issued with a fresh full TTL once less than half remains, so active sessions don't expire. Session secret is auto-generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`) so sessions survive restarts.
 - **Public gateway**: stateless ext keys, `all-sk-` + 32 base62 chars, stored in DB.
 
 ### Server wiring (cmd/any-llm/main.go)
