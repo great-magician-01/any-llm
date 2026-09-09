@@ -33,7 +33,8 @@ type Config struct {
 	// SessionTTL is how long admin login sessions live; 0 means never expire.
 	SessionTTL time.Duration
 	// BalanceInterval is how often vendor balance/quota snapshots are polled;
-	// 0 disables periodic polling (manual refresh still works).
+	// 0 disables all automatic fetching (the periodic poll and the boot-time
+	// snapshot); manual refresh via the admin API still works.
 	BalanceInterval time.Duration
 	LogFile         string
 	LogLevel        logger.Level

@@ -38,14 +38,16 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
 		logger.Error("fetch models: upstream error",
 			"url", url,
 			"upstream", u.Name,
 			"status", resp.StatusCode,
 			"body", truncateFetch(string(body), 512),
 		)
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
+		// Truncate in the returned error too: admin handlers relay it into
+		// the JSON response, where a full vendor error page (HTML) is noise.
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateFetch(string(body), 512))
 	}
 	var result struct {
 		Data []struct {
@@ -63,6 +65,10 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream
 	logger.Info("fetched models", "upstream", u.Name, "count", len(out))
 	return out, nil
 }
+
+// maxFetchBody caps how many bytes of an upstream GET response (models list,
+// balance/quota payload) we read into memory.
+const maxFetchBody = 1 << 20 // 1 MiB
 
 func truncateFetch(s string, n int) string {
 	if len(s) <= n {

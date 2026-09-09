@@ -12,6 +12,11 @@ import (
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
+// balanceClient is shared by the balance admin handlers for vendor fetches.
+// It carries its own 15s timeout — the gateway client has none because it
+// serves long-lived SSE streams.
+var balanceClient = &http.Client{Timeout: 15 * time.Second}
+
 // refreshAllBalances serves POST /api/admin/balances: fetch every supported,
 // enabled upstream's balance/quota right now (concurrently), archive the
 // snapshots, and return them. Used for the page-open auto-refresh.
@@ -22,9 +27,6 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	// Own timeout-bounded client (15s), like the poller's — the gateway
-	// client has no timeout because it serves long-lived SSE streams.
-	client := &http.Client{Timeout: 15 * time.Second}
 	snaps := make([]*model.BalanceSnapshot, len(upstreams))
 	var wg sync.WaitGroup
 	for i := range upstreams {
@@ -35,7 +37,7 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			vendor, payload, err := upstream.FetchBalance(r.Context(), client, u)
+			vendor, payload, err := upstream.FetchBalance(r.Context(), balanceClient, u)
 			if err != nil {
 				logger.Warn("admin: refresh all balances fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
 				return
@@ -97,10 +99,7 @@ func (a *API) refreshBalance(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "balance refresh not supported for this upstream"})
 		return
 	}
-	// Own timeout-bounded client (15s), like the poller's — the gateway
-	// client has no timeout because it serves long-lived SSE streams.
-	client := &http.Client{Timeout: 15 * time.Second}
-	vendor, payload, err := upstream.FetchBalance(r.Context(), client, u)
+	vendor, payload, err := upstream.FetchBalance(r.Context(), balanceClient, u)
 	if err != nil {
 		logger.Error("admin: refresh balance failed", "upstream", u.Name, "id", id, "err", err)
 		writeJSON(w, 502, map[string]any{"error": err.Error()})
