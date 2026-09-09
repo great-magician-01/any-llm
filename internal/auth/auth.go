@@ -74,7 +74,7 @@ func (m *Middleware) Wrap(handler http.Handler) http.Handler {
 			m.handleLogout(w, r)
 			return
 		}
-		if !m.authenticate(r) {
+		if !m.authenticate(w, r) {
 			logger.Warn("auth rejected: invalid or expired session", "remote", r.RemoteAddr, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(401)
@@ -85,13 +85,44 @@ func (m *Middleware) Wrap(handler http.Handler) http.Handler {
 	})
 }
 
-func (m *Middleware) authenticate(r *http.Request) bool {
+func (m *Middleware) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	cookie, err := r.Cookie(sessionName)
 	if err != nil {
 		return false
 	}
-	_, err = VerifySession(m.secret, cookie.Value)
-	return err == nil
+	exp, err := VerifySession(m.secret, cookie.Value)
+	if err != nil {
+		return false
+	}
+	m.maybeRenew(w, *exp)
+	return true
+}
+
+// maybeRenew slides the session forward: once less than half the TTL remains,
+// the cookie is re-issued with a fresh full TTL so active users are not
+// logged out mid-session. Never-expiring sessions (TTL <= 0) are left alone.
+func (m *Middleware) maybeRenew(w http.ResponseWriter, exp time.Time) {
+	if m.sessionTTL <= 0 || time.Until(exp) > m.sessionTTL/2 {
+		return
+	}
+	newExp := time.Now().Add(m.sessionTTL)
+	token, err := SignSession(m.secret, newExp)
+	if err != nil {
+		logger.Warn("auth: failed to renew session", "err", err)
+		return
+	}
+	setSessionCookie(w, token, newExp)
+}
+
+func setSessionCookie(w http.ResponseWriter, token string, exp time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionName,
+		Value:    token,
+		Path:     "/api/admin",
+		Expires:  exp,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -125,14 +156,7 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"error": "session error"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionName,
-		Value:    token,
-		Path:     "/api/admin",
-		Expires:  exp,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
+	setSessionCookie(w, token, exp)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
