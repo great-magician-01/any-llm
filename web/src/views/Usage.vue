@@ -354,6 +354,14 @@ onMounted(loadAll)
 .chart-grid-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+/* 全局 .panel + .panel 堆叠间距会命中栅格内的兄弟卡片，导致同行卡片错位；栅格内由 gap 统一控制 */
+.chart-grid > .panel {
+  margin-top: 0;
+}
+/* 用量汇总面板跟在栅格容器后面，吃不到 .panel + .panel 的间距，这里补齐 */
+.chart-grid + .panel {
+  margin-top: 20px;
+}
 @media (max-width: 1100px) {
   .chart-grid,
   .chart-grid-3 {
