@@ -111,11 +111,14 @@ func (a *API) handleUpstreamBalances(w http.ResponseWriter, r *http.Request, id 
 }
 
 func (a *API) handleBalances(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
+	switch r.Method {
+	case "GET":
+		a.listLatestBalances(w, r)
+	case "POST":
+		a.refreshAllBalances(w, r)
+	default:
 		http.Error(w, "method not allowed", 405)
-		return
 	}
-	a.listLatestBalances(w, r)
 }
 
 func (a *API) handleAliases(w http.ResponseWriter, r *http.Request) {

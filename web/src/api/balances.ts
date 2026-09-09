@@ -36,3 +36,9 @@ export async function refreshBalance(upstreamId: number) {
   const { data } = await client.post(`/upstreams/${upstreamId}/balances/refresh`)
   return data.data as BalanceSnapshot
 }
+
+/** 刷新所有受支持 upstream 的余额/额度（页面打开时的后台自动刷新），返回新快照列表 */
+export async function refreshAllBalances() {
+  const { data } = await client.post('/balances')
+  return data.data as BalanceSnapshot[]
+}

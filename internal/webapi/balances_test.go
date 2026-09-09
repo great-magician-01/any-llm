@@ -97,3 +97,24 @@ func TestRefreshBalance_NotFound(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestRefreshAllBalances_UnsupportedOnly(t *testing.T) {
+	a, d := setupAPI(t)
+	model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "https://api.openai.com/v1", APIKey: "k", Format: "openai"})
+
+	req := httptest.NewRequest("POST", "/api/admin/balances", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []model.BalanceSnapshot `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("expected no snapshots for unsupported upstreams, got %+v", resp.Data)
+	}
+}

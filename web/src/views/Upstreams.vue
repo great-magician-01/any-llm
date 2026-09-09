@@ -3,7 +3,7 @@ import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
-import { listLatestBalances, listBalanceHistory, refreshBalance, type BalanceSnapshot, type BalancePayload } from '../api/balances'
+import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot, type BalancePayload } from '../api/balances'
 import { formatInt, formatTime, formatMoney } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -378,7 +378,22 @@ const columns: DataTableColumns<Upstream> = [
   })},
 ]
 
-onMounted(load)
+// 打开页面时后台静默刷新所有受支持 upstream 的余额/额度，完成后更新对应行；
+// 失败不打扰用户（厂商接口超时/不支持时保持显示已有快照）
+async function autoRefreshBalances() {
+  try {
+    const snaps = await refreshAllBalances()
+    if (!snaps.length) return
+    const map = { ...balancesByUpstream.value }
+    for (const s of snaps) map[s.upstream_id] = s
+    balancesByUpstream.value = map
+  } catch { /* 静默降级 */ }
+}
+
+onMounted(() => {
+  load()
+  autoRefreshBalances()
+})
 </script>
 
 <template>
