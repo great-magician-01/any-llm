@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/great-magician-01/any-llm/internal/model"
@@ -186,5 +187,30 @@ func TestFetchBalance_UpstreamError(t *testing.T) {
 	u := &model.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "bad"}
 	if _, _, err := FetchBalance(context.Background(), http.DefaultClient, u); err == nil {
 		t.Fatal("expected error for 401")
+	}
+}
+
+// TestFetchBalance_ErrorBodyTruncated: the returned error carries only a
+// short prefix of the vendor error body — admin handlers relay the error into
+// JSON responses, so a huge vendor error page must not pass through in full.
+func TestFetchBalance_ErrorBodyTruncated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(strings.Repeat("x", 5000)))
+	}))
+	defer srv.Close()
+	registerTestHost(t, srv.URL, VendorDeepSeek)
+
+	u := &model.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "k"}
+	_, _, err := FetchBalance(context.Background(), http.DefaultClient, u)
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	// "upstream 500: " + 512 chars + marker ≈ 541; 600 leaves headroom.
+	if len(err.Error()) > 600 {
+		t.Fatalf("error body not truncated: len=%d", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "...(truncated)") {
+		t.Fatalf("error missing truncation marker: %q", err.Error()[:100])
 	}
 }

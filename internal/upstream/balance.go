@@ -101,19 +101,20 @@ func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, 
 		return nil, fmt.Errorf("fetch balance: %w", err)
 	}
 	defer resp.Body.Close()
+	// Cap the read (success and error paths alike): a misconfigured or
+	// hostile endpoint must not exhaust memory. A partial read surfaces as a
+	// decode error in the normalize step downstream.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
 		logger.Error("fetch balance: upstream error",
 			"url", url,
 			"upstream", u.Name,
 			"status", resp.StatusCode,
 			"body", truncateFetch(string(body), 512),
 		)
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read balance response: %w", err)
+		// Truncate in the returned error too: admin handlers relay it into
+		// the JSON response, where a full vendor error page (HTML) is noise.
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateFetch(string(body), 512))
 	}
 	return body, nil
 }

@@ -81,8 +81,12 @@ func run() int {
 	poller.Start()
 	defer poller.Stop()
 	// Snapshot once at boot without blocking startup, so freshly configured
-	// upstreams have balance data before the first tick fires.
-	go poller.PollOnce(context.Background())
+	// upstreams have balance data before the first tick fires. Skipped when
+	// polling is disabled (interval 0) — that setting means no automatic
+	// vendor calls at all; manual refresh via the admin API still works.
+	if cfg.BalanceInterval > 0 {
+		go poller.PollOnce(context.Background())
+	}
 
 	client := upstream.NewClient(nil)
 	gw := gateway.New(writer.DB, writer, client)
