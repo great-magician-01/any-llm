@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -101,6 +102,18 @@ CREATE TABLE IF NOT EXISTS model_alias_bindings (
     priority INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1
 );
+
+-- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
+-- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    upstream_id INTEGER NOT NULL,
+    upstream_name TEXT NOT NULL,
+    vendor TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
 const migrationPG = `
@@ -154,6 +167,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
     stream INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -218,6 +232,18 @@ CREATE TABLE IF NOT EXISTS conversation_records (
 CREATE INDEX IF NOT EXISTS idx_conv_created ON conversation_records(created_at);
 CREATE INDEX IF NOT EXISTS idx_conv_ext_key ON conversation_records(ext_key_id);
 CREATE INDEX IF NOT EXISTS idx_conv_harness ON conversation_records(harness);
+
+-- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
+-- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    upstream_id BIGINT NOT NULL,
+    upstream_name TEXT NOT NULL,
+    vendor TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMP(0) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
 // extraCols lists the columns added after the initial schema, together with
@@ -240,6 +266,7 @@ var extraCols = []struct {
 	{"usage_records", "cache_read_tokens", "0"},
 	{"usage_records", "cache_creation_tokens", "0"},
 	{"usage_records", "reasoning_tokens", "0"},
+	{"usage_records", "duration_ms", "0"},
 }
 
 // migrateExtraCols ensures columns added after the initial schema exist on
@@ -431,12 +458,13 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 		    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 		    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+		    duration_ms INTEGER NOT NULL DEFAULT 0,
 		    stream INTEGER NOT NULL DEFAULT 0,
 		    status TEXT NOT NULL DEFAULT 'ok',
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		insertCols:  []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "stream", "status", "created_at"},
-		selectExprs: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "stream", "status", "created_at"},
+		insertCols:  []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
+		selectExprs: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
 	},
 }
 

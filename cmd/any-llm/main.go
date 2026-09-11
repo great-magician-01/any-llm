@@ -73,9 +73,20 @@ func run() int {
 
 	writer := db.NewWriter(d, 512)
 	writer.Start()
-	// Deferred calls run LIFO on return: writer.Stop (drains queued writes)
-	// → d.Close → logger.Close.
+	// Deferred calls run LIFO on return: poller.Stop (stops snapshot polling)
+	// → writer.Stop (drains queued writes) → d.Close → logger.Close.
 	defer writer.Stop()
+
+	poller := upstream.NewBalancePoller(writer.DB, writer, cfg.BalanceInterval)
+	poller.Start()
+	defer poller.Stop()
+	// Snapshot once at boot without blocking startup, so freshly configured
+	// upstreams have balance data before the first tick fires. Skipped when
+	// polling is disabled (interval 0) — that setting means no automatic
+	// vendor calls at all; manual refresh via the admin API still works.
+	if cfg.BalanceInterval > 0 {
+		go poller.PollOnce(context.Background())
+	}
 
 	client := upstream.NewClient(nil)
 	gw := gateway.New(writer.DB, writer, client)

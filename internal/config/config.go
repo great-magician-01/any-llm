@@ -32,8 +32,12 @@ type Config struct {
 	SessionSecretFile string
 	// SessionTTL is how long admin login sessions live; 0 means never expire.
 	SessionTTL time.Duration
-	LogFile    string
-	LogLevel   logger.Level
+	// BalanceInterval is how often vendor balance/quota snapshots are polled;
+	// 0 disables all automatic fetching (the periodic poll and the boot-time
+	// snapshot); manual refresh via the admin API still works.
+	BalanceInterval time.Duration
+	LogFile         string
+	LogLevel        logger.Level
 }
 
 func Load() (*Config, error) {
@@ -57,6 +61,7 @@ func Load() (*Config, error) {
 		SessionSecret:     envStr("ANY_LLM_SESSION_SECRET", ""),
 		SessionSecretFile: envStr("ANY_LLM_SESSION_SECRET_FILE", "./.session-secret"),
 		SessionTTL:        envDuration("ANY_LLM_SESSION_TTL", 24*time.Hour),
+		BalanceInterval:   envDuration("ANY_LLM_BALANCE_INTERVAL", 10*time.Minute),
 		LogFile:           envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
 		LogLevel:          logLevel,
 	}

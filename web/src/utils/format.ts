@@ -25,6 +25,12 @@ export function formatPercent(part: number, total: number): string {
   return ((part / total) * 100).toFixed(1) + '%'
 }
 
+/** 输出速度 token/s：45.2 -> "45.2"，无有效计时（耗时 0 或无输出）时返回 "—" */
+export function formatSpeed(completionTokens: number, durationMs: number): string {
+  if (durationMs <= 0 || completionTokens <= 0) return '—'
+  return ((completionTokens * 1000) / durationMs).toFixed(1)
+}
+
 /** Date -> 本地 RFC3339 "YYYY-MM-DDTHH:mm:ss±HH:MM"（带时区偏移，后端按绝对时刻解析） */
 export function localISO(d: Date): string {
   const p = (x: number) => String(x).padStart(2, '0')
@@ -32,6 +38,12 @@ export function localISO(d: Date): string {
   const sign = off < 0 ? '-' : '+'
   const abs = Math.abs(off)
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`
+}
+
+/** "110.00" + "CNY" -> "¥110.00"；USD 用 $，其他币种前缀币种代码，金额保留原始字符串避免精度问题 */
+export function formatMoney(amount: string, currency: string): string {
+  const symbol = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency ? currency + ' ' : ''
+  return symbol + amount
 }
 
 /** 后端 created_at -> "YYYY-MM-DD HH:mm:ss" */

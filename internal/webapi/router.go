@@ -30,6 +30,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/keys", a.handleKeys)
 	mux.HandleFunc("/api/admin/keys/", a.handleKeyItem)
 	mux.HandleFunc("/api/admin/usage/", a.handleUsage)
+	mux.HandleFunc("/api/admin/balances", a.handleBalances)
 	mux.HandleFunc("/api/admin/conversations", a.handleConversations)
 	mux.HandleFunc("/api/admin/conversations/", a.handleConversations)
 	return mux
@@ -80,8 +81,43 @@ func (a *API) handleUpstreamItem(w http.ResponseWriter, r *http.Request) {
 		}
 	case "models":
 		a.handleModels(w, r, id, parts[2:])
+	case "balances":
+		a.handleUpstreamBalances(w, r, id, parts[2:])
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// handleUpstreamBalances dispatches /api/admin/upstreams/:id/balances[...]:
+// the bare sub-path is the paginated history, /refresh triggers a live fetch.
+func (a *API) handleUpstreamBalances(w http.ResponseWriter, r *http.Request, id int64, rest []string) {
+	if len(rest) == 0 {
+		if r.Method == "GET" {
+			a.listBalanceHistory(w, r, id)
+		} else {
+			http.Error(w, "method not allowed", 405)
+		}
+		return
+	}
+	if len(rest) == 1 && rest[0] == "refresh" {
+		if r.Method == "POST" {
+			a.refreshBalance(w, r, id)
+		} else {
+			http.Error(w, "method not allowed", 405)
+		}
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (a *API) handleBalances(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		a.listLatestBalances(w, r)
+	case "POST":
+		a.refreshAllBalances(w, r)
+	default:
+		http.Error(w, "method not allowed", 405)
 	}
 }
 

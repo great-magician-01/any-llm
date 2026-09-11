@@ -50,6 +50,7 @@ type UsageRecord struct {
 	CacheReadTokens     int       `json:"cache_read_tokens"`
 	CacheCreationTokens int       `json:"cache_creation_tokens"`
 	ReasoningTokens     int       `json:"reasoning_tokens"`
+	DurationMs          int64     `json:"duration_ms"`
 	Stream              bool      `json:"stream"`
 	Status              string    `json:"status"`
 	CreatedAt           time.Time `json:"created_at"`

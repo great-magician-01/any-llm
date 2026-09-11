@@ -20,6 +20,7 @@ func TestInsertUsageAndSummary(t *testing.T) {
 		PromptTokens:     10,
 		CompletionTokens: 5,
 		TotalTokens:      15,
+		DurationMs:       500,
 		Stream:           false,
 		Status:           "ok",
 	}
@@ -27,11 +28,12 @@ func TestInsertUsageAndSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// insert another with different model
+	// insert another with different model（复用同一 struct，显式清零耗时以覆盖无计时记录的分支）
 	rec.Model = "gpt-4o-mini"
 	rec.PromptTokens = 20
 	rec.CompletionTokens = 10
 	rec.TotalTokens = 30
+	rec.DurationMs = 0
 	InsertUsage(d, rec)
 
 	// summary by model
@@ -45,9 +47,36 @@ func TestInsertUsageAndSummary(t *testing.T) {
 	var totalTokens int
 	for _, s := range summaries {
 		totalTokens += s.TotalTokens
+		if s.GroupKey == "gpt-4o" {
+			// 5 completion tokens / 500ms = 10 token/s；gpt-4o-mini 无计时，不参与该组
+			if s.AvgTokensPerSec != 10 {
+				t.Fatalf("gpt-4o avg speed=%v want 10", s.AvgTokensPerSec)
+			}
+		}
+		if s.GroupKey == "gpt-4o-mini" && s.AvgTokensPerSec != 0 {
+			t.Fatalf("gpt-4o-mini avg speed=%v want 0 (no timed records)", s.AvgTokensPerSec)
+		}
 	}
 	if totalTokens != 45 {
 		t.Fatalf("total tokens=%d want 45", totalTokens)
+	}
+
+	// duration_ms 随记录读出
+	records, _, err := UsageRecordsList(d, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawTimed bool
+	for _, r := range records {
+		if r.Model == "gpt-4o" {
+			sawTimed = true
+			if r.DurationMs != 500 {
+				t.Fatalf("listed duration_ms=%d want 500", r.DurationMs)
+			}
+		}
+	}
+	if !sawTimed {
+		t.Fatal("gpt-4o record not returned by UsageRecordsList")
 	}
 }
 

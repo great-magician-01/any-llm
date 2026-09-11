@@ -159,3 +159,81 @@ func TestMiddlewareAllowsAuthenticated(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestMiddlewareRenewsSessionNearExpiry(t *testing.T) {
+	m := NewMiddleware("secret12345678901234", "admin", 2*time.Hour)
+	// craft a token with less than half the TTL remaining
+	oldExp := time.Now().Add(30 * time.Minute)
+	token, err := SignSession(m.secret, oldExp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	req := httptest.NewRequest("GET", "/api/admin/upstreams", nil)
+	req.AddCookie(&http.Cookie{Name: "s", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "s" {
+		t.Fatalf("expected renewed cookie, got %+v", cookies)
+	}
+	exp, err := VerifySession(m.secret, cookies[0].Value)
+	if err != nil {
+		t.Fatalf("verify renewed token: %v", err)
+	}
+	// renewed expiry should be a fresh ~2h, clearly beyond the old 30min
+	if d := time.Until(*exp); d < 90*time.Minute || d > 3*time.Hour {
+		t.Fatalf("renewed expiry %s not a fresh ~2h", d)
+	}
+}
+
+func TestMiddlewareDoesNotRenewFreshSession(t *testing.T) {
+	m := NewMiddleware("secret12345678901234", "admin", 2*time.Hour)
+	// more than half the TTL remaining
+	token, err := SignSession(m.secret, time.Now().Add(90*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	req := httptest.NewRequest("GET", "/api/admin/upstreams", nil)
+	req.AddCookie(&http.Cookie{Name: "s", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("expected no renewal cookie, got %+v", cookies)
+	}
+}
+
+func TestMiddlewareDoesNotRenewNeverExpires(t *testing.T) {
+	m := NewMiddleware("secret12345678901234", "admin", 0)
+	token, err := SignSession(m.secret, neverExpires)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	req := httptest.NewRequest("GET", "/api/admin/upstreams", nil)
+	req.AddCookie(&http.Cookie{Name: "s", Value: token})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("expected no renewal cookie for never-expiring session, got %+v", cookies)
+	}
+}

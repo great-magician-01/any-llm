@@ -3,7 +3,8 @@ import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../../api/upstreams'
-import { formatInt } from '../../utils/format'
+import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot, type BalancePayload } from '../../api/balances'
+import { formatInt, formatTime, formatMoney } from '../../utils/format'
 import AppIcon from '../../components/AppIcon.vue'
 
 const message = useMessage()
@@ -19,6 +20,15 @@ const showModelForm = ref(false)
 const modelFormUpstreamId = ref(0)
 const modelForm = ref<UpstreamModel | null>(null)
 const fetchingId = ref<number | null>(null)
+const balancesByUpstream = ref<Record<number, BalanceSnapshot>>({})
+const refreshingId = ref<number | null>(null)
+const showHistory = ref(false)
+const historyUpstream = ref<Upstream | null>(null)
+const historyRows = ref<BalanceSnapshot[]>([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historyPageSize = 10
+const historyLoading = ref(false)
 
 function modelOptsFor(id: number) {
   if (!newModelOpts.value[id]) {
@@ -66,7 +76,14 @@ function isModelsEndpointUnsupported(e: any): boolean {
   return false
 }
 
-async function load() { upstreams.value = await listUpstreams() }
+async function load() {
+  // 余额快照接口不可用时（如后端未升级）不阻塞上游列表
+  const [ups, snaps] = await Promise.all([listUpstreams(), listLatestBalances().catch(() => [] as BalanceSnapshot[])])
+  upstreams.value = ups
+  const map: Record<number, BalanceSnapshot> = {}
+  for (const s of snaps) map[s.upstream_id] = s
+  balancesByUpstream.value = map
+}
 async function save() {
   try {
     if (editing.value?.id) {
@@ -163,6 +180,71 @@ async function delM(id: number, mid: number) {
   await load()
 }
 
+function parsePayload(s: BalanceSnapshot): BalancePayload | null {
+  if (!s?.payload) return null
+  if (typeof s.payload === 'string') {
+    try { return JSON.parse(s.payload) as BalancePayload } catch { return null }
+  }
+  return s.payload
+}
+
+const QUOTA_WINDOW_LABELS: Record<string, string> = { five_hour: '5h', weekly: '周', monthly: '月' }
+
+/** 快照摘要：balance -> "¥110.00"；quota -> "5h 12% · 周 34% · 月 56%"；无数据返回 null */
+function balanceSummary(s: BalanceSnapshot | undefined): string | null {
+  if (!s) return null
+  const p = parsePayload(s)
+  if (!p) return null
+  if (p.kind === 'balance') {
+    const b = p.balances?.[0]
+    if (!b) return null
+    return formatMoney(b.total, b.currency)
+  }
+  const parts = (p.windows || []).map(w => `${QUOTA_WINDOW_LABELS[w.id] ?? w.id} ${w.used_percent}%`)
+  return parts.length ? parts.join(' · ') : null
+}
+
+async function refreshB(id: number) {
+  if (refreshingId.value !== null) return
+  refreshingId.value = id
+  try {
+    const s = await refreshBalance(id)
+    balancesByUpstream.value = { ...balancesByUpstream.value, [id]: s }
+    message.success('已刷新余额/额度')
+  } catch (e) {
+    message.error('刷新余额/额度失败：' + errMsg(e))
+  } finally {
+    refreshingId.value = null
+  }
+}
+
+async function openHistory(row: Upstream) {
+  historyUpstream.value = row
+  historyPage.value = 1
+  showHistory.value = true
+  await loadHistory()
+}
+async function loadHistory() {
+  const id = historyUpstream.value?.id
+  if (!id) return
+  historyLoading.value = true
+  try {
+    const r = await listBalanceHistory(id, historyPage.value, historyPageSize)
+    historyRows.value = r.data
+    historyTotal.value = r.total
+  } catch (e) {
+    message.error('加载历史失败：' + errMsg(e))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const historyColumns: DataTableColumns<BalanceSnapshot> = [
+  { title: '时间', key: 'created_at', width: 170, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.created_at)) },
+  { title: '厂商', key: 'vendor', width: 110, render: (row) => h(NTag, { size: 'small', bordered: false }, { default: () => row.vendor }) },
+  { title: '内容', key: 'payload', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, balanceSummary(row) ?? '-') },
+]
+
 const columns: DataTableColumns<Upstream> = [
   { type: 'expand', expandable: () => true, renderExpand: (row) => {
     const id = row.id as number
@@ -246,6 +328,16 @@ const columns: DataTableColumns<Upstream> = [
     render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
   },
   {
+    title: '余额/额度',
+    key: 'balance',
+    width: 180,
+    render: (row) => {
+      const text = balanceSummary(balancesByUpstream.value[row.id as number])
+      if (!text) return h('span', { style: 'color: var(--text-4)' }, '-')
+      return h('span', { class: 'mono', style: 'cursor: pointer', title: '点击查看历史', onClick: () => openHistory(row) }, text)
+    },
+  },
+  {
     title: '日 token 上限',
     key: 'daily_token_limit',
     width: 130,
@@ -261,7 +353,7 @@ const columns: DataTableColumns<Upstream> = [
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  { title: '操作', key: 'actions', width: 200, render: (row) => h(NSpace, { size: 8 }, {
+  { title: '操作', key: 'actions', width: 320, render: (row) => h(NSpace, { size: 8 }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -270,6 +362,14 @@ const columns: DataTableColumns<Upstream> = [
         disabled: fetchingId.value !== null,
         onClick: () => fetchM(row.id as number),
       }, { default: () => '拉取模型' }),
+      h(NButton, {
+        size: 'small',
+        quaternary: true,
+        loading: refreshingId.value === row.id,
+        disabled: refreshingId.value !== null,
+        onClick: () => refreshB(row.id as number),
+      }, { default: () => '刷新余额' }),
+      h(NButton, { size: 'small', quaternary: true, onClick: () => openHistory(row) }, { default: () => '历史' }),
       h(NPopconfirm, { onPositiveClick: () => del(row.id as number) }, {
         trigger: () => h(NButton, { size: 'small', type: 'error', quaternary: true }, { default: () => '删除' }),
         default: () => '确定删除？',
@@ -278,7 +378,22 @@ const columns: DataTableColumns<Upstream> = [
   })},
 ]
 
-onMounted(load)
+// 打开页面时后台静默刷新所有受支持 upstream 的余额/额度，完成后更新对应行；
+// 失败不打扰用户（厂商接口超时/不支持时保持显示已有快照）
+async function autoRefreshBalances() {
+  try {
+    const snaps = await refreshAllBalances()
+    if (!snaps.length) return
+    const map = { ...balancesByUpstream.value }
+    for (const s of snaps) map[s.upstream_id] = s
+    balancesByUpstream.value = map
+  } catch { /* 静默降级 */ }
+}
+
+onMounted(() => {
+  load()
+  autoRefreshBalances()
+})
 </script>
 
 <template>
@@ -377,6 +492,26 @@ onMounted(load)
           </n-form-item>
           <n-button type="primary" block @click="saveModel">保存</n-button>
         </n-form>
+      </n-card>
+    </n-modal>
+    <n-modal :show="showHistory" @update:show="(show: boolean) => { if (!show) showHistory = false }">
+      <n-card :title="`余额/额度历史：${historyUpstream?.name ?? ''}`" :bordered="false" style="width:640px">
+        <n-data-table
+          :bordered="false"
+          size="small"
+          :columns="historyColumns"
+          :data="historyRows"
+          :loading="historyLoading"
+          :row-key="(row: BalanceSnapshot) => row.id"
+        />
+        <div style="display: flex; justify-content: flex-end; margin-top: 12px">
+          <n-pagination
+            v-model:page="historyPage"
+            :item-count="historyTotal"
+            :page-size="historyPageSize"
+            @update:page="loadHistory"
+          />
+        </div>
       </n-card>
     </n-modal>
   </div>
