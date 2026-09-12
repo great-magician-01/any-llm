@@ -54,7 +54,7 @@ func (a *API) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name              string   `json:"name"`
+		Label             string   `json:"label"`
 		Remark            string   `json:"remark"`
 		DailyTokenLimit   int      `json:"daily_token_limit"`
 		MonthlyTokenLimit int      `json:"monthly_token_limit"`
@@ -75,16 +75,16 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	var k *model.ExtKey
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
-		k, e = model.CreateExtKey(d, req.Name, req.Remark, req.DailyTokenLimit, req.MonthlyTokenLimit, allowed)
+		k, e = model.CreateExtKey(d, req.Label, req.Remark, req.DailyTokenLimit, req.MonthlyTokenLimit, allowed)
 		return e
 	}); err != nil {
-		logger.Error("admin: create key DB write failed", "name", req.Name, "err", err)
+		logger.Error("admin: create key DB write failed", "label", req.Label, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
-	logger.Info("admin: key created", "id", k.ID, "name", k.Name, "enabled", k.Enabled)
+	logger.Info("admin: key created", "id", k.ID, "label", k.Label, "enabled", k.Enabled)
 	writeJSON(w, 200, map[string]any{
-		"id": k.ID, "key": k.Key, "name": k.Name, "remark": k.Remark, "enabled": k.Enabled,
+		"id": k.ID, "key": k.Key, "label": k.Label, "remark": k.Remark, "enabled": k.Enabled,
 		"daily_token_limit": k.DailyTokenLimit, "monthly_token_limit": k.MonthlyTokenLimit,
 		"allowed_models": k.AllowedModels,
 	})
@@ -102,7 +102,7 @@ func (a *API) deleteKey(w http.ResponseWriter, r *http.Request, id int64) {
 
 func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 	var req struct {
-		Name              *string   `json:"name"`
+		Label             *string   `json:"label"`
 		Remark            *string   `json:"remark"`
 		Enabled           *bool     `json:"enabled"`
 		DailyTokenLimit   *int      `json:"daily_token_limit"`
@@ -121,9 +121,9 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 404, map[string]any{"error": "key not found"})
 		return
 	}
-	name := cur.Name
-	if req.Name != nil {
-		name = *req.Name
+	label := cur.Label
+	if req.Label != nil {
+		label = *req.Label
 	}
 	remark := cur.Remark
 	if req.Remark != nil {
@@ -157,7 +157,7 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	if err := a.writeSync(func(d *sql.DB) error {
-		return model.UpdateExtKey(d, id, name, remark, enabled, daily, monthly, allowed)
+		return model.UpdateExtKey(d, id, label, remark, enabled, daily, monthly, allowed)
 	}); err != nil {
 		logger.Error("admin: update key DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)

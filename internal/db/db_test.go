@@ -58,11 +58,11 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	}
 }
 
-// 旧库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 label/enabled：
-// CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，缺列会潜伏到查询时才以
-// 42703 暴露（list ext keys: column "label" does not exist）。迁移必须补上。
-func TestOpenSQLite_BackfillsMissingExtKeyColumns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "no-label.db")
+// 老库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 enabled/remark
+// 这类后加的列：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，缺列会潜伏到
+// 查询时才以 42703 暴露。迁移必须补齐，且不碰老数据。
+func TestOpenSQLite_BackfillsMissingExtKeyCols(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-extra-cols.db")
 	d, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -70,12 +70,13 @@ func TestOpenSQLite_BackfillsMissingExtKeyColumns(t *testing.T) {
 	if _, err := d.Exec(`CREATE TABLE ext_keys (
 	    id INTEGER PRIMARY KEY AUTOINCREMENT,
 	    key TEXT NOT NULL UNIQUE,
+	    label TEXT NOT NULL DEFAULT '',
 	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	    last_used_at DATETIME
 	)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Exec(`INSERT INTO ext_keys (key) VALUES ('all-sk-old')`); err != nil {
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-old','legacy')`); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()
@@ -86,13 +87,91 @@ func TestOpenSQLite_BackfillsMissingExtKeyColumns(t *testing.T) {
 	}
 	defer got.Close()
 
-	var label string
+	var label, remark string
 	var enabled int
-	if err := got.QueryRow(`SELECT label, enabled FROM ext_keys WHERE key='all-sk-old'`).Scan(&label, &enabled); err != nil {
+	if err := got.QueryRow(`SELECT label, enabled, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&label, &enabled, &remark); err != nil {
 		t.Fatalf("legacy row after migration: %v", err)
 	}
-	if label != "" || enabled != 1 {
-		t.Fatalf("legacy row label=%q enabled=%d, want \"\" and 1", label, enabled)
+	if label != "legacy" || enabled != 1 || remark != "" {
+		t.Fatalf("legacy row label=%q enabled=%d remark=%q, want legacy/1/\"\"", label, enabled, remark)
+	}
+}
+
+// 名称列曾经改名为 name，现在改回 label：迁移要把 name 改回 label；若补列兜底
+// 又把 label 补了回来（空壳列），先删空壳再改名；两列都有数据时不擅自动——删哪
+// 列都丢数据——保持原样并打日志，交给人工。
+func TestOpenSQLite_RenamesNameBackToLabel(t *testing.T) {
+	const cols = `id INTEGER PRIMARY KEY AUTOINCREMENT,
+	    key TEXT NOT NULL,
+	    enabled INTEGER NOT NULL DEFAULT 1,
+	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_used_at DATETIME`
+	cases := []struct {
+		name        string
+		ddl         string
+		insert      string
+		wantLabel   string
+		wantNameCol bool // 迁移后 name 列是否还在（true = 两列都有数据，没动）
+	}{
+		{
+			name:      "只有 name：改名回 label",
+			ddl:       `CREATE TABLE ext_keys (` + cols + `, name TEXT NOT NULL DEFAULT '')`,
+			insert:    `INSERT INTO ext_keys (key, name) VALUES ('all-sk-old','prod')`,
+			wantLabel: "prod",
+		},
+		{
+			name:      "name + 兜底补出来的空 label：删空壳后改名",
+			ddl:       `CREATE TABLE ext_keys (` + cols + `, name TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '')`,
+			insert:    `INSERT INTO ext_keys (key, name) VALUES ('all-sk-old','prod')`,
+			wantLabel: "prod",
+		},
+		{
+			name:        "两列都有数据：保持原样，交给人工",
+			ddl:         `CREATE TABLE ext_keys (` + cols + `, name TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '')`,
+			insert:      `INSERT INTO ext_keys (key, name, label) VALUES ('all-sk-old','prod','人手写的备注')`,
+			wantLabel:   "人手写的备注",
+			wantNameCol: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "renamed.db")
+			d, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Exec(tc.ddl); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Exec(tc.insert); err != nil {
+				t.Fatal(err)
+			}
+			d.Close()
+
+			got, err := OpenSQLite(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer got.Close()
+
+			var label, remark string
+			if err := got.QueryRow(`SELECT label, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&label, &remark); err != nil {
+				t.Fatalf("label after migration: %v", err)
+			}
+			if label != tc.wantLabel {
+				t.Fatalf("label=%q want %q", label, tc.wantLabel)
+			}
+			if remark != "" {
+				t.Fatalf("remark=%q want \"\"", remark)
+			}
+			var nameCol int
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='name'`).Scan(&nameCol); err != nil {
+				t.Fatal(err)
+			}
+			if (nameCol == 1) != tc.wantNameCol {
+				t.Fatalf("name column present=%v want %v", nameCol == 1, tc.wantNameCol)
+			}
+		})
 	}
 }
 
@@ -233,10 +312,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if err := got.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name IN ('u1','u2')`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("old rows: n=%d err=%v", n, err)
 	}
-	// ext_keys 的 label 列改名为 name（旧值原样保留），remark 列就位
-	var keyName string
-	if err := got.QueryRow(`SELECT name FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyName); err != nil || keyName != "legacy" {
-		t.Fatalf("ext key name after rename: v=%q err=%v", keyName, err)
+	// 名称列就是初始 schema 的 label（旧值原样保留），remark 列就位
+	var keyLabel string
+	if err := got.QueryRow(`SELECT label FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyLabel); err != nil || keyLabel != "legacy" {
+		t.Fatalf("ext key label after migrate: v=%q err=%v", keyLabel, err)
 	}
 	var remark string
 	if err := got.QueryRow(`SELECT remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&remark); err != nil || remark != "" {
@@ -307,8 +386,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
 
 // allowed_models / remark 列就位的三条路径：新库 CREATE TABLE 自带；旧库
 // （无 UNIQUE）走 ALTER 回填；旧库（带内联 UNIQUE）走软删除重建，列随 spec
-// 就位。同时覆盖 label → name 改名（重建路径下由 migrateRenamedCols 在重建
-// 之后完成）。旧数据保留，默认空串（= 不限制）。
+// 就位。旧数据保留，默认空串（= 不限制）。
 func TestOpenSQLite_BackfillsLegacyCols(t *testing.T) {
 	// 新库：CREATE TABLE 已含列
 	fresh := filepath.Join(t.TempDir(), "fresh.db")
@@ -317,7 +395,7 @@ func TestOpenSQLite_BackfillsLegacyCols(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fd.Close()
-	if _, err := fd.Exec(`INSERT INTO ext_keys (key, name, remark) VALUES ('all-sk-new','brand','note')`); err != nil {
+	if _, err := fd.Exec(`INSERT INTO ext_keys (key, label, remark) VALUES ('all-sk-new','brand','note')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -370,23 +448,23 @@ func TestOpenSQLite_BackfillsLegacyCols(t *testing.T) {
 			if err := got.QueryRow(`SELECT allowed_models FROM ext_keys WHERE key='all-sk-old'`).Scan(&allowed); err != nil || allowed != "" {
 				t.Fatalf("allowed_models backfill: v=%q err=%v", allowed, err)
 			}
-			// label → name 改名（旧值保留），remark 列回填
-			var oldCol, nameCol, remarkCol int
-			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='label'`).Scan(&oldCol); err != nil {
+			// 名称列仍是 label（没被改成 name），remark 列回填
+			var nameCol, labelCol, remarkCol int
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='name'`).Scan(&nameCol); err != nil {
 				t.Fatal(err)
 			}
-			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='name'`).Scan(&nameCol); err != nil {
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='label'`).Scan(&labelCol); err != nil {
 				t.Fatal(err)
 			}
 			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='remark'`).Scan(&remarkCol); err != nil {
 				t.Fatal(err)
 			}
-			if oldCol != 0 || nameCol != 1 || remarkCol != 1 {
-				t.Fatalf("cols: label=%d name=%d remark=%d", oldCol, nameCol, remarkCol)
+			if nameCol != 0 || labelCol != 1 || remarkCol != 1 {
+				t.Fatalf("cols: name=%d label=%d remark=%d", nameCol, labelCol, remarkCol)
 			}
 			var nm, rm string
-			if err := got.QueryRow(`SELECT name, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&nm, &rm); err != nil || nm != "legacy" || rm != "" {
-				t.Fatalf("renamed row: name=%q remark=%q err=%v", nm, rm, err)
+			if err := got.QueryRow(`SELECT label, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&nm, &rm); err != nil || nm != "legacy" || rm != "" {
+				t.Fatalf("legacy row: label=%q remark=%q err=%v", nm, rm, err)
 			}
 			// 回填后可直接写入白名单
 			if _, err := got.Exec(`UPDATE ext_keys SET allowed_models='["a/b"]' WHERE key='all-sk-old'`); err != nil {

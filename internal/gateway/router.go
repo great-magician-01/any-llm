@@ -166,7 +166,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	// 畸形请求留给后续 400，不在这里误报 403。
 	if probe.Model != "" && !k.AllowsModel(probe.Model) {
 		logger.Info("gateway: model not allowed for key",
-			"key_id", k.ID, "key_name", k.Name, "model", probe.Model)
+			"key_id", k.ID, "key_label", k.Label, "model", probe.Model)
 		WriteError(w, 403, inFormat, "model '"+probe.Model+"' is not allowed for this API key", "permission_error")
 		return
 	}
@@ -267,7 +267,7 @@ func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *mod
 	if le, ok := err.(*limitError); ok {
 		WriteError(w, 429, inFormat, le.message, "rate_limit_error")
 		logger.Info("token limit exceeded",
-			"key_id", k.ID, "key_name", k.Name,
+			"key_id", k.ID, "key_label", k.Label,
 			"upstream", upstreamName, "scope", le.scope,
 			"used", le.used, "limit", le.limit,
 		)
