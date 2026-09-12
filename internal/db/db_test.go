@@ -258,6 +258,81 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	}
 }
 
+// allowed_models 列就位的三条路径：新库 CREATE TABLE 自带；旧库（无 UNIQUE）
+// 走 ALTER 回填；旧库（带内联 UNIQUE）走软删除重建，列随 spec 就位。
+// 旧数据保留，默认空串（= 不限制）。
+func TestOpenSQLite_BackfillsAllowedModels(t *testing.T) {
+	// 新库：CREATE TABLE 已含列
+	fresh := filepath.Join(t.TempDir(), "fresh.db")
+	fd, err := OpenSQLite(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	if _, err := fd.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-new','brand')`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		unique bool // 旧表是否带内联 UNIQUE（触发软删除重建路径）
+	}{
+		{"alter", false},
+		{"rebuild", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "old.db")
+			d, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keyDDL := "key TEXT NOT NULL"
+			if tc.unique {
+				keyDDL += " UNIQUE"
+			}
+			if _, err := d.Exec(`CREATE TABLE ext_keys (
+			    id INTEGER PRIMARY KEY AUTOINCREMENT,
+			    ` + keyDDL + `,
+			    label TEXT NOT NULL DEFAULT '',
+			    enabled INTEGER NOT NULL DEFAULT 1,
+			    daily_token_limit INTEGER NOT NULL DEFAULT 0,
+			    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+			    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			    last_used_at DATETIME,
+			    is_active INTEGER NOT NULL DEFAULT 1
+			)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-old','legacy')`); err != nil {
+				t.Fatal(err)
+			}
+			d.Close()
+
+			got, err := OpenSQLite(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer got.Close()
+
+			var n int
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='allowed_models'`).Scan(&n); err != nil || n != 1 {
+				t.Fatalf("allowed_models missing: n=%d err=%v", n, err)
+			}
+			var allowed string
+			if err := got.QueryRow(`SELECT allowed_models FROM ext_keys WHERE key='all-sk-old'`).Scan(&allowed); err != nil || allowed != "" {
+				t.Fatalf("allowed_models backfill: v=%q err=%v", allowed, err)
+			}
+			// 回填后可直接写入白名单
+			if _, err := got.Exec(`UPDATE ext_keys SET allowed_models='["a/b"]' WHERE key='all-sk-old'`); err != nil {
+				t.Fatalf("write allowed_models: %v", err)
+			}
+			if err := got.QueryRow(`SELECT allowed_models FROM ext_keys WHERE key='all-sk-old'`).Scan(&allowed); err != nil || allowed != `["a/b"]` {
+				t.Fatalf("allowed_models roundtrip: v=%q err=%v", allowed, err)
+			}
+		})
+	}
+}
+
 // 新库本来就没 CHECK，迁移幂等
 func TestOpenSQLite_FreshDBHasNoCheck(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fresh.db")
