@@ -74,6 +74,9 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstrea
 	if err != nil {
 		return "", nil, err
 	}
+	// 厂商会按用量状态增减返回的窗口（如 kimi 只在有活跃用量时返回 5h 窗口），
+	// 归一化会跳过缺失/无法解析的窗口——窗口对不上时用 debug 日志核对原始响应。
+	logger.Debug("fetch balance: raw vendor body", "vendor", vendor, "upstream", u.Name, "body", truncateFetch(string(body), 1024))
 	var payload json.RawMessage
 	switch vendor {
 	case VendorDeepSeek:
