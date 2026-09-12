@@ -33,6 +33,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/balances", a.handleBalances)
 	mux.HandleFunc("/api/admin/conversations", a.handleConversations)
 	mux.HandleFunc("/api/admin/conversations/", a.handleConversations)
+	mux.HandleFunc("/api/admin/config/export", a.handleConfigExport)
+	mux.HandleFunc("/api/admin/config/import", a.handleConfigImport)
 	return mux
 }
 

@@ -4,6 +4,8 @@ import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NTex
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
 import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot, type BalancePayload } from '../api/balances'
+import { exportConfig, importConfig, type ConfigFile } from '../api/config'
+import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
 import { formatInt, formatTime, formatMoney } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -29,6 +31,10 @@ const historyTotal = ref(0)
 const historyPage = ref(1)
 const historyPageSize = 10
 const historyLoading = ref(false)
+// 配置导出/导入：导入先选文件、确认摘要后再执行（同名覆盖、不同名保留）
+const importInput = ref<HTMLInputElement | null>(null)
+const pendingImport = ref<ConfigFile | null>(null)
+const importing = ref(false)
 
 function modelOptsFor(id: number) {
   if (!newModelOpts.value[id]) {
@@ -83,6 +89,46 @@ async function load() {
   const map: Record<number, BalanceSnapshot> = {}
   for (const s of snaps) map[s.upstream_id] = s
   balancesByUpstream.value = map
+}
+async function doExport() {
+  try {
+    const data = await exportConfig()
+    downloadJSON(data, configFileName(new Date()))
+    message.success(`已导出 ${data.upstreams.length} 个上游、${data.aliases.length} 个别名的配置（文件含 API Key，请妥善保管）`)
+  } catch (e) {
+    message.error('导出失败：' + errMsg(e))
+  }
+}
+function chooseImportFile() { importInput.value?.click() }
+function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 清空选择，同一文件可重复导入
+  if (!file) return
+  file.text().then((text) => {
+    try {
+      pendingImport.value = parseConfigFile(text)
+    } catch (err) {
+      message.error('导入失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }).catch((err) => {
+    message.error('读取文件失败：' + (err instanceof Error ? err.message : String(err)))
+  })
+}
+async function doImport() {
+  const payload = pendingImport.value
+  if (!payload || importing.value) return
+  importing.value = true
+  try {
+    const res = await importConfig(payload)
+    pendingImport.value = null
+    message.success(describeImportResult(res))
+    await load()
+  } catch (e) {
+    message.error('导入失败：' + errMsg(e))
+  } finally {
+    importing.value = false
+  }
 }
 async function save() {
   try {
@@ -414,10 +460,20 @@ onMounted(() => {
 
     <n-card title="上游列表" class="panel">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="add">
-          <template #icon><AppIcon name="plus" :size="14" /></template>
-          添加上游
-        </n-button>
+        <n-space :size="8" :wrap="false">
+          <n-button size="small" quaternary @click="chooseImportFile">
+            <template #icon><AppIcon name="upload" :size="14" /></template>
+            导入配置
+          </n-button>
+          <n-button size="small" quaternary @click="doExport">
+            <template #icon><AppIcon name="download" :size="14" /></template>
+            导出配置
+          </n-button>
+          <n-button type="primary" size="small" @click="add">
+            <template #icon><AppIcon name="plus" :size="14" /></template>
+            添加上游
+          </n-button>
+        </n-space>
       </template>
       <n-data-table
         :bordered="false"
@@ -495,6 +551,18 @@ onMounted(() => {
           </n-form-item>
           <n-button type="primary" block @click="saveModel">保存</n-button>
         </n-form>
+      </n-card>
+    </n-modal>
+    <input ref="importInput" type="file" accept=".json,application/json" style="display: none" @change="onImportFile" />
+    <n-modal :show="pendingImport !== null" @update:show="(show: boolean) => { if (!show) pendingImport = null }">
+      <n-card title="导入配置" :bordered="false" style="width:440px">
+        <p style="margin: 0 0 4px; color: var(--text-2); font-size: 13.5px; line-height: 1.7">
+          {{ pendingImport ? describeConfigFile(pendingImport) : '' }}
+        </p>
+        <n-space justify="end" style="margin-top: 12px">
+          <n-button size="small" @click="pendingImport = null">取消</n-button>
+          <n-button type="primary" size="small" :loading="importing" @click="doImport">开始导入</n-button>
+        </n-space>
       </n-card>
     </n-modal>
     <n-modal :show="showHistory" @update:show="(show: boolean) => { if (!show) showHistory = false }">
