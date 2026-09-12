@@ -461,10 +461,10 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 	return tx.Commit()
 }
 
-func createExtKeyE2E(d *sql.DB, label string) (struct {
+func createExtKeyE2E(d *sql.DB, name string) (struct {
 	ID      int64
 	Key     string
-	Label   string
+	Name    string
 	Enabled int
 }, error) {
 	key, err := generateKeyE2E()
@@ -472,32 +472,32 @@ func createExtKeyE2E(d *sql.DB, label string) (struct {
 		return struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}{}, err
 	}
 	var id int64
-	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
+	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, name) VALUES (?,?) RETURNING id`), key, name).Scan(&id)
 	if err != nil {
 		return struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}{}, err
 	}
 	return struct {
 		ID      int64
 		Key     string
-		Label   string
+		Name    string
 		Enabled int
-	}{ID: id, Key: key, Label: label, Enabled: 1}, nil
+	}{ID: id, Key: key, Name: name, Enabled: 1}, nil
 }
 
 func getExtKeyE2E(d *sql.DB, key string) (struct {
 	ID        int64
 	Key       string
-	Label     string
+	Name      string
 	Enabled   int
 	CreatedAt time.Time
 	LastUsed  sql.NullTime
@@ -505,23 +505,23 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 	var k struct {
 		ID        int64
 		Key       string
-		Label     string
+		Name      string
 		Enabled   int
 		CreatedAt time.Time
 		LastUsed  sql.NullTime
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
-		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
+	err := d.QueryRow(Rebind(d, `SELECT id, key, name, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+		Scan(&k.ID, &k.Key, &k.Name, &k.Enabled, &k.CreatedAt, &k.LastUsed)
 	return k, err
 }
 
 func listExtKeysE2E(d *sql.DB) ([]struct {
 	ID      int64
 	Key     string
-	Label   string
+	Name    string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, name, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -529,17 +529,17 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	var out []struct {
 		ID      int64
 		Key     string
-		Label   string
+		Name    string
 		Enabled int
 	}
 	for rows.Next() {
 		var k struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}
-		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Enabled); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Enabled); err != nil {
 			return nil, err
 		}
 		k.Key = maskKeyE2E(k.Key)
@@ -841,6 +841,15 @@ CREATE TABLE conversation_records (
 	}
 	if err := migrateSoftDelete(d); err != nil {
 		t.Fatalf("soft delete migrate: %v", err)
+	}
+	if err := migrateRenamedCols(d); err != nil {
+		t.Fatalf("renamed cols migrate: %v", err)
+	}
+
+	// ext_keys.label 已改名 name（旧值保留），remark 列就位
+	var keyName, keyRemark string
+	if err := d.QueryRow(`SELECT name, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyName, &keyRemark); err != nil || keyName != "legacy" || keyRemark != "" {
+		t.Fatalf("ext key rename: name=%q remark=%q err=%v", keyName, keyRemark, err)
 	}
 
 	// CHECK 已移除：可插入 responses

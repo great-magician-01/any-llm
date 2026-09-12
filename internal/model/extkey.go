@@ -16,19 +16,19 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-func CreateExtKey(d *sql.DB, label string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
+func CreateExtKey(d *sql.DB, name, remark string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
 	key, err := generateKey()
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	var id int64
-	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?) RETURNING id`),
-		key, label, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
+	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, name, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`),
+		key, name, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
-	return &ExtKey{ID: id, Key: key, Label: label, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
+	return &ExtKey{ID: id, Key: key, Name: name, Remark: remark, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
 }
 
 func generateKey() (string, error) {
@@ -48,8 +48,8 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
-		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
+		Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
 	}
@@ -70,8 +70,8 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
-		Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
+		Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
 	}
@@ -88,7 +88,7 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 }
 
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
@@ -99,7 +99,7 @@ func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
 		var enabled int
 		var lastUsed sql.NullTime
 		var allowed string
-		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed); err != nil {
 			return nil, err
 		}
 		k.Enabled = enabled != 0
@@ -125,13 +125,13 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 	return nil
 }
 
-func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
+func UpdateExtKey(d *sql.DB, id int64, name, remark string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
 	en := 0
 	if enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
-		label, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET name=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+		name, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}

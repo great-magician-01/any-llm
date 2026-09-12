@@ -37,7 +37,7 @@ func failUpstreamServer(t *testing.T, status int) *httptest.Server {
 func setupAliasGateway(t *testing.T) (*Gateway, *model.ExtKey) {
 	t.Helper()
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 	return g, k
 }
@@ -281,7 +281,7 @@ func TestModelsEndpointIncludesAliases(t *testing.T) {
 	model.CreateAlias(d, &model.ModelAlias{Name: "fixed-gpt", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	// 无可用绑定的别名不出现
 	model.CreateAlias(d, &model.ModelAlias{Name: "empty-alias", Bindings: nil})
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+k.Key)

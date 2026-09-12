@@ -28,7 +28,8 @@ type UpstreamModel struct {
 type ExtKey struct {
 	ID                int64  `json:"id"`
 	Key               string `json:"key"`
-	Label             string `json:"label"`
+	Name              string `json:"name"`
+	Remark            string `json:"remark"`
 	Enabled           bool   `json:"enabled"`
 	DailyTokenLimit   int    `json:"daily_token_limit"`
 	MonthlyTokenLimit int    `json:"monthly_token_limit"`
