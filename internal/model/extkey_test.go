@@ -7,7 +7,7 @@ import (
 
 func TestCreateExtKeyFormat(t *testing.T) {
 	d := testDB(t)
-	k, err := CreateExtKey(d, "test-label", 0, 0)
+	k, err := CreateExtKey(d, "test-label", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +27,8 @@ func TestCreateExtKeyFormat(t *testing.T) {
 
 func TestCreateExtKeysUnique(t *testing.T) {
 	d := testDB(t)
-	k1, _ := CreateExtKey(d, "a", 0, 0)
-	k2, _ := CreateExtKey(d, "b", 0, 0)
+	k1, _ := CreateExtKey(d, "a", 0, 0, nil)
+	k2, _ := CreateExtKey(d, "b", 0, 0, nil)
 	if k1.Key == k2.Key {
 		t.Fatal("duplicate keys generated")
 	}
@@ -36,7 +36,7 @@ func TestCreateExtKeysUnique(t *testing.T) {
 
 func TestGetExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	got, err := GetExtKey(d, k.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestGetExtKey(t *testing.T) {
 
 func TestListExtKeysFullKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	list, err := ListExtKeys(d)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestListExtKeysFullKey(t *testing.T) {
 
 func TestDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDeleteExtKey(t *testing.T) {
 
 func TestTouchExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	if err := TouchExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestTouchExtKey(t *testing.T) {
 // immediately fails auth lookups and disappears from lists.
 func TestSoftDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
@@ -117,5 +117,76 @@ func TestSoftDeleteExtKey(t *testing.T) {
 	// 幂等：重复删除不报错
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatalf("second delete should be a no-op: %v", err)
+	}
+}
+
+// TestExtKeyAllowedModels 覆盖白名单读路径（raw SQL 写入，写路径随管理端
+// CRUD 接入）：空串/空数组 = 不限；JSON 数组解析；AllowsModel 精确匹配；
+// 非法 JSON 响亮失败而非静默放行。
+func TestExtKeyAllowedModels(t *testing.T) {
+	d := testDB(t)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+
+	// 默认：不限制
+	got, err := GetExtKey(d, k.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AllowedModels != nil {
+		t.Fatalf("default allowed_models=%v want nil", got.AllowedModels)
+	}
+	if !got.AllowsModel("any/model") {
+		t.Fatal("empty allowlist should allow everything")
+	}
+
+	// 写入白名单后读取 + 精确匹配
+	if _, err := d.Exec(`UPDATE ext_keys SET allowed_models=? WHERE id=?`, `["deepseek/deepseek-chat","gpt"]`, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = GetExtKey(d, k.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.AllowedModels) != 2 || got.AllowedModels[0] != "deepseek/deepseek-chat" || got.AllowedModels[1] != "gpt" {
+		t.Fatalf("allowed_models=%v", got.AllowedModels)
+	}
+	if !got.AllowsModel("gpt") || !got.AllowsModel("deepseek/deepseek-chat") {
+		t.Fatalf("listed entries should be allowed: %v", got.AllowedModels)
+	}
+	if got.AllowsModel("deepseek/other") || got.AllowsModel("gp") {
+		t.Fatalf("unlisted entries should be denied: %v", got.AllowedModels)
+	}
+
+	// GetExtKeyByID / ListExtKeys 同样带出
+	byID, err := GetExtKeyByID(d, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byID.AllowedModels) != 2 {
+		t.Fatalf("by id allowed_models=%v", byID.AllowedModels)
+	}
+	list, err := ListExtKeys(d)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list err=%v len=%d", err, len(list))
+	}
+	if len(list[0].AllowedModels) != 2 {
+		t.Fatalf("list allowed_models=%v", list[0].AllowedModels)
+	}
+
+	// 空数组 = 不限
+	if _, err := d.Exec(`UPDATE ext_keys SET allowed_models='[]' WHERE id=?`, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = GetExtKey(d, k.Key)
+	if got.AllowedModels != nil || !got.AllowsModel("x") {
+		t.Fatalf("empty array should mean unrestricted: %v", got.AllowedModels)
+	}
+
+	// 非法 JSON：响亮失败
+	if _, err := d.Exec(`UPDATE ext_keys SET allowed_models='{"a":1}' WHERE id=?`, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetExtKey(d, k.Key); err == nil {
+		t.Fatal("corrupt allowed_models should error, not silently allow")
 	}
 }

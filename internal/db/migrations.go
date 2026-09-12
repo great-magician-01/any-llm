@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS ext_keys (
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    allowed_models TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at DATETIME,
     is_active INTEGER NOT NULL DEFAULT 1
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS ext_keys (
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    allowed_models TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TIMESTAMP(0),
     is_active INTEGER NOT NULL DEFAULT 1
@@ -202,36 +204,11 @@ CREATE TABLE IF NOT EXISTS model_alias_bindings (
     is_active INTEGER NOT NULL DEFAULT 1
 );
 
--- conversation_records 归档每次网关对话（仅 PG；SQLite 不建此表）。
--- request_ir/response_ir 是归一化 IR 的 JSON（含工具调用与思维链，可查询）；
--- request_raw/response_raw 是入站请求体与发给客户端的原始字节（保真回放）。
-CREATE TABLE IF NOT EXISTS conversation_records (
-    id BIGSERIAL PRIMARY KEY,
-    ext_key_id BIGINT,
-    upstream_id BIGINT,
-    upstream_name TEXT NOT NULL,
-    model TEXT NOT NULL,
-    in_format TEXT NOT NULL,
-    up_format TEXT NOT NULL,
-    harness TEXT NOT NULL,
-    user_agent TEXT NOT NULL,
-    stream INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-    request_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
-    response_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
-    request_raw BYTEA NOT NULL,
-    response_raw BYTEA NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_conv_created ON conversation_records(created_at);
-CREATE INDEX IF NOT EXISTS idx_conv_ext_key ON conversation_records(ext_key_id);
-CREATE INDEX IF NOT EXISTS idx_conv_harness ON conversation_records(harness);
+-- conversation_records 不再由迁移建表：改为应用层按月分表
+-- （conversation_records_YYYY_MM），由 model.EnsureConversationShard 按需创建，
+-- 见 docs/conversation-sharding.md。存量库的旧表原地保留为历史分表，
+-- 读取由应用层跨分表合并。migrateSoftDeletePG 里对该表旧外键的
+-- DROP CONSTRAINT IF EXISTS 保留，用于存量库升级。
 
 -- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
 -- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
@@ -247,26 +224,29 @@ CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(u
 `
 
 // extraCols lists the columns added after the initial schema, together with
-// their ALTER TABLE defaults. Existing databases created before these columns
+// their full column definition (type + NOT NULL + default) used for the
+// ALTER TABLE backfill. Existing databases created before these columns
 // existed need them backfilled; fresh databases get them from the CREATE TABLE
 // statements above.
 var extraCols = []struct {
-	table, column, def string
+	table, column, coldef string
 }{
-	{"upstreams", "daily_token_limit", "0"},
-	{"upstreams", "monthly_token_limit", "0"},
-	{"upstreams", "is_active", "1"},
-	{"upstreams", "enabled", "1"},
-	{"ext_keys", "daily_token_limit", "0"},
-	{"ext_keys", "monthly_token_limit", "0"},
-	{"ext_keys", "is_active", "1"},
-	{"upstream_models", "is_active", "1"},
-	{"upstream_models", "context_length", "200000"},
-	{"upstream_models", "max_output_length", "200000"},
-	{"usage_records", "cache_read_tokens", "0"},
-	{"usage_records", "cache_creation_tokens", "0"},
-	{"usage_records", "reasoning_tokens", "0"},
-	{"usage_records", "duration_ms", "0"},
+	{"upstreams", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
+	{"upstreams", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
+	{"upstreams", "is_active", "INTEGER NOT NULL DEFAULT 1"},
+	{"upstreams", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+	{"ext_keys", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
+	{"ext_keys", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
+	{"ext_keys", "is_active", "INTEGER NOT NULL DEFAULT 1"},
+	// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
+	{"ext_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
+	{"upstream_models", "is_active", "INTEGER NOT NULL DEFAULT 1"},
+	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 200000"},
+	{"upstream_models", "max_output_length", "INTEGER NOT NULL DEFAULT 200000"},
+	{"usage_records", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"usage_records", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"usage_records", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"usage_records", "duration_ms", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 // migrateExtraCols ensures columns added after the initial schema exist on
@@ -282,7 +262,7 @@ func migrateExtraCols(d *sql.DB) error {
 		if exists {
 			continue
 		}
-		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s INTEGER NOT NULL DEFAULT %s`, ec.table, ec.column, ec.def)
+		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, ec.table, ec.column, ec.coldef)
 		if _, err := d.Exec(stmt); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
 		}
@@ -432,12 +412,13 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    enabled INTEGER NOT NULL DEFAULT 1,
 		    daily_token_limit INTEGER NOT NULL DEFAULT 0,
 		    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+		    allowed_models TEXT NOT NULL DEFAULT '',
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		    last_used_at DATETIME,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		insertCols:  []string{"id", "key", "label", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "last_used_at", "is_active"},
-		selectExprs: []string{"id", "key", "label", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "last_used_at", "is_active"},
+		insertCols:  []string{"id", "key", "label", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
+		selectExprs: []string{"id", "key", "label", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
 	},
 	{
 		table: "usage_records",

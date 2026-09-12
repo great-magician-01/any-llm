@@ -3,8 +3,11 @@ import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
-import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot, type BalancePayload } from '../api/balances'
-import { formatInt, formatTime, formatMoney } from '../utils/format'
+import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../api/balances'
+import { exportConfig, importConfig, type ConfigFile } from '../api/config'
+import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
+import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '../utils/balance'
+import { formatInt, formatTime } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
@@ -29,6 +32,10 @@ const historyTotal = ref(0)
 const historyPage = ref(1)
 const historyPageSize = 10
 const historyLoading = ref(false)
+// 配置导出/导入：导入先选文件、确认摘要后再执行（同名覆盖、不同名保留）
+const importInput = ref<HTMLInputElement | null>(null)
+const pendingImport = ref<ConfigFile | null>(null)
+const importing = ref(false)
 
 function modelOptsFor(id: number) {
   if (!newModelOpts.value[id]) {
@@ -83,6 +90,46 @@ async function load() {
   const map: Record<number, BalanceSnapshot> = {}
   for (const s of snaps) map[s.upstream_id] = s
   balancesByUpstream.value = map
+}
+async function doExport() {
+  try {
+    const data = await exportConfig()
+    downloadJSON(data, configFileName(new Date()))
+    message.success(`已导出 ${data.upstreams.length} 个上游、${data.aliases.length} 个别名的配置（文件含 API Key，请妥善保管）`)
+  } catch (e) {
+    message.error('导出失败：' + errMsg(e))
+  }
+}
+function chooseImportFile() { importInput.value?.click() }
+function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 清空选择，同一文件可重复导入
+  if (!file) return
+  file.text().then((text) => {
+    try {
+      pendingImport.value = parseConfigFile(text)
+    } catch (err) {
+      message.error('导入失败：' + (err instanceof Error ? err.message : String(err)))
+    }
+  }).catch((err) => {
+    message.error('读取文件失败：' + (err instanceof Error ? err.message : String(err)))
+  })
+}
+async function doImport() {
+  const payload = pendingImport.value
+  if (!payload || importing.value) return
+  importing.value = true
+  try {
+    const res = await importConfig(payload)
+    pendingImport.value = null
+    message.success(describeImportResult(res))
+    await load()
+  } catch (e) {
+    message.error('导入失败：' + errMsg(e))
+  } finally {
+    importing.value = false
+  }
 }
 async function save() {
   try {
@@ -178,30 +225,6 @@ async function delM(id: number, mid: number) {
   await deleteModel(id, mid)
   await loadModels(id)
   await load()
-}
-
-function parsePayload(s: BalanceSnapshot): BalancePayload | null {
-  if (!s?.payload) return null
-  if (typeof s.payload === 'string') {
-    try { return JSON.parse(s.payload) as BalancePayload } catch { return null }
-  }
-  return s.payload
-}
-
-const QUOTA_WINDOW_LABELS: Record<string, string> = { five_hour: '5h', weekly: '周', monthly: '月' }
-
-/** 快照摘要：balance -> "¥110.00"；quota -> "5h 12% · 周 34% · 月 56%"；无数据返回 null */
-function balanceSummary(s: BalanceSnapshot | undefined): string | null {
-  if (!s) return null
-  const p = parsePayload(s)
-  if (!p) return null
-  if (p.kind === 'balance') {
-    const b = p.balances?.[0]
-    if (!b) return null
-    return formatMoney(b.total, b.currency)
-  }
-  const parts = (p.windows || []).map(w => `${QUOTA_WINDOW_LABELS[w.id] ?? w.id} ${w.used_percent}%`)
-  return parts.length ? parts.join(' · ') : null
 }
 
 async function refreshB(id: number) {
@@ -311,10 +334,12 @@ const columns: DataTableColumns<Upstream> = [
           ),
     ])
   }},
-  { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  // 名称/地址之外的列宽固定；名称给定宽、地址给 minWidth 吸收剩余空间。
+  // 配合 scroll-x，窗口过窄时表格横向滚动而不是把无宽度的列压成 0。
+  { title: '名称', key: 'name', width: 130, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
   { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
-  { title: '地址', key: 'base_url', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
+  { title: '地址', key: 'base_url', minWidth: 180, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
     key: 'format',
@@ -324,7 +349,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '模型数',
     key: 'model_count',
-    width: 90,
+    width: 80,
     render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
   },
   {
@@ -332,15 +357,24 @@ const columns: DataTableColumns<Upstream> = [
     key: 'balance',
     width: 180,
     render: (row) => {
-      const text = balanceSummary(balancesByUpstream.value[row.id as number])
-      if (!text) return h('span', { style: 'color: var(--text-4)' }, '-')
-      return h('span', { class: 'mono', style: 'cursor: pointer', title: '点击查看历史', onClick: () => openHistory(row) }, text)
+      const s = balancesByUpstream.value[row.id as number]
+      const v = s ? balanceView(s) : null
+      if (!s || !v) return h('span', { style: 'color: var(--text-4)' }, '-')
+      const dim = 'color: var(--text-4); font-size: 12px'
+      const lines = v.kind === 'balance'
+        ? [h('div', { class: 'mono' }, v.text)]
+        : v.windows.map(w => h('div', { class: 'mono' }, w.missing
+          ? [h('span', { style: 'color: var(--text-4)' }, `${w.label} —`)]
+          : [h('span', null, `${w.label} ${w.percent}%`),
+            ...(w.reset ? [h('span', { style: dim }, `（${w.reset} 重置）`)] : [])]))
+      lines.push(h('div', { style: dim }, `更新于 ${formatFetchedAt(s.created_at)}`))
+      return h('div', { style: 'cursor: pointer; line-height: 1.5', title: balanceTooltip(s), onClick: () => openHistory(row) }, lines)
     },
   },
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: 130,
+    width: 120,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -348,12 +382,12 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: 130,
+    width: 120,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  { title: '操作', key: 'actions', width: 320, render: (row) => h(NSpace, { size: 8 }, {
+  { title: '操作', key: 'actions', width: 360, render: (row) => h(NSpace, { size: 8, wrap: false }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -412,15 +446,26 @@ onMounted(() => {
 
     <n-card title="上游列表" class="panel">
       <template #header-extra>
-        <n-button type="primary" size="small" @click="add">
-          <template #icon><AppIcon name="plus" :size="14" /></template>
-          添加上游
-        </n-button>
+        <n-space :size="8" :wrap="false">
+          <n-button size="small" quaternary @click="chooseImportFile">
+            <template #icon><AppIcon name="upload" :size="14" /></template>
+            导入配置
+          </n-button>
+          <n-button size="small" quaternary @click="doExport">
+            <template #icon><AppIcon name="download" :size="14" /></template>
+            导出配置
+          </n-button>
+          <n-button type="primary" size="small" @click="add">
+            <template #icon><AppIcon name="plus" :size="14" /></template>
+            添加上游
+          </n-button>
+        </n-space>
       </template>
       <n-data-table
         :bordered="false"
         :columns="columns"
         :data="upstreams"
+        :scroll-x="1400"
         :row-key="(row: Upstream) => row.id"
         :expanded-row-keys="expandedRowKeys"
         @update:expanded-row-keys="onExpand"
@@ -492,6 +537,18 @@ onMounted(() => {
           </n-form-item>
           <n-button type="primary" block @click="saveModel">保存</n-button>
         </n-form>
+      </n-card>
+    </n-modal>
+    <input ref="importInput" type="file" accept=".json,application/json" style="display: none" @change="onImportFile" />
+    <n-modal :show="pendingImport !== null" @update:show="(show: boolean) => { if (!show) pendingImport = null }">
+      <n-card title="导入配置" :bordered="false" style="width:440px">
+        <p style="margin: 0 0 4px; color: var(--text-2); font-size: 13.5px; line-height: 1.7">
+          {{ pendingImport ? describeConfigFile(pendingImport) : '' }}
+        </p>
+        <n-space justify="end" style="margin-top: 12px">
+          <n-button size="small" @click="pendingImport = null">取消</n-button>
+          <n-button type="primary" size="small" :loading="importing" @click="doImport">开始导入</n-button>
+        </n-space>
       </n-card>
     </n-modal>
     <n-modal :show="showHistory" @update:show="(show: boolean) => { if (!show) showHistory = false }">

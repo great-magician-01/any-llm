@@ -20,6 +20,7 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/gateway"
 	"github.com/great-magician-01/any-llm/internal/logger"
+	"github.com/great-magician-01/any-llm/internal/model"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 	"github.com/great-magician-01/any-llm/internal/webapi"
 )
@@ -76,6 +77,17 @@ func run() int {
 	// Deferred calls run LIFO on return: poller.Stop (stops snapshot polling)
 	// → writer.Stop (drains queued writes) → d.Close → logger.Close.
 	defer writer.Stop()
+
+	// 对话归档按月分表（仅 PG）：启动时加载分表注册缓存并预建当月分表。
+	// 失败不阻断启动——写入路径会惰性加载/兜底建表并重试。
+	if db.DialectOf(d) == db.DialectPostgres {
+		if err := model.LoadConvShards(d); err != nil {
+			logger.Warn("load conversation shards failed", "err", err)
+		}
+		if err := model.EnsureConversationShard(d, time.Now()); err != nil {
+			logger.Warn("ensure conversation shard failed", "err", err)
+		}
+	}
 
 	poller := upstream.NewBalancePoller(writer.DB, writer, cfg.BalanceInterval)
 	poller.Start()

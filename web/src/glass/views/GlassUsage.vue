@@ -341,6 +341,7 @@ onMounted(loadAll)
         :bordered="false"
         :columns="recordColumns"
         :data="records"
+        remote
         :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
       />
     </n-card>

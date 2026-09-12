@@ -183,8 +183,10 @@ const menuItems = [
 .content {
   background: transparent;
 }
+/* 宽屏时放大内容上限让表格各列完整显示；窄屏自然收缩，由表格自身的
+   scroll-x 提供横向滚动（见 Upstreams/Usage 等页） */
 .page {
-  max-width: 1180px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 30px 32px 56px;
 }

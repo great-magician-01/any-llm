@@ -167,7 +167,9 @@ const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
 const recordColumns: DataTableColumns<UsageRecord> = [
   { title: '时间', key: 'created_at', width: 165, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.created_at)) },
   { title: '上游', key: 'upstream_name', width: 130, ellipsis: { tooltip: true } },
-  { title: '模型', key: 'model', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
+  // 模型列给最小宽度吸收剩余空间；其余列定宽，配合表格 scroll-x，
+  // 窄屏横向滚动而不是把模型名压成 "d..." 之类的省略
+  { title: '模型', key: 'model', minWidth: 180, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
   { title: '入格式', key: 'in_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false }, { default: () => row.in_format }) },
   { title: '出格式', key: 'up_format', width: 96, render: (row) => h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.up_format }) },
   { title: '总 Token', key: 'total_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600' }, formatInt(row.total_tokens)) },
@@ -341,6 +343,8 @@ onMounted(loadAll)
         :bordered="false"
         :columns="recordColumns"
         :data="records"
+        :scroll-x="1210"
+        remote
         :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
       />
     </n-card>

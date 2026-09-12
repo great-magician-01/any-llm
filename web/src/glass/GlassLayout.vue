@@ -185,8 +185,9 @@ const menuItems = [
 .content {
   background: transparent;
 }
+/* 与默认主题 Layout 保持一致：宽屏放大内容上限，窄屏由表格 scroll-x 兜底 */
 .page {
-  max-width: 1180px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 30px 32px 56px;
 }

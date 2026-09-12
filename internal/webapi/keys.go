@@ -10,42 +10,36 @@ import (
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
-func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		a.listKeys(w, r)
-	case "POST":
-		a.createKey(w, r)
-	default:
-		http.Error(w, "method not allowed", 405)
-	}
-}
+// allowed_models 白名单的条目上限与单条长度上限（对外模型名，别名或
+// upstream/model）。条目不必对应已存在的模型/别名——允许预先配置。
+const (
+	maxAllowedModels    = 256
+	maxAllowedModelName = 256
+)
 
-func (a *API) handleKeyItem(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/admin/keys/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, r)
-		return
-	}
-	id := parseID(parts[0])
-	if id == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	switch r.Method {
-	case "DELETE":
-		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
-			logger.Error("admin: delete key failed", "id", id, "err", err)
-			writeSyncErr(w, 400, err)
-			return
+// normalizeAllowedModels 归一化 key 的模型白名单：trim、去空项、按序去重；
+// 空 = 不限（nil）。返回错误文案与 nil 表示拒绝（400）。
+func normalizeAllowedModels(models []string) ([]string, string) {
+	out := make([]string, 0, len(models))
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
 		}
-		writeJSON(w, 200, map[string]any{"ok": true})
-	case "PUT":
-		a.updateKey(w, r, id)
-	default:
-		http.Error(w, "method not allowed", 405)
+		if len(m) > maxAllowedModelName {
+			return nil, "allowed model names must be at most 256 characters"
+		}
+		seen[m] = true
+		out = append(out, m)
 	}
+	if len(out) > maxAllowedModels {
+		return nil, "too many allowed models (max 256)"
+	}
+	if len(out) == 0 {
+		return nil, ""
+	}
+	return out, ""
 }
 
 func (a *API) listKeys(w http.ResponseWriter, r *http.Request) {
@@ -60,9 +54,10 @@ func (a *API) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Label             string `json:"label"`
-		DailyTokenLimit   int    `json:"daily_token_limit"`
-		MonthlyTokenLimit int    `json:"monthly_token_limit"`
+		Label             string   `json:"label"`
+		DailyTokenLimit   int      `json:"daily_token_limit"`
+		MonthlyTokenLimit int      `json:"monthly_token_limit"`
+		AllowedModels     []string `json:"allowed_models"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
@@ -70,10 +65,16 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
 		return
 	}
+	allowed, badReq := normalizeAllowedModels(req.AllowedModels)
+	if badReq != "" {
+		logger.Warn("admin: create key invalid allowed_models", "error", badReq)
+		writeJSON(w, 400, map[string]any{"error": badReq})
+		return
+	}
 	var k *model.ExtKey
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
-		k, e = model.CreateExtKey(d, req.Label, req.DailyTokenLimit, req.MonthlyTokenLimit)
+		k, e = model.CreateExtKey(d, req.Label, req.DailyTokenLimit, req.MonthlyTokenLimit, allowed)
 		return e
 	}); err != nil {
 		logger.Error("admin: create key DB write failed", "label", req.Label, "err", err)
@@ -84,15 +85,27 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"id": k.ID, "key": k.Key, "label": k.Label, "enabled": k.Enabled,
 		"daily_token_limit": k.DailyTokenLimit, "monthly_token_limit": k.MonthlyTokenLimit,
+		"allowed_models": k.AllowedModels,
 	})
+}
+
+// deleteKey serves DELETE /api/admin/keys/{id}.
+func (a *API) deleteKey(w http.ResponseWriter, r *http.Request, id int64) {
+	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
+		logger.Error("admin: delete key failed", "id", id, "err", err)
+		writeSyncErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 	var req struct {
-		Label             *string `json:"label"`
-		Enabled           *bool   `json:"enabled"`
-		DailyTokenLimit   *int    `json:"daily_token_limit"`
-		MonthlyTokenLimit *int    `json:"monthly_token_limit"`
+		Label             *string   `json:"label"`
+		Enabled           *bool     `json:"enabled"`
+		DailyTokenLimit   *int      `json:"daily_token_limit"`
+		MonthlyTokenLimit *int      `json:"monthly_token_limit"`
+		AllowedModels     *[]string `json:"allowed_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: update key invalid JSON", "id", id, "err", err)
@@ -122,12 +135,23 @@ func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {
 	if req.MonthlyTokenLimit != nil {
 		monthly = *req.MonthlyTokenLimit
 	}
+	// 白名单：nil 保留现值；显式传 [] = 清除限制（全部可用）。
+	allowed := cur.AllowedModels
+	if req.AllowedModels != nil {
+		var badReq string
+		allowed, badReq = normalizeAllowedModels(*req.AllowedModels)
+		if badReq != "" {
+			logger.Warn("admin: update key invalid allowed_models", "id", id, "error", badReq)
+			writeJSON(w, 400, map[string]any{"error": badReq})
+			return
+		}
+	}
 	if daily < 0 || monthly < 0 {
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
 		return
 	}
 	if err := a.writeSync(func(d *sql.DB) error {
-		return model.UpdateExtKey(d, id, label, enabled, daily, monthly)
+		return model.UpdateExtKey(d, id, label, enabled, daily, monthly, allowed)
 	}); err != nil {
 		logger.Error("admin: update key DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)

@@ -75,6 +75,22 @@ func insertBindings(tx *sql.Tx, d *sql.DB, aliasID int64, bindings []AliasBindin
 	return nil
 }
 
+// GetAliasByName 按名称取活跃别名及其全部绑定（配置导入按名覆盖时查重用）。
+func GetAliasByName(d *sql.DB, name string) (*ModelAlias, error) {
+	a := &ModelAlias{}
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, created_at, updated_at FROM model_aliases WHERE name=? AND is_active = 1`), name).
+		Scan(&a.ID, &a.Name, &a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get alias by name %q: %w", name, err)
+	}
+	bindings, err := listBindings(d, `WHERE b.alias_id = ? AND b.is_active = 1`, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	a.Bindings = bindings
+	return a, nil
+}
+
 // GetAliasByID 取单个别名及其全部活跃绑定（含上游名，按优先级排序）。
 func GetAliasByID(d *sql.DB, id int64) (*ModelAlias, error) {
 	a := &ModelAlias{}
