@@ -4,49 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/model"
 )
-
-func (a *API) handleKeys(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		a.listKeys(w, r)
-	case "POST":
-		a.createKey(w, r)
-	default:
-		http.Error(w, "method not allowed", 405)
-	}
-}
-
-func (a *API) handleKeyItem(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/admin/keys/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(w, r)
-		return
-	}
-	id := parseID(parts[0])
-	if id == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	switch r.Method {
-	case "DELETE":
-		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
-			logger.Error("admin: delete key failed", "id", id, "err", err)
-			writeSyncErr(w, 400, err)
-			return
-		}
-		writeJSON(w, 200, map[string]any{"ok": true})
-	case "PUT":
-		a.updateKey(w, r, id)
-	default:
-		http.Error(w, "method not allowed", 405)
-	}
-}
 
 func (a *API) listKeys(w http.ResponseWriter, r *http.Request) {
 	list, err := model.ListExtKeys(a.db)
@@ -85,6 +46,16 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		"id": k.ID, "key": k.Key, "label": k.Label, "enabled": k.Enabled,
 		"daily_token_limit": k.DailyTokenLimit, "monthly_token_limit": k.MonthlyTokenLimit,
 	})
+}
+
+// deleteKey serves DELETE /api/admin/keys/{id}.
+func (a *API) deleteKey(w http.ResponseWriter, r *http.Request, id int64) {
+	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteExtKey(d, id) }); err != nil {
+		logger.Error("admin: delete key failed", "id", id, "err", err)
+		writeSyncErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (a *API) updateKey(w http.ResponseWriter, r *http.Request, id int64) {

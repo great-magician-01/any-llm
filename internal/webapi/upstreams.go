@@ -206,82 +206,75 @@ func (a *API) fetchModels(w http.ResponseWriter, r *http.Request, id int64) {
 	writeJSON(w, 200, map[string]any{"models": names})
 }
 
-func (a *API) handleModels(w http.ResponseWriter, r *http.Request, upstreamID int64, rest []string) {
-	if len(rest) == 0 {
-		switch r.Method {
-		case "GET":
-			models, err := model.ListModels(a.db, upstreamID)
-			if err != nil {
-				logger.Error("admin: list models failed", "upstream_id", upstreamID, "err", err)
-				writeJSON(w, 500, map[string]any{"error": err.Error()})
-				return
-			}
-			writeJSON(w, 200, map[string]any{"data": models})
-		case "POST":
-			var req struct {
-				ModelName       string `json:"model_name"`
-				ContextLength   int    `json:"context_length"`
-				MaxOutputLength int    `json:"max_output_length"`
-			}
-			json.NewDecoder(r.Body).Decode(&req)
-			if req.ContextLength < 0 || req.MaxOutputLength < 0 {
-				writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
-				return
-			}
-			if err := a.writeSync(func(d *sql.DB) error {
-				return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength)
-			}); err != nil {
-				logger.Error("admin: add model failed", "upstream_id", upstreamID, "model", req.ModelName, "err", err)
-				writeSyncErr(w, 400, err)
-				return
-			}
-			writeJSON(w, 200, map[string]any{"ok": true})
-		default:
-			http.Error(w, "method not allowed", 405)
-		}
+// listModels serves GET /api/admin/upstreams/{id}/models.
+func (a *API) listModels(w http.ResponseWriter, r *http.Request, upstreamID int64) {
+	models, err := model.ListModels(a.db, upstreamID)
+	if err != nil {
+		logger.Error("admin: list models failed", "upstream_id", upstreamID, "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	if rest[0] == "" {
-		http.NotFound(w, r)
+	writeJSON(w, 200, map[string]any{"data": models})
+}
+
+// addModel serves POST /api/admin/upstreams/{id}/models.
+func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64) {
+	var req struct {
+		ModelName       string `json:"model_name"`
+		ContextLength   int    `json:"context_length"`
+		MaxOutputLength int    `json:"max_output_length"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.ContextLength < 0 || req.MaxOutputLength < 0 {
+		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
 		return
 	}
-	mid := parseID(rest[0])
-	switch r.Method {
-	case "DELETE":
-		if err := a.writeSync(func(d *sql.DB) error { return model.DeleteModel(d, mid) }); err != nil {
-			logger.Error("admin: delete model failed", "model_id", mid, "err", err)
-			writeSyncErr(w, 400, err)
-			return
-		}
-		writeJSON(w, 200, map[string]any{"ok": true})
-	case "PUT":
-		var req struct {
-			ContextLength   *int `json:"context_length"`
-			MaxOutputLength *int `json:"max_output_length"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
-			return
-		}
-		cl, ml := model.DefaultModelContextLength, model.DefaultModelMaxOutputLength
-		if req.ContextLength != nil {
-			cl = *req.ContextLength
-		}
-		if req.MaxOutputLength != nil {
-			ml = *req.MaxOutputLength
-		}
-		if cl < 0 || ml < 0 {
-			writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
-			return
-		}
-		if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, mid, cl, ml) }); err != nil {
-			writeSyncErr(w, 400, err)
-			return
-		}
-		writeJSON(w, 200, map[string]any{"ok": true})
-	default:
-		http.NotFound(w, r)
+	if err := a.writeSync(func(d *sql.DB) error {
+		return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength)
+	}); err != nil {
+		logger.Error("admin: add model failed", "upstream_id", upstreamID, "model", req.ModelName, "err", err)
+		writeSyncErr(w, 400, err)
+		return
 	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// deleteModel serves DELETE /api/admin/upstreams/{id}/models/{mid}.
+func (a *API) deleteModel(w http.ResponseWriter, r *http.Request, upstreamID, mid int64) {
+	if err := a.writeSync(func(d *sql.DB) error { return model.DeleteModel(d, mid) }); err != nil {
+		logger.Error("admin: delete model failed", "model_id", mid, "err", err)
+		writeSyncErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// updateModel serves PUT /api/admin/upstreams/{id}/models/{mid}.
+func (a *API) updateModel(w http.ResponseWriter, r *http.Request, upstreamID, mid int64) {
+	var req struct {
+		ContextLength   *int `json:"context_length"`
+		MaxOutputLength *int `json:"max_output_length"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	cl, ml := model.DefaultModelContextLength, model.DefaultModelMaxOutputLength
+	if req.ContextLength != nil {
+		cl = *req.ContextLength
+	}
+	if req.MaxOutputLength != nil {
+		ml = *req.MaxOutputLength
+	}
+	if cl < 0 || ml < 0 {
+		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
+		return
+	}
+	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, mid, cl, ml) }); err != nil {
+		writeSyncErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
