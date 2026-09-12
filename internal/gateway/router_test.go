@@ -262,3 +262,86 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// 受限 key 请求未列模型 → 403 permission_error；openai 与 anthropic 两种
+// 入站格式都生效；缺 model 字段的畸形请求仍走后续 400，不误报 403。
+func TestModelNotAllowedForRestrictedKey(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o"})
+
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/chat/completions", `{"model":"oai/gpt-4o-mini","messages":[]}`},
+		{"/v1/messages", `{"model":"oai/gpt-4o-mini","messages":[]}`},
+	} {
+		req := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		if w.Code != 403 {
+			t.Fatalf("%s status=%d want 403, body=%s", tc.path, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "permission_error") {
+			t.Fatalf("%s error type: %s", tc.path, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "not allowed") {
+			t.Fatalf("%s message: %s", tc.path, w.Body.String())
+		}
+	}
+
+	// 缺 model 字段：留给后续 400
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("missing model status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 受限 key 请求已列模型 → 正常放行（假上游）。
+func TestModelAllowedForRestrictedKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`))
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o"})
+	g.client = upstream.NewClient(http.DefaultClient)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 白名单条目是对外名：key 限定某个别名后，直连名即使指向同一模型也被拒；
+// 反之 key 限定直连名后，别名也得列入才可用。
+func TestAllowedModelsMatchPublicName(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+
+	for _, tc := range []struct{ allow, model string }{
+		{"fast", "oai/gpt-4o"}, // 只列别名 → 直连名被拒
+		{"oai/gpt-4o", "fast"}, // 只列直连名 → 别名被拒
+	} {
+		k, _ := model.CreateExtKey(d, "l", 0, 0, []string{tc.allow})
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+tc.model+`","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		if w.Code != 403 {
+			t.Fatalf("allow=%q model=%q status=%d want 403, body=%s", tc.allow, tc.model, w.Code, w.Body.String())
+		}
+	}
+}

@@ -133,6 +133,16 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
+	// 按 key 的模型白名单：条目为对外模型名（别名或 upstream/model，与
+	// /v1/models 列出的 id 一致），空 = 不限；仅精确匹配。缺 model 字段的
+	// 畸形请求留给后续 400，不在这里误报 403。
+	if probe.Model != "" && !k.AllowsModel(probe.Model) {
+		logger.Info("gateway: model not allowed for key",
+			"key_id", k.ID, "key_label", k.Label, "model", probe.Model)
+		WriteError(w, 403, inFormat, "model '"+probe.Model+"' is not allowed for this API key", "permission_error")
+		return
+	}
+
 	// 固定对外模型（别名）：对整个 model 字符串精确匹配，命中后按绑定优先级
 	// 得到候选链，dispatch 内逐候选尝试并自动故障转移。别名优先于
 	// 'name/model' 直连拆分（管理员显式配置即可遮蔽直连路由）。
