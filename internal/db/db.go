@@ -47,10 +47,6 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate soft delete: %w", err)
 	}
-	if err := migrateRenamedCols(d); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("migrate renamed cols: %w", err)
-	}
 	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
@@ -104,10 +100,6 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 	if err := migrateSoftDelete(d); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("migrate soft delete: %w", err)
-	}
-	if err := migrateRenamedCols(d); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("migrate renamed cols: %w", err)
 	}
 	return d, nil
 }

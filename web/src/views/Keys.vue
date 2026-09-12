@@ -16,13 +16,13 @@ const usageByKey = ref<Record<number, UsageTotals>>({})
 // create modal: 'form' = filling form, 'done' = showing generated key
 const showCreateModal = ref(false)
 const createModalState = ref<'form' | 'done'>('form')
-const createForm = ref({ name: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
+const createForm = ref({ label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
 const newlyCreatedKey = ref('')
 
 // edit modal
 const showEditModal = ref(false)
 const editing = ref<ExtKey | null>(null)
-const editForm = ref({ name: '', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
+const editForm = ref({ label: '', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
 
 // 模型白名单选项：各上游模型（upstream/model）+ 别名，与 /v1/models 一致。
 // 打开表单时懒加载一次。
@@ -57,7 +57,7 @@ const endpoints = computed(() => [
 ])
 
 const columns = computed<DataTableColumns<ExtKey>>(() => [
-  { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  { title: '名称', key: 'label', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
   {
     title: 'Key',
     key: 'key',
@@ -189,9 +189,9 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
 ])
 
 // 名称唯一（服务端为准，这里只是省一次往返的即时提示）；空名不参与
-function nameTaken(name: string, exceptID?: number) {
-  if (!name) return false
-  return keys.value.some((k) => k.name === name && k.id !== exceptID)
+function labelTaken(label: string, exceptID?: number) {
+  if (!label) return false
+  return keys.value.some((k) => k.label === label && k.id !== exceptID)
 }
 
 async function load() {
@@ -205,7 +205,7 @@ async function load() {
 }
 
 function openCreate() {
-  createForm.value = { name: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
+  createForm.value = { label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
   newlyCreatedKey.value = ''
   createModalState.value = 'form'
   showCreateModal.value = true
@@ -213,17 +213,17 @@ function openCreate() {
 }
 
 async function saveCreate() {
-  const name = createForm.value.name.trim()
-  if (!name) {
+  const label = createForm.value.label.trim()
+  if (!label) {
     message.warning('请填写名称')
     return
   }
-  if (nameTaken(name)) {
+  if (labelTaken(label)) {
     message.warning('名称已存在，请换一个')
     return
   }
   try {
-    const k = await createKey(name, createForm.value.remark.trim(), createForm.value.daily_token_limit, createForm.value.monthly_token_limit, createForm.value.allowed_models)
+    const k = await createKey(label, createForm.value.remark.trim(), createForm.value.daily_token_limit, createForm.value.monthly_token_limit, createForm.value.allowed_models)
     newlyCreatedKey.value = k.key
     createModalState.value = 'done'
     await load()
@@ -233,7 +233,7 @@ async function saveCreate() {
 }
 
 function resetCreateForm() {
-  createForm.value = { name: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
+  createForm.value = { label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
   newlyCreatedKey.value = ''
   createModalState.value = 'form'
 }
@@ -241,7 +241,7 @@ function resetCreateForm() {
 function openEdit(row: ExtKey) {
   editing.value = row
   editForm.value = {
-    name: row.name,
+    label: row.label,
     remark: row.remark,
     enabled: row.enabled,
     daily_token_limit: row.daily_token_limit,
@@ -255,14 +255,14 @@ function openEdit(row: ExtKey) {
 async function saveEdit() {
   if (!editing.value) return
   const cur = editing.value
-  const name = editForm.value.name.trim()
-  if (nameTaken(name, cur.id)) {
+  const label = editForm.value.label.trim()
+  if (labelTaken(label, cur.id)) {
     message.warning('名称已存在，请换一个')
     return
   }
   try {
     await updateKey(cur.id, {
-      name,
+      label,
       remark: editForm.value.remark,
       enabled: editForm.value.enabled,
       daily_token_limit: editForm.value.daily_token_limit,
@@ -476,7 +476,7 @@ onMounted(load)
         <template v-if="createModalState === 'form'">
           <n-form label-placement="top">
             <n-form-item label="名称">
-              <n-input v-model:value="createForm.name" placeholder="名称，如：我的应用" />
+              <n-input v-model:value="createForm.label" placeholder="名称，如：我的应用" />
             </n-form-item>
             <n-form-item label="备注">
               <n-input v-model:value="createForm.remark" placeholder="备注（可选）" />
@@ -537,7 +537,7 @@ onMounted(load)
       <n-card title="编辑密钥" :bordered="false" style="width:500px">
         <n-form label-placement="top">
           <n-form-item label="名称">
-            <n-input v-model:value="editForm.name" />
+            <n-input v-model:value="editForm.label" />
           </n-form-item>
           <n-form-item label="备注">
             <n-input v-model:value="editForm.remark" placeholder="备注（可选）" />

@@ -8,7 +8,7 @@ import (
 
 func TestCreateExtKeyFormat(t *testing.T) {
 	d := testDB(t)
-	k, err := CreateExtKey(d, "test-name", "test-remark", 0, 0, nil)
+	k, err := CreateExtKey(d, "test-label", "test-remark", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,8 +18,8 @@ func TestCreateExtKeyFormat(t *testing.T) {
 	if len(k.Key) < 39 {
 		t.Fatalf("key too short: %q (len %d)", k.Key, len(k.Key))
 	}
-	if k.Name != "test-name" {
-		t.Fatalf("name=%q", k.Name)
+	if k.Label != "test-label" {
+		t.Fatalf("label=%q", k.Label)
 	}
 	if k.Remark != "test-remark" {
 		t.Fatalf("remark=%q", k.Remark)
@@ -46,8 +46,8 @@ func TestExtKeyNameUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); !errors.Is(err, ErrExtKeyNameTaken) {
-		t.Fatalf("duplicate create err=%v want ErrExtKeyNameTaken", err)
+	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); !errors.Is(err, ErrExtKeyLabelTaken) {
+		t.Fatalf("duplicate create err=%v want ErrExtKeyLabelTaken", err)
 	}
 	list, _ := ListExtKeys(d)
 	if len(list) != 1 {
@@ -63,21 +63,21 @@ func TestExtKeyNameUnique(t *testing.T) {
 	}
 
 	other, _ := CreateExtKey(d, "other", "", 0, 0, nil)
-	if err := UpdateExtKey(d, other.ID, "prod", "", true, 0, 0, nil); !errors.Is(err, ErrExtKeyNameTaken) {
-		t.Fatalf("rename onto taken name err=%v want ErrExtKeyNameTaken", err)
+	if err := UpdateExtKey(d, other.ID, "prod", "", true, 0, 0, nil); !errors.Is(err, ErrExtKeyLabelTaken) {
+		t.Fatalf("rename onto taken label err=%v want ErrExtKeyLabelTaken", err)
 	}
-	if got, _ := GetExtKeyByID(d, other.ID); got.Name != "other" {
-		t.Fatalf("rejected rename must not persist: name=%q", got.Name)
+	if got, _ := GetExtKeyByID(d, other.ID); got.Label != "other" {
+		t.Fatalf("rejected rename must not persist: label=%q", got.Label)
 	}
 	// 改成空闲名、保留自己的名字、改成空名都放行
 	if err := UpdateExtKey(d, other.ID, "other2", "", true, 0, 0, nil); err != nil {
-		t.Fatalf("rename to free name: %v", err)
+		t.Fatalf("rename to free label: %v", err)
 	}
 	if err := UpdateExtKey(d, other.ID, "other2", "note", true, 0, 0, nil); err != nil {
-		t.Fatalf("update keeping own name: %v", err)
+		t.Fatalf("update keeping own label: %v", err)
 	}
 	if err := UpdateExtKey(d, other.ID, "", "", true, 0, 0, nil); err != nil {
-		t.Fatalf("update to empty name: %v", err)
+		t.Fatalf("update to empty label: %v", err)
 	}
 
 	// 软删除后名称释放
@@ -85,7 +85,7 @@ func TestExtKeyNameUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); err != nil {
-		t.Fatalf("name should be free after soft delete: %v", err)
+		t.Fatalf("label should be free after soft delete: %v", err)
 	}
 }
 
@@ -99,8 +99,8 @@ func TestGetExtKey(t *testing.T) {
 	if got.ID != k.ID {
 		t.Fatalf("id=%d want %d", got.ID, k.ID)
 	}
-	if got.Name != "n" || got.Remark != "r" {
-		t.Fatalf("name=%q remark=%q", got.Name, got.Remark)
+	if got.Label != "n" || got.Remark != "r" {
+		t.Fatalf("label=%q remark=%q", got.Label, got.Remark)
 	}
 	_, err = GetExtKey(d, "all-sk-nonexistent")
 	if err == nil {

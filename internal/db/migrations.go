@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
 CREATE TABLE IF NOT EXISTS ext_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT NOT NULL,
-    name TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
 CREATE TABLE IF NOT EXISTS ext_keys (
     id BIGSERIAL PRIMARY KEY,
     key TEXT NOT NULL,
-    name TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
     remark TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
@@ -225,11 +225,13 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
 CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
-// extraCols lists the columns added after the initial schema, together with
-// their full column definition (type + NOT NULL + default) used for the
-// ALTER TABLE backfill. Existing databases created before these columns
-// existed need them backfilled; fresh databases get them from the CREATE TABLE
-// statements above.
+// extraCols 列出建表语句之外还要保证存在的列，连同 ALTER TABLE 补列用的完整
+// 列定义（类型 + NOT NULL + 默认值）。老库需要回填，新库由上面的 CREATE TABLE
+// 提供；CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，缺列会一直潜伏到查询
+// 时才以 42703 暴露（list ext keys: column "label" does not exist），所以除了
+// 建表语句，这里也必须列一份。
+//
+// 补列只在列不存在时执行，幂等；coldef 需能直接用于两种方言的 ADD COLUMN。
 var extraCols = []struct {
 	table, column, coldef string
 }{
@@ -237,12 +239,14 @@ var extraCols = []struct {
 	{"upstreams", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"upstreams", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	{"upstreams", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+	{"ext_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	{"ext_keys", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"ext_keys", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"ext_keys", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
 	{"ext_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
-	// 备注。ext_keys.name 不在此列：它由 migrateRenamedCols 从旧列 label 改名而来
+	// 备注（原始 schema 里没有，老库回填）。名称列是初始 schema 的 label，
+	// 见上面「改过名的列不要写在这里」
 	{"ext_keys", "remark", "TEXT NOT NULL DEFAULT ''"},
 	{"upstream_models", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 200000"},
@@ -301,45 +305,6 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 		}
 		return false, nil
 	}
-}
-
-// renamedCols lists columns renamed after the initial schema, as
-// {table, old name, new name}. The rename is applied only when the old column
-// exists and the new one does not, so it is idempotent and safe on every
-// startup.
-var renamedCols = []struct {
-	table, from, to string
-}{
-	// ext_keys.label：原「备注」列改名「名称」，空出来的 remark 由 extraCols 另加
-	{"ext_keys", "label", "name"},
-}
-
-// migrateRenamedCols renames legacy columns on databases created before the
-// rename. Must run after migrateSoftDelete: the SQLite rebuild specs still
-// read the pre-rename column name.
-func migrateRenamedCols(d *sql.DB) error {
-	dialect := DialectOf(d)
-	for _, rc := range renamedCols {
-		from, err := columnExists(d, dialect, rc.table, rc.from)
-		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", rc.table, rc.from, err)
-		}
-		if !from {
-			continue
-		}
-		to, err := columnExists(d, dialect, rc.table, rc.to)
-		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", rc.table, rc.to, err)
-		}
-		if to {
-			continue // 已改过名（新旧列并存时不擅自处理，留给人工）
-		}
-		stmt := fmt.Sprintf(`ALTER TABLE %s RENAME COLUMN %s TO %s`, rc.table, rc.from, rc.to)
-		if _, err := d.Exec(stmt); err != nil {
-			return fmt.Errorf("rename column %s.%s to %s: %w", rc.table, rc.from, rc.to, err)
-		}
-	}
-	return nil
 }
 
 // migrateSoftDelete 把旧库升级到「无外键 + 软删除」模式：
@@ -451,7 +416,7 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		create: `CREATE TABLE ext_keys (
 		    id INTEGER PRIMARY KEY AUTOINCREMENT,
 		    key TEXT NOT NULL,
-		    name TEXT NOT NULL DEFAULT '',
+		    label TEXT NOT NULL DEFAULT '',
 		    remark TEXT NOT NULL DEFAULT '',
 		    enabled INTEGER NOT NULL DEFAULT 1,
 		    daily_token_limit INTEGER NOT NULL DEFAULT 0,
@@ -461,11 +426,11 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    last_used_at DATETIME,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		// selectExprs 里的 label AS name：走重建的都是「旧库」（schema 仍带内联
-		// UNIQUE），其名称列尚未被 migrateRenamedCols 改名（改名在重建之后跑）。
-		// remark 由 extraCols 在重建前补好，故可直接搬运。
-		insertCols:  []string{"id", "key", "name", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
-		selectExprs: []string{"id", "key", "label AS name", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
+		// 走重建的都是「旧库」（schema 仍带内联 UNIQUE）：列名就是 label，改名
+		// （name → label）在重建之后跑，所以这里直接按 label 搬运。remark 由
+		// extraCols 在重建前补好，故可直接搬运。
+		insertCols:  []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
+		selectExprs: []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
 	},
 	{
 		table: "usage_records",
@@ -577,8 +542,5 @@ func MigratePGForTest(d *sql.DB) error {
 	if err := migrateExtraCols(d); err != nil {
 		return err
 	}
-	if err := migrateSoftDelete(d); err != nil {
-		return err
-	}
-	return migrateRenamedCols(d)
+	return migrateSoftDelete(d)
 }

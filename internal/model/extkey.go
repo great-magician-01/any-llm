@@ -17,20 +17,20 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// ErrExtKeyNameTaken 报告名称与其它活跃密钥重复。唯一性只做在应用层（不加 DB
+// ErrExtKeyLabelTaken 报告名称与其它活跃密钥重复。唯一性只做在应用层（不加 DB
 // 约束）：名称是给人看的标识，允许历史/接口直建的密钥没有名称（空名不参与），
 // 且软删除的行不占名称名额，删掉后同名可重建。
-var ErrExtKeyNameTaken = errors.New("key name already exists")
+var ErrExtKeyLabelTaken = errors.New("key label already exists")
 
 // CreateExtKey 新建密钥。读取+写入都在调用方的 writeSync 闭包里完成时，db.Writer
 // 会把它们串行化，两次并发创建同名不会同时通过检查。
-func CreateExtKey(d *sql.DB, name, remark string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
-	taken, err := ExtKeyNameTaken(d, name, 0)
+func CreateExtKey(d *sql.DB, label, remark string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
+	taken, err := ExtKeyLabelTaken(d, label, 0)
 	if err != nil {
 		return nil, err
 	}
 	if taken {
-		return nil, ErrExtKeyNameTaken
+		return nil, ErrExtKeyLabelTaken
 	}
 	key, err := generateKey()
 	if err != nil {
@@ -38,12 +38,12 @@ func CreateExtKey(d *sql.DB, name, remark string, dailyLimit, monthlyLimit int, 
 	}
 	now := time.Now()
 	var id int64
-	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, name, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`),
-		key, name, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
+	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`),
+		key, label, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
-	return &ExtKey{ID: id, Key: key, Name: name, Remark: remark, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
+	return &ExtKey{ID: id, Key: key, Label: label, Remark: remark, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
 }
 
 func generateKey() (string, error) {
@@ -63,8 +63,8 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
-		Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
+		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
 	}
@@ -85,8 +85,8 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
-		Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
+		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
 	}
@@ -103,7 +103,7 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 }
 
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	rows, err := d.Query(`SELECT id, key, name, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
@@ -114,7 +114,7 @@ func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
 		var enabled int
 		var lastUsed sql.NullTime
 		var allowed string
-		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed); err != nil {
 			return nil, err
 		}
 		k.Enabled = enabled != 0
@@ -140,36 +140,36 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 	return nil
 }
 
-func UpdateExtKey(d *sql.DB, id int64, name, remark string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
-	taken, err := ExtKeyNameTaken(d, name, id)
+func UpdateExtKey(d *sql.DB, id int64, label, remark string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
+	taken, err := ExtKeyLabelTaken(d, label, id)
 	if err != nil {
 		return err
 	}
 	if taken {
-		return ErrExtKeyNameTaken
+		return ErrExtKeyLabelTaken
 	}
 	en := 0
 	if enabled {
 		en = 1
 	}
-	_, err = d.Exec(db.Rebind(d, `UPDATE ext_keys SET name=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
-		name, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
+	_, err = d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+		label, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
 	return nil
 }
 
-// ExtKeyNameTaken 报告活跃密钥里是否已有同名（精确匹配，不做大小写/空白归一）。
+// ExtKeyLabelTaken 报告活跃密钥里是否已有同名（精确匹配，不做大小写/空白归一）。
 // excludeID 用于更新时排除自己（0 = 不排除）。空名不参与唯一性：接口直建或历史
 // 数据可能没有名称，随便一个空名不该把后来者也挡在门外。
-func ExtKeyNameTaken(d *sql.DB, name string, excludeID int64) (bool, error) {
-	if name == "" {
+func ExtKeyLabelTaken(d *sql.DB, label string, excludeID int64) (bool, error) {
+	if label == "" {
 		return false, nil
 	}
 	var n int
-	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM ext_keys WHERE name=? AND is_active = 1 AND id<>?`), name, excludeID).Scan(&n); err != nil {
-		return false, fmt.Errorf("check ext key name %q: %w", name, err)
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM ext_keys WHERE label=? AND is_active = 1 AND id<>?`), label, excludeID).Scan(&n); err != nil {
+		return false, fmt.Errorf("check ext key label %q: %w", label, err)
 	}
 	return n > 0, nil
 }

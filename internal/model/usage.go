@@ -178,7 +178,7 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		// 名称从 ext_keys 关联读出——软删除的行保留，历史用量照样显示名称。
 		// 名称为空或 key 已不存在的记录回退 #id，连 id 都没有的旧记录显示 —。
 		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
-		selectCol = `COALESCE(NULLIF(k.name, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
+		selectCol = `COALESCE(NULLIF(k.label, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
 		groupCol = "k.id, u.ext_key_id"
 	case "upstream":
 		selectCol, groupCol = "u.upstream_name", "u.upstream_name"

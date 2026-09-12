@@ -140,7 +140,7 @@ func TestPG_E2E_ModelCRUD(t *testing.T) {
 func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	d := pgTestDB(t)
 
-	k1, err := createExtKeyE2E(d, "name-1")
+	k1, err := createExtKeyE2E(d, "label-1")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -162,8 +162,8 @@ func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	if got.ID != k1.ID || got.Enabled == 0 {
 		t.Fatalf("got=%+v", got)
 	}
-	if got.Name != "name-1" {
-		t.Fatalf("name=%q want name-1", got.Name)
+	if got.Label != "label-1" {
+		t.Fatalf("label=%q want label-1", got.Label)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Fatal("created_at zero")
@@ -466,10 +466,10 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 	return tx.Commit()
 }
 
-func createExtKeyE2E(d *sql.DB, name string) (struct {
+func createExtKeyE2E(d *sql.DB, label string) (struct {
 	ID      int64
 	Key     string
-	Name    string
+	Label   string
 	Enabled int
 }, error) {
 	key, err := generateKeyE2E()
@@ -477,32 +477,32 @@ func createExtKeyE2E(d *sql.DB, name string) (struct {
 		return struct {
 			ID      int64
 			Key     string
-			Name    string
+			Label   string
 			Enabled int
 		}{}, err
 	}
 	var id int64
-	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, name) VALUES (?,?) RETURNING id`), key, name).Scan(&id)
+	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
 	if err != nil {
 		return struct {
 			ID      int64
 			Key     string
-			Name    string
+			Label   string
 			Enabled int
 		}{}, err
 	}
 	return struct {
 		ID      int64
 		Key     string
-		Name    string
+		Label   string
 		Enabled int
-	}{ID: id, Key: key, Name: name, Enabled: 1}, nil
+	}{ID: id, Key: key, Label: label, Enabled: 1}, nil
 }
 
 func getExtKeyE2E(d *sql.DB, key string) (struct {
 	ID        int64
 	Key       string
-	Name      string
+	Label     string
 	Enabled   int
 	CreatedAt time.Time
 	LastUsed  sql.NullTime
@@ -510,23 +510,23 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 	var k struct {
 		ID        int64
 		Key       string
-		Name      string
+		Label     string
 		Enabled   int
 		CreatedAt time.Time
 		LastUsed  sql.NullTime
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, key, name, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
-		Scan(&k.ID, &k.Key, &k.Name, &k.Enabled, &k.CreatedAt, &k.LastUsed)
+	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
 	return k, err
 }
 
 func listExtKeysE2E(d *sql.DB) ([]struct {
 	ID      int64
 	Key     string
-	Name    string
+	Label   string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, name, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -534,17 +534,17 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	var out []struct {
 		ID      int64
 		Key     string
-		Name    string
+		Label   string
 		Enabled int
 	}
 	for rows.Next() {
 		var k struct {
 			ID      int64
 			Key     string
-			Name    string
+			Label   string
 			Enabled int
 		}
-		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Enabled); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Enabled); err != nil {
 			return nil, err
 		}
 		k.Key = maskKeyE2E(k.Key)
@@ -848,14 +848,11 @@ CREATE TABLE conversation_records (
 	if err := migrateSoftDelete(d); err != nil {
 		t.Fatalf("soft delete migrate: %v", err)
 	}
-	if err := migrateRenamedCols(d); err != nil {
-		t.Fatalf("renamed cols migrate: %v", err)
-	}
 
-	// ext_keys.label 已改名 name（旧值保留），remark 列就位
-	var keyName, keyRemark string
-	if err := d.QueryRow(`SELECT name, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyName, &keyRemark); err != nil || keyName != "legacy" || keyRemark != "" {
-		t.Fatalf("ext key rename: name=%q remark=%q err=%v", keyName, keyRemark, err)
+	// 名称列仍是 label（旧值保留），remark 列就位
+	var keyLabel, keyRemark string
+	if err := d.QueryRow(`SELECT label, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyLabel, &keyRemark); err != nil || keyLabel != "legacy" || keyRemark != "" {
+		t.Fatalf("ext key cols: label=%q remark=%q err=%v", keyLabel, keyRemark, err)
 	}
 
 	// CHECK 已移除：可插入 responses
