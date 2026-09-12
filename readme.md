@@ -1,16 +1,22 @@
 # any-llm
 
-通用 LLM API 网关，将多个上游模型服务统一为 OpenAI/Anthropic 兼容接口。单二进制部署，内置管理界面。
+通用 LLM API 网关，将多个上游模型服务统一为 OpenAI / Anthropic / Responses 兼容接口。单二进制部署，内置管理界面。
 
 ## 特性
 
-- **统一网关**：对外提供 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 兼容 API
-- **多上游管理**：通过 Web UI 管理多个模型服务商（OpenAI 兼容、Anthropic 兼容等）
-- **协议转换**：请求经过内部 IR 层翻译，OpenAI/Anthropic 格式随意互转
-- **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用
-- **用量统计**：按 Key 维度记录 Token 用量
+- **统一网关**：对外提供 OpenAI（`/v1/chat/completions`）、Anthropic（`/v1/messages`）、Responses（`/v1/responses`）兼容 API，流式与非流式均支持
+- **多上游管理**：通过 Web UI 管理多个模型服务商（OpenAI / Anthropic / Responses 格式），支持自动拉取模型列表、启用/禁用
+- **协议转换**：请求经过内部 IR 层翻译，三种格式任意互转
+- **模型别名**：固定对外模型名，绑定有序的「上游 + 真实模型」列表，按优先级自动故障转移
+- **Token 限额**：外部 Key 与上游均可设置日 / 月 Token 配额（0 = 不限），超限返回 429
+- **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或 Oh My Pi 配置
+- **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
+- **对话记录**：自动归档每次调用的完整请求/响应（仅 PostgreSQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
+- **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量），保留历史趋势
+- **配置备份**：上游与别名配置一键导出/导入
 - **灵活存储**：支持 SQLite（默认，纯 Go）和 PostgreSQL
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
+- **双主题界面**：经典深色与毛玻璃主题，界面内一键切换
 
 ## 快速开始
 
@@ -73,6 +79,8 @@ docker compose up -d
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | 管理员密码 |
 | `ANY_LLM_SESSION_SECRET` | 见说明 | 会话密钥。留空时自动生成并保存到 `ANY_LLM_SESSION_SECRET_FILE` 指定的文件，重启后登录状态不丢失 |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成的会话密钥的保存路径（仅 `ANY_LLM_SESSION_SECRET` 为空时生效） |
+| `ANY_LLM_SESSION_TTL` | `24h` | 管理员会话有效期：Go duration（`24h`、`168h`）或纯小时数（`24`）；`0` = 永不过期。滑动续期：剩余不足一半时自动重新签发，活跃期间不掉线 |
+| `ANY_LLM_BALANCE_INTERVAL` | `10m` | 厂商余额/额度快照轮询间隔：Go duration（`10m`、`30m`）或纯小时数；`0` = 关闭自动抓取（含启动时），管理页手动刷新仍可用 |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}`；留空仅输出到 stdout |
 | `ANY_LLM_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` 或 `postgres`（不区分大小写） |
@@ -91,9 +99,12 @@ docker compose up -d
 
 访问 `http://localhost:6718`，使用管理员密码登录：
 
-1. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表
-2. **Keys（API 密钥）**：创建和管理外部 API Key，供客户端调用网关
-3. **Usage（用量）**：查看各 Key 的 Token 消耗记录
+1. **Dashboard（总览）**：用量统计卡片、本月模型用量 Top、资源与快捷操作
+2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、日/月 Token 限额；DeepSeek / Kimi 上游自动抓取余额快照；支持配置导出/导入
+3. **Keys（API 密钥）**：创建和管理外部 API Key，可设置日/月 Token 限额，一键复制调用示例或 Oh My Pi 配置
+4. **Aliases（模型别名）**：维护固定对外模型名及绑定列表
+5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（仅 PostgreSQL，SQLite 下显示禁用提示）
+6. **Usage（用量）**：Token 消耗、调用耗时（token/s）与按日汇总图表
 
 ### 调用网关
 
@@ -109,16 +120,17 @@ curl http://localhost:6718/v1/chat/completions \
   }'
 ```
 
-- 模型格式为 `上游名称/模型名称`（如 `my-openai/gpt-4`）
-- API Key 格式：`all-sk-` 前缀 + 32 位字符
+- 模型格式为 `上游名称/模型名称`（如 `my-openai/gpt-4`），或任意已配置的**模型别名**（优先于直连路由）
+- API Key 格式：`all-sk-` 前缀 + 32 位字符，通过 `Authorization: Bearer ...` 或 `x-api-key` 头传递
 
 ### 可用端点
 
 | 端点 | 说明 |
 |------|------|
-| `GET /v1/models` | 列出所有可用模型 |
+| `GET /v1/models` | 列出所有可用模型（含别名） |
 | `POST /v1/chat/completions` | OpenAI 兼容聊天接口 |
 | `POST /v1/messages` | Anthropic 兼容消息接口 |
+| `POST /v1/responses` | Responses 格式聊天接口 |
 
 ## 开发
 
@@ -128,28 +140,29 @@ go run ./cmd/any-llm/
 
 # 前端（终端 2，HMR 开发服务器，代理到后端）
 cd web && npm run dev
+
+# 运行后端测试
+go test ./...
+
+# 运行前端测试
+cd web && npm run test
 ```
 
 前端开发服务器默认代理 `/api` 和 `/v1` 到 `localhost:6718`。
-
-```bash
-# 运行测试
-go test ./...
-```
 
 ## 项目结构
 
 ```
 cmd/any-llm/          # 入口，嵌入前端 dist
 internal/
-  auth/               # 会话认证（HMAC-SHA256）
+  auth/               # 会话认证（HMAC-SHA256，滑动续期）
   config/             # 环境变量加载
   db/                 # 数据库初始化与迁移（SQLite / PostgreSQL）
   gateway/            # 公开 API 网关路由
   logger/             # slog 日志封装
   model/              # 数据模型与 CRUD
-  translate/          # OpenAI ↔ Anthropic 格式翻译（IR 层）
-  upstream/           # 上游 HTTP 客户端
+  translate/          # OpenAI / Anthropic / Responses 格式翻译（IR 层）
+  upstream/           # 上游 HTTP 客户端与余额快照轮询
   webapi/             # 管理后台 API
-web/                  # Vue 3 前端（Naive UI + Vite）
+web/                  # Vue 3 前端（Naive UI + Vite，经典 + 毛玻璃双主题）
 ```
