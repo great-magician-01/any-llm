@@ -140,7 +140,7 @@ func TestPG_E2E_ModelCRUD(t *testing.T) {
 func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	d := pgTestDB(t)
 
-	k1, err := createExtKeyE2E(d, "label-1")
+	k1, err := createExtKeyE2E(d, "name-1")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -161,6 +161,9 @@ func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	}
 	if got.ID != k1.ID || got.Enabled == 0 {
 		t.Fatalf("got=%+v", got)
+	}
+	if got.Name != "name-1" {
+		t.Fatalf("name=%q want name-1", got.Name)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Fatal("created_at zero")
@@ -201,7 +204,7 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 	d := pgTestDB(t)
 
 	uid, _ := createUpstreamE2E(d, "up", "https://x", "k", "openai")
-	k, _ := createExtKeyE2E(d, "l")
+	k, _ := createExtKeyE2E(d, "key-one")
 	uidPtr := uid
 	kID := k.ID
 
@@ -217,15 +220,17 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 		}
 	}
 
-	// summary by model — exercises the COALESCE(CAST(... AS TEXT),'0') fix
-	// indirectly (group by model here, but the key grouping path is the one
-	// that previously broke due to BIGINT -> string scan).
+	// summary by key — 展示密钥名称（LEFT JOIN ext_keys），同时覆盖 BIGINT
+	// 与 join 下 GROUP BY 在 PG 里的合法性
 	sumByKey, err := usageSummaryE2E(d, "key", "", "")
 	if err != nil {
 		t.Fatalf("summary by key: %v", err)
 	}
 	if len(sumByKey) != 1 {
 		t.Fatalf("summary by key len=%d", len(sumByKey))
+	}
+	if sumByKey[0].groupKey != "key-one" {
+		t.Fatalf("summary by key group=%q want key-one", sumByKey[0].groupKey)
 	}
 	if sumByKey[0].requestCount != 3 || sumByKey[0].totalTokens != 55 {
 		t.Fatalf("summary by key=%+v", sumByKey[0])
@@ -572,29 +577,30 @@ func insertUsageE2E(d *sql.DB, r usageRecord) error {
 	return err
 }
 
+// usageSummaryE2E 是 model.UsageSummaryByGroup 的副本（db 包不能 import model），
+// 改动生产查询时需同步这里。
 func usageSummaryE2E(d *sql.DB, groupBy, from, to string) ([]summaryRow, error) {
-	var groupCol string
+	fromClause := "usage_records u"
+	selectCol, groupCol := "u.model", "u.model"
 	switch groupBy {
 	case "key":
-		groupCol = "COALESCE(CAST(ext_key_id AS TEXT), '0')"
-	case "model":
-		groupCol = "model"
+		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
+		selectCol = `COALESCE(NULLIF(k.name, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
+		groupCol = "k.id, u.ext_key_id"
 	case "upstream":
-		groupCol = "upstream_name"
-	default:
-		groupCol = "model"
+		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)
-		FROM usage_records`, groupCol)
+		FROM %s`, selectCol, fromClause)
 	var conditions []string
 	var args []any
 	if from != "" {
-		conditions = append(conditions, "created_at >= ?")
+		conditions = append(conditions, "u.created_at >= ?")
 		args = append(args, from)
 	}
 	if to != "" {
-		conditions = append(conditions, "created_at <= ?")
+		conditions = append(conditions, "u.created_at <= ?")
 		args = append(args, to)
 	}
 	if len(conditions) > 0 {
