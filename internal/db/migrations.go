@@ -223,14 +223,20 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
 CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
-// extraCols lists the columns added after the initial schema, together with
-// their full column definition (type + NOT NULL + default) used for the
-// ALTER TABLE backfill. Existing databases created before these columns
-// existed need them backfilled; fresh databases get them from the CREATE TABLE
-// statements above.
+// extraCols 列出建表语句之外还要保证存在的列，连同 ALTER TABLE 补列用的完整
+// 列定义（类型 + NOT NULL + 默认值）。两类列在这里：
+//   - 初始 schema 之后新增的列：老库需要回填，新库由上面的 CREATE TABLE 提供；
+//   - 初始 schema 就有、但老库/别的程序在同一 schema 建过同名表时可能缺失的列
+//     （典型是 ext_keys.label）：CREATE TABLE IF NOT EXISTS 对已存在的表是空
+//     操作，缺列会一直潜伏到查询时才以 42703 暴露（list ext keys: column
+//     "label" does not exist），所以必须在这里兜底补齐。
+//
+// 补列只在列不存在时执行，幂等；coldef 需能直接用于两种方言的 ADD COLUMN。
 var extraCols = []struct {
 	table, column, coldef string
 }{
+	{"ext_keys", "label", "TEXT NOT NULL DEFAULT ''"},
+	{"ext_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	{"upstreams", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"upstreams", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"upstreams", "is_active", "INTEGER NOT NULL DEFAULT 1"},

@@ -58,6 +58,44 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	}
 }
 
+// 旧库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 label/enabled：
+// CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，缺列会潜伏到查询时才以
+// 42703 暴露（list ext keys: column "label" does not exist）。迁移必须补上。
+func TestOpenSQLite_BackfillsMissingExtKeyColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-label.db")
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE ext_keys (
+	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+	    key TEXT NOT NULL UNIQUE,
+	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_used_at DATETIME
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO ext_keys (key) VALUES ('all-sk-old')`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	got, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+
+	var label string
+	var enabled int
+	if err := got.QueryRow(`SELECT label, enabled FROM ext_keys WHERE key='all-sk-old'`).Scan(&label, &enabled); err != nil {
+		t.Fatalf("legacy row after migration: %v", err)
+	}
+	if label != "" || enabled != 1 {
+		t.Fatalf("legacy row label=%q enabled=%d, want \"\" and 1", label, enabled)
+	}
+}
+
 func TestOpenPG_DSNEncodesSpecialChars(t *testing.T) {
 	// Verify user/password with URL-special characters round-trip through the
 	// DSN that OpenPG builds. We can't connect here, but pgx.ParseConfig
