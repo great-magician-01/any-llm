@@ -8,7 +8,7 @@ import (
 func TestInsertUsageAndSummary(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 
 	rec := &UsageRecord{
 		ExtKeyID:         &k.ID,
@@ -275,7 +275,7 @@ func TestUsageRecordsList(t *testing.T) {
 func TestSumTokens(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)

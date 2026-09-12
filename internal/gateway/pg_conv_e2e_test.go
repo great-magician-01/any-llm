@@ -91,7 +91,7 @@ func TestPGConvNonStream(t *testing.T) {
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	reqBody := `{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`
@@ -180,7 +180,7 @@ func TestPGConvStream(t *testing.T) {
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
 	model.AddModel(d, uid, "claude-3-5", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"ant/claude-3-5","messages":[{"role":"user","content":"hi"}],"stream":true}`))
@@ -239,7 +239,7 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	// 模拟存量库：历史分表（沿用旧 schema 的 BIGSERIAL，自带共享序列）+ 一条旧数据。
@@ -338,7 +338,7 @@ func TestPGConvUpstreamError(t *testing.T) {
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))

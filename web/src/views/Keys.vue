@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip } from 'naive-ui'
+import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip, NSelect } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
 import { listUpstreams, listModels } from '../api/upstreams'
+import { listAliases } from '../api/aliases'
 import { formatInt } from '../utils/format'
 import { buildOmpYaml } from '../utils/ompConfig'
 import AppIcon from '../components/AppIcon.vue'
@@ -15,13 +16,38 @@ const usageByKey = ref<Record<number, UsageTotals>>({})
 // create modal: 'form' = filling form, 'done' = showing generated key
 const showCreateModal = ref(false)
 const createModalState = ref<'form' | 'done'>('form')
-const createForm = ref({ label: '', daily_token_limit: 0, monthly_token_limit: 0 })
+const createForm = ref({ label: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
 const newlyCreatedKey = ref('')
 
 // edit modal
 const showEditModal = ref(false)
 const editing = ref<ExtKey | null>(null)
-const editForm = ref({ label: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 })
+const editForm = ref({ label: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
+
+// 模型白名单选项：各上游模型（upstream/model）+ 别名，与 /v1/models 一致。
+// 打开表单时懒加载一次。
+const modelOptions = ref<Array<{ label: string; value: string }>>([])
+let modelOptionsLoaded = false
+async function ensureModelOptions() {
+  if (modelOptionsLoaded) return
+  modelOptionsLoaded = true
+  try {
+    const [ups, aliases] = await Promise.all([listUpstreams(), listAliases()])
+    const opts: Array<{ label: string; value: string }> = []
+    await Promise.all(ups.map(async (u) => {
+      if (u.id == null) return
+      const ms = await listModels(u.id).catch(() => [])
+      for (const m of ms) {
+        const id = `${u.name}/${m.model_name}`
+        opts.push({ label: id, value: id })
+      }
+    }))
+    for (const a of aliases) opts.push({ label: `${a.name}（别名）`, value: a.name })
+    modelOptions.value = opts
+  } catch {
+    modelOptionsLoaded = false // 失败下次重试
+  }
+}
 
 const origin = computed(() => window.location.origin)
 const endpoints = computed(() => [
@@ -73,6 +99,19 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
   {
+    title: '模型限制',
+    key: 'allowed_models',
+    width: 110,
+    render: (row) => {
+      const list = row.allowed_models ?? []
+      if (list.length === 0) return h('span', { style: 'color: var(--text-4)' }, '全部')
+      return h(NTooltip, { trigger: 'hover' }, {
+        trigger: () => h('span', { class: 'mono' }, `${list.length} 个`),
+        default: () => h('div', { style: 'max-width: 360px; white-space: normal; line-height: 1.6' }, list.join('、')),
+      })
+    },
+  },
+  {
     title: '今日 / 本月用量',
     key: 'usage',
     width: 200,
@@ -112,7 +151,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
             { trigger: 'hover' },
             {
               trigger: () =>
-                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOpencodeConfig(row.key, e) }, { default: () => 'opencode' }),
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOpencodeConfig(row.key, row.allowed_models, e) }, { default: () => 'opencode' }),
               default: () => '复制 opencode 配置 JSON（含此密钥）',
             },
           ),
@@ -121,7 +160,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
             { trigger: 'hover' },
             {
               trigger: () =>
-                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOmpConfig(row.key, e) }, { default: () => 'OMP' }),
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOmpConfig(row.key, row.allowed_models, e) }, { default: () => 'OMP' }),
               default: () => '复制 Oh My Pi 配置 YAML（含此密钥）',
             },
           ),
@@ -151,10 +190,11 @@ async function load() {
 }
 
 function openCreate() {
-  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0 }
+  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
   newlyCreatedKey.value = ''
   createModalState.value = 'form'
   showCreateModal.value = true
+  ensureModelOptions()
 }
 
 async function saveCreate() {
@@ -164,7 +204,7 @@ async function saveCreate() {
     return
   }
   try {
-    const k = await createKey(label, createForm.value.daily_token_limit, createForm.value.monthly_token_limit)
+    const k = await createKey(label, createForm.value.daily_token_limit, createForm.value.monthly_token_limit, createForm.value.allowed_models)
     newlyCreatedKey.value = k.key
     createModalState.value = 'done'
     await load()
@@ -174,7 +214,7 @@ async function saveCreate() {
 }
 
 function resetCreateForm() {
-  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0 }
+  createForm.value = { label: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
   newlyCreatedKey.value = ''
   createModalState.value = 'form'
 }
@@ -186,8 +226,10 @@ function openEdit(row: ExtKey) {
     enabled: row.enabled,
     daily_token_limit: row.daily_token_limit,
     monthly_token_limit: row.monthly_token_limit,
+    allowed_models: row.allowed_models ?? [],
   }
   showEditModal.value = true
+  ensureModelOptions()
 }
 
 async function saveEdit() {
@@ -198,6 +240,7 @@ async function saveEdit() {
       enabled: editForm.value.enabled,
       daily_token_limit: editForm.value.daily_token_limit,
       monthly_token_limit: editForm.value.monthly_token_limit,
+      allowed_models: editForm.value.allowed_models,
     })
     showEditModal.value = false
     editing.value = null
@@ -234,11 +277,13 @@ async function collectUpstreamModels() {
 }
 
 // opencode custom provider config: aggregate every upstream's models into
-// the models map so the copied JSON works out of the box.
-async function buildOpencodeConfig(apiKey: string): Promise<string> {
+// the models map so the copied JSON works out of the box. 受限 key 只导出
+// 白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
+async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
   const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
   for (const m of await collectUpstreamModels()) {
     const id = `${m.upstream}/${m.model_name}`
+    if (allowedModels && allowedModels.length > 0 && !allowedModels.includes(id)) continue
     models[id] = { name: id, limit: { context: m.context_length, output: m.max_output_length } }
   }
   const cfg: Record<string, unknown> = {
@@ -258,27 +303,29 @@ async function buildOpencodeConfig(apiKey: string): Promise<string> {
   return JSON.stringify(cfg, null, 2)
 }
 
-async function buildOmpConfig(apiKey: string): Promise<string> {
+async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
   const rows = await collectUpstreamModels()
   return buildOmpYaml({
     baseUrl: origin.value,
     apiKey,
-    models: rows.map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
+    models: rows
+      .filter((m) => !(allowedModels && allowedModels.length > 0 && !allowedModels.includes(`${m.upstream}/${m.model_name}`)))
+      .map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
   })
 }
 
-async function copyOpencodeConfig(apiKey: string, evt?: MouseEvent) {
+async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
-    const json = await buildOpencodeConfig(apiKey)
+    const json = await buildOpencodeConfig(apiKey, allowedModels)
     await copyKey(json, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
 }
 
-async function copyOmpConfig(apiKey: string, evt?: MouseEvent) {
+async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
-    const yaml = await buildOmpConfig(apiKey)
+    const yaml = await buildOmpConfig(apiKey, allowedModels)
     await copyKey(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
@@ -410,6 +457,18 @@ onMounted(load)
             <n-form-item label="单月 token 上限（0 = 不限）">
               <n-input-number v-model:value="createForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
             </n-form-item>
+            <n-form-item label="可用模型（留空 = 不限）">
+              <n-select
+                v-model:value="createForm.allowed_models"
+                :options="modelOptions"
+                multiple
+                filterable
+                tag
+                clearable
+                placeholder="留空则可用全部模型；可多选或手动输入"
+                max-tag-count="responsive"
+              />
+            </n-form-item>
           </n-form>
         </template>
         <template v-else>
@@ -420,11 +479,11 @@ onMounted(load)
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
             <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
           </n-input-group>
-          <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, $event)">
+          <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 opencode 配置 JSON（含此密钥）
           </n-button>
-          <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, $event)">
+          <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 Oh My Pi 配置 YAML（含此密钥）
           </n-button>
@@ -458,6 +517,18 @@ onMounted(load)
           </n-form-item>
           <n-form-item label="单月 token 上限（0 = 不限）">
             <n-input-number v-model:value="editForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="可用模型（留空 = 不限）">
+            <n-select
+              v-model:value="editForm.allowed_models"
+              :options="modelOptions"
+              multiple
+              filterable
+              tag
+              clearable
+              placeholder="留空则可用全部模型；可多选或手动输入"
+              max-tag-count="responsive"
+            />
           </n-form-item>
           <n-button type="primary" block @click="saveEdit">保存</n-button>
         </n-form>
