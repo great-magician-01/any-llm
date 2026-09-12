@@ -188,6 +188,12 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   },
 ])
 
+// 名称唯一（服务端为准，这里只是省一次往返的即时提示）；空名不参与
+function nameTaken(name: string, exceptID?: number) {
+  if (!name) return false
+  return keys.value.some((k) => k.name === name && k.id !== exceptID)
+}
+
 async function load() {
   keys.value = await listKeys()
   // load usage in parallel
@@ -210,6 +216,10 @@ async function saveCreate() {
   const name = createForm.value.name.trim()
   if (!name) {
     message.warning('请填写名称')
+    return
+  }
+  if (nameTaken(name)) {
+    message.warning('名称已存在，请换一个')
     return
   }
   try {
@@ -244,9 +254,15 @@ function openEdit(row: ExtKey) {
 
 async function saveEdit() {
   if (!editing.value) return
+  const cur = editing.value
+  const name = editForm.value.name.trim()
+  if (nameTaken(name, cur.id)) {
+    message.warning('名称已存在，请换一个')
+    return
+  }
   try {
-    await updateKey(editing.value.id, {
-      name: editForm.value.name,
+    await updateKey(cur.id, {
+      name,
       remark: editForm.value.remark,
       enabled: editForm.value.enabled,
       daily_token_limit: editForm.value.daily_token_limit,
