@@ -3,6 +3,8 @@ import client from './client'
 export interface ExtKey {
   id: number; key: string; label: string; enabled: boolean;
   daily_token_limit: number; monthly_token_limit: number;
+  /** 可用模型白名单（对外名：别名或 upstream/model）；空/缺省 = 不限 */
+  allowed_models?: string[] | null;
   created_at?: string
 }
 
@@ -11,16 +13,17 @@ export async function listKeys() {
   return data.data as ExtKey[]
 }
 
-export async function createKey(label: string, dailyTokenLimit = 0, monthlyTokenLimit = 0) {
+export async function createKey(label: string, dailyTokenLimit = 0, monthlyTokenLimit = 0, allowedModels: string[] = []) {
   const { data } = await client.post('/keys', {
     label,
     daily_token_limit: dailyTokenLimit,
     monthly_token_limit: monthlyTokenLimit,
+    allowed_models: allowedModels,
   })
   return data as ExtKey
 }
 
-export async function updateKey(id: number, patch: Partial<Pick<ExtKey, 'label' | 'enabled' | 'daily_token_limit' | 'monthly_token_limit'>>) {
+export async function updateKey(id: number, patch: Partial<Pick<ExtKey, 'label' | 'enabled' | 'daily_token_limit' | 'monthly_token_limit' | 'allowed_models'>>) {
   const { data } = await client.put(`/keys/${id}`, patch)
   return data as ExtKey
 }
