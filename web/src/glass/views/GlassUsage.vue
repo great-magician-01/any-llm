@@ -93,7 +93,7 @@ const rateLine = computed(() => ({
 
 /* ---- 分布图（跟随上方筛选维度与时间范围） ---- */
 const PALETTE = ['#5b8cff', '#22d3ee', '#a78bfa', '#fbbf24', '#fb7185', '#34d399', '#f472b6', '#94a3b8']
-const distTitle = computed(() => (groupBy.value === 'key' ? 'Key Token 占比' : groupBy.value === 'upstream' ? '上游 Token 占比' : '模型 Token 占比'))
+const distTitle = computed(() => (groupBy.value === 'key' ? '密钥 Token 占比' : groupBy.value === 'upstream' ? '上游 Token 占比' : '模型 Token 占比'))
 const distSlices = computed(() => {
   const sorted = [...summaries.value].sort((a, b) => b.total_tokens - a.total_tokens)
   const top = sorted.slice(0, 6)
@@ -142,7 +142,7 @@ function loadAll() {
 
 const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
   {
-    title: groupBy.value === 'key' ? 'Key ID' : groupBy.value === 'upstream' ? '上游' : '模型',
+    title: groupBy.value === 'key' ? '密钥' : groupBy.value === 'upstream' ? '上游' : '模型',
     key: 'group_key',
     render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px; font-weight: 600; color: var(--text)' }, row.group_key),
   },
@@ -195,7 +195,7 @@ onMounted(loadAll)
     <header class="page-header">
       <div>
         <h1>用量统计</h1>
-        <p>按模型 / 上游 / Key 查看请求量与 Token 消耗</p>
+        <p>按模型 / 上游 / 密钥查看请求量与 Token 消耗</p>
       </div>
       <div class="page-header-side">
         <n-button quaternary circle @click="loadAll">
@@ -326,7 +326,7 @@ onMounted(loadAll)
           <n-radio-group v-model:value="groupBy" size="small" @update:value="load">
             <n-radio-button value="model">按模型</n-radio-button>
             <n-radio-button value="upstream">按上游</n-radio-button>
-            <n-radio-button value="key">按 Key</n-radio-button>
+            <n-radio-button value="key">按密钥</n-radio-button>
           </n-radio-group>
         </div>
       </template>

@@ -12,8 +12,8 @@ import (
 )
 
 func TestCreateKey(t *testing.T) {
-	a, _ := setupAPI(t)
-	body, _ := json.Marshal(map[string]any{"label": "my-key"})
+	a, d := setupAPI(t)
+	body, _ := json.Marshal(map[string]any{"name": "my-key", "remark": "for tests"})
 	req := httptest.NewRequest("POST", "/api/admin/keys", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -26,11 +26,57 @@ func TestCreateKey(t *testing.T) {
 	if !strings.HasPrefix(key, "all-sk-") {
 		t.Fatalf("key=%q", key)
 	}
+	if resp["name"] != "my-key" || resp["remark"] != "for tests" {
+		t.Fatalf("name/remark not echoed: %v", resp)
+	}
+	list, _ := model.ListExtKeys(d)
+	if len(list) != 1 || list[0].Name != "my-key" || list[0].Remark != "for tests" {
+		t.Fatalf("persisted=%+v", list)
+	}
+}
+
+func TestKeyNameUnique(t *testing.T) {
+	a, d := setupAPI(t)
+	model.CreateExtKey(d, "taken", "", 0, 0, nil)
+
+	// 建同名 key：400，且不落库
+	body, _ := json.Marshal(map[string]any{"name": "taken"})
+	req := httptest.NewRequest("POST", "/api/admin/keys", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "already exists") {
+		t.Fatalf("duplicate name status=%d body=%s", w.Code, w.Body.String())
+	}
+	if list, _ := model.ListExtKeys(d); len(list) != 1 {
+		t.Fatalf("rejected duplicate must not insert: len=%d", len(list))
+	}
+
+	// 改成占用中的名字：400，原名保留
+	other, _ := model.CreateExtKey(d, "other", "", 0, 0, nil)
+	body, _ = json.Marshal(map[string]any{"name": "taken"})
+	req = httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(other.ID, 10), bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("rename onto taken name status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := model.GetExtKeyByID(d, other.ID); got.Name != "other" {
+		t.Fatalf("rejected rename persisted: name=%q", got.Name)
+	}
+
+	// 保留自己名字的部分更新不受影响
+	body, _ = json.Marshal(map[string]any{"name": "other", "remark": "r"})
+	req = httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(other.ID, 10), bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("keep own name status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestListKeysFullKey(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("GET", "/api/admin/keys", nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -52,7 +98,7 @@ func TestListKeysFullKey(t *testing.T) {
 
 func TestDeleteKey(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("DELETE", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -67,11 +113,12 @@ func TestDeleteKey(t *testing.T) {
 
 func TestUpdateKeyLimits(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 	body, _ := json.Marshal(map[string]any{
 		"daily_token_limit":   1000,
 		"monthly_token_limit": 50000,
-		"label":               "renamed",
+		"name":                "renamed",
+		"remark":              "renamed remark",
 	})
 	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -83,14 +130,17 @@ func TestUpdateKeyLimits(t *testing.T) {
 	if got.DailyTokenLimit != 1000 || got.MonthlyTokenLimit != 50000 {
 		t.Fatalf("limits not persisted: %+v", got)
 	}
-	if got.Label != "renamed" {
-		t.Fatalf("label=%q want renamed", got.Label)
+	if got.Name != "renamed" {
+		t.Fatalf("name=%q want renamed", got.Name)
+	}
+	if got.Remark != "renamed remark" {
+		t.Fatalf("remark=%q want renamed remark", got.Remark)
 	}
 }
 
 func TestUpdateKeyNegativeLimitRejected(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 100, 200, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 100, 200, nil)
 	body, _ := json.Marshal(map[string]any{"daily_token_limit": -5})
 	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -107,9 +157,9 @@ func TestUpdateKeyNegativeLimitRejected(t *testing.T) {
 
 func TestUpdateKeyPartialNoChange(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 100, 200, nil)
-	// Only send label; limits must be preserved
-	body, _ := json.Marshal(map[string]any{"label": "only-label"})
+	k, _ := model.CreateExtKey(d, "l", "keep-me", 100, 200, nil)
+	// Only send name; limits and remark must be preserved
+	body, _ := json.Marshal(map[string]any{"name": "only-name"})
 	req := httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -120,15 +170,18 @@ func TestUpdateKeyPartialNoChange(t *testing.T) {
 	if got.DailyTokenLimit != 100 || got.MonthlyTokenLimit != 200 {
 		t.Fatalf("limits changed on partial update: %+v", got)
 	}
-	if got.Label != "only-label" {
-		t.Fatalf("label=%q want only-label", got.Label)
+	if got.Name != "only-name" {
+		t.Fatalf("name=%q want only-name", got.Name)
+	}
+	if got.Remark != "keep-me" {
+		t.Fatalf("remark=%q want keep-me (untouched by partial update)", got.Remark)
 	}
 }
 
 func TestCreateKeyAllowedModels(t *testing.T) {
 	a, d := setupAPI(t)
 	body, _ := json.Marshal(map[string]any{
-		"label":          "restricted",
+		"name":           "restricted",
 		"allowed_models": []string{" deepseek/deepseek-chat ", "", "gpt", "gpt"},
 	})
 	req := httptest.NewRequest("POST", "/api/admin/keys", bytes.NewReader(body))
@@ -152,7 +205,7 @@ func TestCreateKeyAllowedModels(t *testing.T) {
 
 func TestUpdateKeyAllowedModels(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	// 设置白名单
 	body, _ := json.Marshal(map[string]any{"allowed_models": []string{"gpt"}})
@@ -168,7 +221,7 @@ func TestUpdateKeyAllowedModels(t *testing.T) {
 	}
 
 	// 部分更新不碰白名单
-	body, _ = json.Marshal(map[string]any{"label": "only-label"})
+	body, _ = json.Marshal(map[string]any{"name": "only-name"})
 	req = httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(k.ID, 10), bytes.NewReader(body))
 	w = httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
@@ -196,7 +249,7 @@ func TestUpdateKeyAllowedModels(t *testing.T) {
 
 func TestUpdateKeyAllowedModelsRejected(t *testing.T) {
 	a, d := setupAPI(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	tooLong := strings.Repeat("m", 257)
 	body, _ := json.Marshal(map[string]any{"allowed_models": []string{tooLong}})

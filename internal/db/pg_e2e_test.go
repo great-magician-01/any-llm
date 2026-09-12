@@ -140,7 +140,7 @@ func TestPG_E2E_ModelCRUD(t *testing.T) {
 func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	d := pgTestDB(t)
 
-	k1, err := createExtKeyE2E(d, "label-1")
+	k1, err := createExtKeyE2E(d, "name-1")
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -161,6 +161,9 @@ func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	}
 	if got.ID != k1.ID || got.Enabled == 0 {
 		t.Fatalf("got=%+v", got)
+	}
+	if got.Name != "name-1" {
+		t.Fatalf("name=%q want name-1", got.Name)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Fatal("created_at zero")
@@ -201,7 +204,7 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 	d := pgTestDB(t)
 
 	uid, _ := createUpstreamE2E(d, "up", "https://x", "k", "openai")
-	k, _ := createExtKeyE2E(d, "l")
+	k, _ := createExtKeyE2E(d, "key-one")
 	uidPtr := uid
 	kID := k.ID
 
@@ -217,15 +220,17 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 		}
 	}
 
-	// summary by model — exercises the COALESCE(CAST(... AS TEXT),'0') fix
-	// indirectly (group by model here, but the key grouping path is the one
-	// that previously broke due to BIGINT -> string scan).
+	// summary by key — 展示密钥名称（LEFT JOIN ext_keys），同时覆盖 BIGINT
+	// 与 join 下 GROUP BY 在 PG 里的合法性
 	sumByKey, err := usageSummaryE2E(d, "key", "", "")
 	if err != nil {
 		t.Fatalf("summary by key: %v", err)
 	}
 	if len(sumByKey) != 1 {
 		t.Fatalf("summary by key len=%d", len(sumByKey))
+	}
+	if sumByKey[0].groupKey != "key-one" {
+		t.Fatalf("summary by key group=%q want key-one", sumByKey[0].groupKey)
 	}
 	if sumByKey[0].requestCount != 3 || sumByKey[0].totalTokens != 55 {
 		t.Fatalf("summary by key=%+v", sumByKey[0])
@@ -461,10 +466,10 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 	return tx.Commit()
 }
 
-func createExtKeyE2E(d *sql.DB, label string) (struct {
+func createExtKeyE2E(d *sql.DB, name string) (struct {
 	ID      int64
 	Key     string
-	Label   string
+	Name    string
 	Enabled int
 }, error) {
 	key, err := generateKeyE2E()
@@ -472,32 +477,32 @@ func createExtKeyE2E(d *sql.DB, label string) (struct {
 		return struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}{}, err
 	}
 	var id int64
-	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
+	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, name) VALUES (?,?) RETURNING id`), key, name).Scan(&id)
 	if err != nil {
 		return struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}{}, err
 	}
 	return struct {
 		ID      int64
 		Key     string
-		Label   string
+		Name    string
 		Enabled int
-	}{ID: id, Key: key, Label: label, Enabled: 1}, nil
+	}{ID: id, Key: key, Name: name, Enabled: 1}, nil
 }
 
 func getExtKeyE2E(d *sql.DB, key string) (struct {
 	ID        int64
 	Key       string
-	Label     string
+	Name      string
 	Enabled   int
 	CreatedAt time.Time
 	LastUsed  sql.NullTime
@@ -505,23 +510,23 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 	var k struct {
 		ID        int64
 		Key       string
-		Label     string
+		Name      string
 		Enabled   int
 		CreatedAt time.Time
 		LastUsed  sql.NullTime
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
-		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
+	err := d.QueryRow(Rebind(d, `SELECT id, key, name, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+		Scan(&k.ID, &k.Key, &k.Name, &k.Enabled, &k.CreatedAt, &k.LastUsed)
 	return k, err
 }
 
 func listExtKeysE2E(d *sql.DB) ([]struct {
 	ID      int64
 	Key     string
-	Label   string
+	Name    string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, key, name, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -529,17 +534,17 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	var out []struct {
 		ID      int64
 		Key     string
-		Label   string
+		Name    string
 		Enabled int
 	}
 	for rows.Next() {
 		var k struct {
 			ID      int64
 			Key     string
-			Label   string
+			Name    string
 			Enabled int
 		}
-		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Enabled); err != nil {
+		if err := rows.Scan(&k.ID, &k.Key, &k.Name, &k.Enabled); err != nil {
 			return nil, err
 		}
 		k.Key = maskKeyE2E(k.Key)
@@ -572,29 +577,30 @@ func insertUsageE2E(d *sql.DB, r usageRecord) error {
 	return err
 }
 
+// usageSummaryE2E 是 model.UsageSummaryByGroup 的副本（db 包不能 import model），
+// 改动生产查询时需同步这里。
 func usageSummaryE2E(d *sql.DB, groupBy, from, to string) ([]summaryRow, error) {
-	var groupCol string
+	fromClause := "usage_records u"
+	selectCol, groupCol := "u.model", "u.model"
 	switch groupBy {
 	case "key":
-		groupCol = "COALESCE(CAST(ext_key_id AS TEXT), '0')"
-	case "model":
-		groupCol = "model"
+		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
+		selectCol = `COALESCE(NULLIF(k.name, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
+		groupCol = "k.id, u.ext_key_id"
 	case "upstream":
-		groupCol = "upstream_name"
-	default:
-		groupCol = "model"
+		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)
-		FROM usage_records`, groupCol)
+		FROM %s`, selectCol, fromClause)
 	var conditions []string
 	var args []any
 	if from != "" {
-		conditions = append(conditions, "created_at >= ?")
+		conditions = append(conditions, "u.created_at >= ?")
 		args = append(args, from)
 	}
 	if to != "" {
-		conditions = append(conditions, "created_at <= ?")
+		conditions = append(conditions, "u.created_at <= ?")
 		args = append(args, to)
 	}
 	if len(conditions) > 0 {
@@ -841,6 +847,15 @@ CREATE TABLE conversation_records (
 	}
 	if err := migrateSoftDelete(d); err != nil {
 		t.Fatalf("soft delete migrate: %v", err)
+	}
+	if err := migrateRenamedCols(d); err != nil {
+		t.Fatalf("renamed cols migrate: %v", err)
+	}
+
+	// ext_keys.label 已改名 name（旧值保留），remark 列就位
+	var keyName, keyRemark string
+	if err := d.QueryRow(`SELECT name, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyName, &keyRemark); err != nil || keyName != "legacy" || keyRemark != "" {
+		t.Fatalf("ext key rename: name=%q remark=%q err=%v", keyName, keyRemark, err)
 	}
 
 	// CHECK 已移除：可插入 responses
