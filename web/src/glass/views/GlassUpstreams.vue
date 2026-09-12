@@ -3,10 +3,11 @@ import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../../api/upstreams'
-import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot, type BalancePayload } from '../../api/balances'
+import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../../api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '../../api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../../utils/configTransfer'
-import { formatInt, formatTime, formatMoney } from '../../utils/format'
+import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '../../utils/balance'
+import { formatInt, formatTime } from '../../utils/format'
 import AppIcon from '../../components/AppIcon.vue'
 
 const message = useMessage()
@@ -226,30 +227,6 @@ async function delM(id: number, mid: number) {
   await load()
 }
 
-function parsePayload(s: BalanceSnapshot): BalancePayload | null {
-  if (!s?.payload) return null
-  if (typeof s.payload === 'string') {
-    try { return JSON.parse(s.payload) as BalancePayload } catch { return null }
-  }
-  return s.payload
-}
-
-const QUOTA_WINDOW_LABELS: Record<string, string> = { five_hour: '5h', weekly: '周', monthly: '月' }
-
-/** 快照摘要：balance -> "¥110.00"；quota -> "5h 12% · 周 34% · 月 56%"；无数据返回 null */
-function balanceSummary(s: BalanceSnapshot | undefined): string | null {
-  if (!s) return null
-  const p = parsePayload(s)
-  if (!p) return null
-  if (p.kind === 'balance') {
-    const b = p.balances?.[0]
-    if (!b) return null
-    return formatMoney(b.total, b.currency)
-  }
-  const parts = (p.windows || []).map(w => `${QUOTA_WINDOW_LABELS[w.id] ?? w.id} ${w.used_percent}%`)
-  return parts.length ? parts.join(' · ') : null
-}
-
 async function refreshB(id: number) {
   if (refreshingId.value !== null) return
   refreshingId.value = id
@@ -378,9 +355,18 @@ const columns: DataTableColumns<Upstream> = [
     key: 'balance',
     width: 180,
     render: (row) => {
-      const text = balanceSummary(balancesByUpstream.value[row.id as number])
-      if (!text) return h('span', { style: 'color: var(--text-4)' }, '-')
-      return h('span', { class: 'mono', style: 'cursor: pointer', title: '点击查看历史', onClick: () => openHistory(row) }, text)
+      const s = balancesByUpstream.value[row.id as number]
+      const v = s ? balanceView(s) : null
+      if (!s || !v) return h('span', { style: 'color: var(--text-4)' }, '-')
+      const dim = 'color: var(--text-4); font-size: 12px'
+      const lines = v.kind === 'balance'
+        ? [h('div', { class: 'mono' }, v.text)]
+        : v.windows.map(w => h('div', { class: 'mono' }, w.missing
+          ? [h('span', { style: 'color: var(--text-4)' }, `${w.label} —`)]
+          : [h('span', null, `${w.label} ${w.percent}%`),
+            ...(w.reset ? [h('span', { style: dim }, `（${w.reset} 重置）`)] : [])]))
+      lines.push(h('div', { style: dim }, `更新于 ${formatFetchedAt(s.created_at)}`))
+      return h('div', { style: 'cursor: pointer; line-height: 1.5', title: balanceTooltip(s), onClick: () => openHistory(row) }, lines)
     },
   },
   {
