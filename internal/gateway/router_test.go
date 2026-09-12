@@ -395,7 +395,8 @@ func TestAllowedModelsMatchPublicName(t *testing.T) {
 		{"fast", "oai/gpt-4o"}, // 只列别名 → 直连名被拒
 		{"oai/gpt-4o", "fast"}, // 只列直连名 → 别名被拒
 	} {
-		k, _ := model.CreateExtKey(d, "l", "", 0, 0, []string{tc.allow})
+		// 名称取白名单条目：同一 DB 里要建两个 key，名称不能重复
+		k, _ := model.CreateExtKey(d, tc.allow, "", 0, 0, []string{tc.allow})
 		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+tc.model+`","messages":[]}`))
 		req.Header.Set("Authorization", "Bearer "+k.Key)
 		w := httptest.NewRecorder()
