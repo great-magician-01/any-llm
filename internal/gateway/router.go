@@ -41,6 +41,30 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
+	// /v1/models 与完成端点同级，同样强制 ext key 鉴权；受限 key 只看到
+	// 白名单内的模型（直连名与别名）。
+	extKey := extractKey(r)
+	if extKey == "" {
+		WriteError(w, 401, "openai", "missing API key", "authentication_error")
+		return
+	}
+	if !model.IsValidKeyFormat(extKey) {
+		WriteError(w, 401, "openai", "invalid API key format", "authentication_error")
+		return
+	}
+	k, err := model.GetExtKey(g.db, extKey)
+	if err != nil || !k.Enabled {
+		WriteError(w, 401, "openai", "invalid API key", "authentication_error")
+		return
+	}
+	if g.writer != nil {
+		g.writer.DoAsync(func(d *sql.DB) error { return model.TouchExtKey(d, k.ID) })
+	} else {
+		if err := model.TouchExtKey(g.db, k.ID); err != nil {
+			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
+		}
+	}
+
 	upstreams, err := model.ListUpstreams(g.db)
 	if err != nil {
 		WriteError(w, 500, "openai", "failed to list upstreams", "internal_error")
@@ -62,8 +86,12 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, m := range models {
+			id := u.Name + "/" + m.ModelName
+			if !k.AllowsModel(id) {
+				continue
+			}
 			data = append(data, modelObj{
-				ID:      u.Name + "/" + m.ModelName,
+				ID:      id,
 				Object:  "model",
 				Created: u.CreatedAt.Unix(),
 			})
@@ -82,7 +110,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			if !hasUsable {
+			if !hasUsable || !k.AllowsModel(a.Name) {
 				continue
 			}
 			data = append(data, modelObj{

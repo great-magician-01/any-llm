@@ -281,8 +281,10 @@ func TestModelsEndpointIncludesAliases(t *testing.T) {
 	model.CreateAlias(d, &model.ModelAlias{Name: "fixed-gpt", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	// 无可用绑定的别名不出现
 	model.CreateAlias(d, &model.ModelAlias{Name: "empty-alias", Bindings: nil})
+	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)
 	if w.Code != 200 {

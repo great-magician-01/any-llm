@@ -30,8 +30,10 @@ func TestModelsEndpoint(t *testing.T) {
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
 	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)
 
@@ -53,6 +55,62 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 	if !ids["my-openai/gpt-4o"] || !ids["my-openai/gpt-4o-mini"] {
 		t.Fatalf("model ids=%+v", ids)
+	}
+}
+
+// /v1/models 强制 ext key 鉴权：无 key / 无效 key → 401。
+func TestModelsEndpointRequiresKey(t *testing.T) {
+	g, _ := setupGateway(t)
+
+	// 无 key
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("no key status=%d want 401, body=%s", w.Code, w.Body.String())
+	}
+
+	// 无效 key
+	req = httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer all-sk-invalid")
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("invalid key status=%d want 401, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// /v1/models 按 key 白名单过滤：受限 key 只看到已列的模型与别名。
+func TestModelsEndpointFilteredByAllowedModels(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o", "fast"})
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	ids := map[string]bool{}
+	for _, m := range resp.Data {
+		ids[m.ID] = true
+	}
+	if !ids["oai/gpt-4o"] || !ids["fast"] {
+		t.Fatalf("allowed entries missing: %+v", ids)
+	}
+	if ids["oai/gpt-4o-mini"] {
+		t.Fatalf("unlisted model leaked: %+v", ids)
 	}
 }
 
@@ -139,8 +197,10 @@ func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	if err := model.UpdateUpstream(d, u); err != nil {
 		t.Fatal(err)
 	}
+	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)
 	if w.Code != 200 {
