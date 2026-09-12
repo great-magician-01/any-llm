@@ -72,10 +72,6 @@ type importResult struct {
 }
 
 func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
 	ups, err := model.ListUpstreams(a.db)
 	if err != nil {
 		logger.Error("admin: export config list upstreams failed", "err", err)
@@ -124,10 +120,6 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
 	var in configFile
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		logger.Warn("admin: import config invalid JSON", "err", err)
