@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parsePayload, balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from './balance'
+import { formatTime, localISO } from './format'
 import type { BalanceSnapshot } from '../api/balances'
 
 function snap(payload: unknown, vendor = 'kimi-coding'): BalanceSnapshot {
@@ -78,17 +79,22 @@ describe('balanceSummary', () => {
 
 describe('balanceTooltip', () => {
   it('包含完整重置时间与抓取时间', () => {
-    const t = balanceTooltip(snap({ kind: 'quota', windows: [{ id: 'weekly', used_percent: '13.0', reset_at: '2026-09-17T01:02:51Z' }] }))
-    expect(t).toContain('周 13.0%，重置于 ')
-    expect(t).toContain('抓取于 2026-09-12 21:14:23')
+    const s = snap({ kind: 'quota', windows: [{ id: 'weekly', used_percent: '13.0', reset_at: '2026-09-17T01:02:51Z' }] })
+    const t = balanceTooltip(s)
+    // 时刻渲染随运行环境时区变化，与 formatTime 的输出对齐即可（本测试只验证组装）
+    expect(t).toContain(`周 13.0%，重置于 ${formatTime('2026-09-17T01:02:51Z')}`)
+    expect(t).toContain(`抓取于 ${formatTime(s.created_at)}`)
     expect(t).toContain('5h 窗口本次未返回')
   })
 })
 
 describe('formatFetchedAt', () => {
   it('当天只显示时刻，跨天带日期', () => {
-    const today = formatFetchedAt(new Date().toISOString())
-    expect(today).toMatch(/^\d{2}:\d{2}:\d{2}$/)
-    expect(formatFetchedAt('2000-01-01T08:09:10Z')).toMatch(/^1-1 \d{2}:\d{2}:\d{2}$/)
+    expect(formatFetchedAt(localISO(new Date()))).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    // 用本地各字段拼期望值，避免依赖运行环境时区
+    const d = new Date('2000-06-15T12:00:00Z')
+    const p = (x: number) => String(x).padStart(2, '0')
+    expect(formatFetchedAt(d.toISOString()))
+      .toBe(`${d.getMonth() + 1}-${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`)
   })
 })
