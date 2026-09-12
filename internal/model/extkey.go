@@ -16,18 +16,19 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-func CreateExtKey(d *sql.DB, label string, dailyLimit, monthlyLimit int) (*ExtKey, error) {
+func CreateExtKey(d *sql.DB, label string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
 	key, err := generateKey()
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	var id int64
-	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, daily_token_limit, monthly_token_limit, created_at) VALUES (?,?,?,?,?) RETURNING id`), key, label, dailyLimit, monthlyLimit, now).Scan(&id)
+	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?) RETURNING id`),
+		key, label, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
-	return &ExtKey{ID: id, Key: key, Label: label, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, CreatedAt: now}, nil
+	return &ExtKey{ID: id, Key: key, Label: label, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
 }
 
 func generateKey() (string, error) {
@@ -124,13 +125,13 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 	return nil
 }
 
-func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, monthlyLimit int) error {
+func UpdateExtKey(d *sql.DB, id int64, label string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
 	en := 0
 	if enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=? WHERE id=? AND is_active = 1`),
-		label, en, dailyLimit, monthlyLimit, id)
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+		label, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
@@ -179,4 +180,16 @@ func parseAllowedModels(s string) ([]string, error) {
 		return nil, nil
 	}
 	return models, nil
+}
+
+// marshalAllowedModels 把白名单写成 ext_keys.allowed_models 列文本：空 = 不限。
+func marshalAllowedModels(models []string) string {
+	if len(models) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(models)
+	if err != nil { // []string 不会失败，防御分支
+		return ""
+	}
+	return string(b)
 }

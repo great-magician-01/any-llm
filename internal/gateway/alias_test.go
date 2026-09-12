@@ -37,7 +37,7 @@ func failUpstreamServer(t *testing.T, status int) *httptest.Server {
 func setupAliasGateway(t *testing.T) (*Gateway, *model.ExtKey) {
 	t.Helper()
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "test", 0, 0)
+	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 	return g, k
 }

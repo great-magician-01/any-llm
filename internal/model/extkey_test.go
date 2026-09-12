@@ -7,7 +7,7 @@ import (
 
 func TestCreateExtKeyFormat(t *testing.T) {
 	d := testDB(t)
-	k, err := CreateExtKey(d, "test-label", 0, 0)
+	k, err := CreateExtKey(d, "test-label", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +27,8 @@ func TestCreateExtKeyFormat(t *testing.T) {
 
 func TestCreateExtKeysUnique(t *testing.T) {
 	d := testDB(t)
-	k1, _ := CreateExtKey(d, "a", 0, 0)
-	k2, _ := CreateExtKey(d, "b", 0, 0)
+	k1, _ := CreateExtKey(d, "a", 0, 0, nil)
+	k2, _ := CreateExtKey(d, "b", 0, 0, nil)
 	if k1.Key == k2.Key {
 		t.Fatal("duplicate keys generated")
 	}
@@ -36,7 +36,7 @@ func TestCreateExtKeysUnique(t *testing.T) {
 
 func TestGetExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	got, err := GetExtKey(d, k.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestGetExtKey(t *testing.T) {
 
 func TestListExtKeysFullKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	list, err := ListExtKeys(d)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestListExtKeysFullKey(t *testing.T) {
 
 func TestDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestDeleteExtKey(t *testing.T) {
 
 func TestTouchExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 	if err := TouchExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestTouchExtKey(t *testing.T) {
 // immediately fails auth lookups and disappears from lists.
 func TestSoftDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestSoftDeleteExtKey(t *testing.T) {
 // 非法 JSON 响亮失败而非静默放行。
 func TestExtKeyAllowedModels(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0)
+	k, _ := CreateExtKey(d, "l", 0, 0, nil)
 
 	// 默认：不限制
 	got, err := GetExtKey(d, k.Key)
