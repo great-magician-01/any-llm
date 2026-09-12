@@ -35,6 +35,45 @@ func TestCreateKey(t *testing.T) {
 	}
 }
 
+func TestKeyNameUnique(t *testing.T) {
+	a, d := setupAPI(t)
+	model.CreateExtKey(d, "taken", "", 0, 0, nil)
+
+	// 建同名 key：400，且不落库
+	body, _ := json.Marshal(map[string]any{"name": "taken"})
+	req := httptest.NewRequest("POST", "/api/admin/keys", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "already exists") {
+		t.Fatalf("duplicate name status=%d body=%s", w.Code, w.Body.String())
+	}
+	if list, _ := model.ListExtKeys(d); len(list) != 1 {
+		t.Fatalf("rejected duplicate must not insert: len=%d", len(list))
+	}
+
+	// 改成占用中的名字：400，原名保留
+	other, _ := model.CreateExtKey(d, "other", "", 0, 0, nil)
+	body, _ = json.Marshal(map[string]any{"name": "taken"})
+	req = httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(other.ID, 10), bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("rename onto taken name status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := model.GetExtKeyByID(d, other.ID); got.Name != "other" {
+		t.Fatalf("rejected rename persisted: name=%q", got.Name)
+	}
+
+	// 保留自己名字的部分更新不受影响
+	body, _ = json.Marshal(map[string]any{"name": "other", "remark": "r"})
+	req = httptest.NewRequest("PUT", "/api/admin/keys/"+strconv.FormatInt(other.ID, 10), bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("keep own name status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestListKeysFullKey(t *testing.T) {
 	a, d := setupAPI(t)
 	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)

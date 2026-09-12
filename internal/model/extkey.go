@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -16,7 +17,21 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
+// ErrExtKeyNameTaken 报告名称与其它活跃密钥重复。唯一性只做在应用层（不加 DB
+// 约束）：名称是给人看的标识，允许历史/接口直建的密钥没有名称（空名不参与），
+// 且软删除的行不占名称名额，删掉后同名可重建。
+var ErrExtKeyNameTaken = errors.New("key name already exists")
+
+// CreateExtKey 新建密钥。读取+写入都在调用方的 writeSync 闭包里完成时，db.Writer
+// 会把它们串行化，两次并发创建同名不会同时通过检查。
 func CreateExtKey(d *sql.DB, name, remark string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
+	taken, err := ExtKeyNameTaken(d, name, 0)
+	if err != nil {
+		return nil, err
+	}
+	if taken {
+		return nil, ErrExtKeyNameTaken
+	}
 	key, err := generateKey()
 	if err != nil {
 		return nil, err
@@ -126,16 +141,37 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 }
 
 func UpdateExtKey(d *sql.DB, id int64, name, remark string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
+	taken, err := ExtKeyNameTaken(d, name, id)
+	if err != nil {
+		return err
+	}
+	if taken {
+		return ErrExtKeyNameTaken
+	}
 	en := 0
 	if enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET name=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+	_, err = d.Exec(db.Rebind(d, `UPDATE ext_keys SET name=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
 		name, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
 	return nil
+}
+
+// ExtKeyNameTaken 报告活跃密钥里是否已有同名（精确匹配，不做大小写/空白归一）。
+// excludeID 用于更新时排除自己（0 = 不排除）。空名不参与唯一性：接口直建或历史
+// 数据可能没有名称，随便一个空名不该把后来者也挡在门外。
+func ExtKeyNameTaken(d *sql.DB, name string, excludeID int64) (bool, error) {
+	if name == "" {
+		return false, nil
+	}
+	var n int
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM ext_keys WHERE name=? AND is_active = 1 AND id<>?`), name, excludeID).Scan(&n); err != nil {
+		return false, fmt.Errorf("check ext key name %q: %w", name, err)
+	}
+	return n > 0, nil
 }
 
 func TouchExtKey(d *sql.DB, id int64) error {
