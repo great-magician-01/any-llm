@@ -848,9 +848,6 @@ CREATE TABLE conversation_records (
 	if err := migrateSoftDelete(d); err != nil {
 		t.Fatalf("soft delete migrate: %v", err)
 	}
-	if err := migrateRenamedCols(d); err != nil {
-		t.Fatalf("renamed cols migrate: %v", err)
-	}
 
 	// 名称列仍是 label（旧值保留），remark 列就位
 	var keyLabel, keyRemark string

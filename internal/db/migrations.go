@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 // 表设计原则：不使用外键约束（删除一律应用层软删除，is_active=0 标记，
@@ -233,11 +231,6 @@ CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(u
 // 时才以 42703 暴露（list ext keys: column "label" does not exist），所以除了
 // 建表语句，这里也必须列一份。
 //
-// 改过名的列**不要**写在这里：补列只看列名在不在，会把改名前的旧列名又补出来。
-// 改名统一交给 migrateRenamedCols（ext_keys.label 就是这么从 name 改回来的，
-// 它还会顺带清掉补列留下的空壳列）。因此这里只列：初始 schema 之后新增的列
-// （remark / allowed_models / is_active / enabled / token 限额等）。
-//
 // 补列只在列不存在时执行，幂等；coldef 需能直接用于两种方言的 ADD COLUMN。
 var extraCols = []struct {
 	table, column, coldef string
@@ -312,120 +305,6 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 		}
 		return false, nil
 	}
-}
-
-// renamedCols 列出改过名的列，{表, 旧列名, 新列名}。改名只在「旧列存在且新列
-// 不存在」时执行，幂等；新旧列并存时走 healCoexistingColumns（见下）。
-var renamedCols = []struct {
-	table, from, to string
-}{
-	// ext_keys.name → label：撤销 2026-09-13 那次 label → name 改名，名称仍存在
-	// 最初的 label 列里（对外显示为「名称」，备注另用 remark 列）。
-	{"ext_keys", "name", "label"},
-}
-
-// migrateRenamedCols 把老库的列名升级到当前 schema。必须跑在 migrateSoftDelete
-// 之后：SQLite 重建 spec 仍按未改名的列名取数。
-func migrateRenamedCols(d *sql.DB) error {
-	dialect := DialectOf(d)
-	for _, rc := range renamedCols {
-		from, err := columnExists(d, dialect, rc.table, rc.from)
-		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", rc.table, rc.from, err)
-		}
-		if !from {
-			continue // 旧列不存在：新库，或早就改过名了
-		}
-		to, err := columnExists(d, dialect, rc.table, rc.to)
-		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", rc.table, rc.to, err)
-		}
-		if to {
-			if err := healCoexistingColumns(d, rc.table, rc.from, rc.to); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := renameColumn(d, rc.table, rc.from, rc.to); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// healCoexistingColumns 处理「改名前后两列并存」。这种局面是补列兜底造成的：
-// 改名已经跑过（数据都在 to 列），之后 extraCols 又把 from 这个旧列名当缺失列
-// 补了回来——补出来的列恒为空，查询却按 from 取值，数据就「看不见」了。
-// 只删得掉确认为空的列（不丢数据）：
-//   - to 列整列为空（补出来的空壳）：删掉它，把 from 改成 to；
-//   - from 列整列为空（数据已在 to）：删掉 from 就行；
-//   - 两列都有数据：删哪列都丢数据，只打警告并给出人工 DDL，留给人决定。
-func healCoexistingColumns(d *sql.DB, table, from, to string) error {
-	fromEmpty, err := columnAllEmpty(d, table, from)
-	if err != nil {
-		return err
-	}
-	toEmpty, err := columnAllEmpty(d, table, to)
-	if err != nil {
-		return err
-	}
-	switch {
-	case !fromEmpty && !toEmpty:
-		logger.Warn("migrate: both columns hold data, left untouched",
-			"table", table, "old", from, "new", to,
-			"hint", fmt.Sprintf("确认保留哪一列后手动处理，例如：ALTER TABLE %s DROP COLUMN %s; ALTER TABLE %s RENAME COLUMN %s TO %s",
-				table, to, table, from, to))
-		return nil
-	case fromEmpty:
-		return dropColumn(d, table, from)
-	default: // toEmpty：空壳列删掉，旧列改成新名
-		tx, err := d.Begin()
-		if err != nil {
-			return fmt.Errorf("begin column heal on %s: %w", table, err)
-		}
-		defer tx.Rollback()
-		if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, table, to)); err != nil {
-			return fmt.Errorf("drop empty column %s.%s: %w", table, to, err)
-		}
-		if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s RENAME COLUMN %s TO %s`, table, from, to)); err != nil {
-			return fmt.Errorf("rename column %s.%s to %s: %w", table, from, to, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit column heal on %s: %w", table, err)
-		}
-		logger.Info("migrate: dropped empty duplicate column", "table", table, "dropped", to, "renamed", from)
-		return nil
-	}
-}
-
-// columnAllEmpty 报告列在整张表里是否都没有值（只适用于文本列）。
-// IS NOT NULL 兼顾没写 DEFAULT 的老表。
-func columnAllEmpty(d *sql.DB, table, col string) (bool, error) {
-	var n int
-	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s IS NOT NULL AND %s <> ''`, table, col, col)
-	if err := d.QueryRow(q).Scan(&n); err != nil {
-		return false, fmt.Errorf("count non-empty %s.%s: %w", table, col, err)
-	}
-	return n == 0, nil
-}
-
-// dropColumn 删除一列（调用方必须先确认该列为空）。
-func dropColumn(d *sql.DB, table, col string) error {
-	if _, err := d.Exec(fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, table, col)); err != nil {
-		return fmt.Errorf("drop empty column %s.%s: %w", table, col, err)
-	}
-	logger.Info("migrate: dropped empty duplicate column", "table", table, "dropped", col)
-	return nil
-}
-
-// renameColumn 执行一次 ALTER TABLE ... RENAME COLUMN。
-func renameColumn(d *sql.DB, table, from, to string) error {
-	stmt := fmt.Sprintf(`ALTER TABLE %s RENAME COLUMN %s TO %s`, table, from, to)
-	if _, err := d.Exec(stmt); err != nil {
-		return fmt.Errorf("rename column %s.%s to %s: %w", table, from, to, err)
-	}
-	logger.Info("migrate: renamed column", "table", table, "from", from, "to", to)
-	return nil
 }
 
 // migrateSoftDelete 把旧库升级到「无外键 + 软删除」模式：
@@ -663,8 +542,5 @@ func MigratePGForTest(d *sql.DB) error {
 	if err := migrateExtraCols(d); err != nil {
 		return err
 	}
-	if err := migrateSoftDelete(d); err != nil {
-		return err
-	}
-	return migrateRenamedCols(d)
+	return migrateSoftDelete(d)
 }
