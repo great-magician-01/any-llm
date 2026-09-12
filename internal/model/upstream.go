@@ -194,6 +194,49 @@ func DeleteModel(d *sql.DB, id int64) error {
 	return nil
 }
 
+// ReplaceModelsExact 把上游的活跃模型列表精确替换为 models（配置导入按名
+// 覆盖用）：现有活跃行全部软删，再逐名复活最早的软删行或插入新行——不累积
+// 重复行、不撞「仅活跃行」部分唯一索引。与 ReplaceModels 的区别：manual 与
+// 长度均以传入为准（0 长度归一为默认值），且手动模型不做特殊保留。
+// 整个替换在一个事务里。
+func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return fmt.Errorf("begin replace models exact: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE upstream_id=? AND is_active = 1`), upstreamID); err != nil {
+		return fmt.Errorf("clear models: %w", err)
+	}
+	for _, m := range models {
+		manual := 0
+		if m.Manual {
+			manual = 1
+		}
+		cl, ml := m.ContextLength, m.MaxOutputLength
+		if cl <= 0 {
+			cl = DefaultModelContextLength
+		}
+		if ml <= 0 {
+			ml = DefaultModelMaxOutputLength
+		}
+		// 优先复活同名软删行，防历史库同名死行累积（与 AddModel 同策略）。
+		res, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=? WHERE id = (SELECT MIN(id) FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0)`),
+			manual, cl, ml, upstreamID, m.ModelName)
+		if err != nil {
+			return fmt.Errorf("revive model %s: %w", m.ModelName, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			continue
+		}
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?)`),
+			upstreamID, m.ModelName, manual, cl, ml); err != nil {
+			return fmt.Errorf("insert model %s: %w", m.ModelName, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 	tx, err := d.Begin()
 	if err != nil {
