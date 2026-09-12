@@ -123,6 +123,7 @@ onMounted(load)
         :bordered="false"
         :columns="columns"
         :data="rows"
+        remote
         :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
       />
     </n-card>
