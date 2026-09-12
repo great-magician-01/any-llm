@@ -26,14 +26,17 @@ type UpstreamModel struct {
 }
 
 type ExtKey struct {
-	ID                int64      `json:"id"`
-	Key               string     `json:"key"`
-	Label             string     `json:"label"`
-	Enabled           bool       `json:"enabled"`
-	DailyTokenLimit   int        `json:"daily_token_limit"`
-	MonthlyTokenLimit int        `json:"monthly_token_limit"`
-	CreatedAt         time.Time  `json:"created_at"`
-	LastUsedAt        *time.Time `json:"last_used_at"`
+	ID                int64  `json:"id"`
+	Key               string `json:"key"`
+	Label             string `json:"label"`
+	Enabled           bool   `json:"enabled"`
+	DailyTokenLimit   int    `json:"daily_token_limit"`
+	MonthlyTokenLimit int    `json:"monthly_token_limit"`
+	// AllowedModels 限定该 key 可用的对外模型名（别名或 upstream/model）。
+	// nil/空 = 不限制。仅精确匹配。
+	AllowedModels []string   `json:"allowed_models"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsedAt    *time.Time `json:"last_used_at"`
 }
 
 type UsageRecord struct {
