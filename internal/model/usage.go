@@ -169,22 +169,25 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 }
 
 func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, error) {
-	var groupCol string
+	// 每个维度给出三元组：展示表达式（即 group_key）、FROM 子句、GROUP BY 表达式。
+	fromClause := "usage_records u"
+	selectCol, groupCol := "u.model", "u.model"
 	switch groupBy {
 	case "key":
-		groupCol = "COALESCE(CAST(ext_key_id AS TEXT), '0')"
-	case "model":
-		groupCol = "model"
+		// 展示密钥名称而非 id。仍按 ext_key_id 分组（同名 key 不合并成一行），
+		// 名称从 ext_keys 关联读出——软删除的行保留，历史用量照样显示名称。
+		// 名称为空或 key 已不存在的记录回退 #id，连 id 都没有的旧记录显示 —。
+		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
+		selectCol = `COALESCE(NULLIF(k.name, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
+		groupCol = "k.id, u.ext_key_id"
 	case "upstream":
-		groupCol = "upstream_name"
-	default:
-		groupCol = "model"
+		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),
 		COALESCE(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN completion_tokens ELSE 0 END) * 1000.0
 			/ NULLIF(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN duration_ms ELSE 0 END), 0), 0)
-		FROM usage_records`, groupCol)
+		FROM %s`, selectCol, fromClause)
 	var conditions []string
 	var args []any
 	if from != "" {
@@ -192,7 +195,7 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		if err != nil {
 			return nil, fmt.Errorf("usage summary: invalid from: %w", err)
 		}
-		conditions = append(conditions, "created_at >= ?")
+		conditions = append(conditions, "u.created_at >= ?")
 		args = append(args, t)
 	}
 	if to != "" {
@@ -200,7 +203,7 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		if err != nil {
 			return nil, fmt.Errorf("usage summary: invalid to: %w", err)
 		}
-		conditions = append(conditions, "created_at <= ?")
+		conditions = append(conditions, "u.created_at <= ?")
 		args = append(args, t)
 	}
 	if len(conditions) > 0 {

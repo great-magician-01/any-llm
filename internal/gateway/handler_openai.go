@@ -23,7 +23,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	first := targets[0]
 	logger.Info("completion request",
 		"key_id", key.ID,
-		"key_label", key.Label,
+		"key_name", key.Name,
 		"upstream", first.Upstream.Name,
 		"upstream_format", first.Upstream.Format,
 		"model", first.ModelName,

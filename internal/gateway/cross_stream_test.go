@@ -35,7 +35,7 @@ func TestCompletion_StreamCrossFormat_OAIin_ANTup(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
 	model.AddModel(d, uid, "claude-3-5", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"ant/claude-3-5","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -89,7 +89,7 @@ func TestCompletion_StreamSSE_NoSpaceAfterColon(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -134,7 +134,7 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
@@ -197,7 +197,7 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup_ToolOnly(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
 	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"weather?"}],"stream":true}`))

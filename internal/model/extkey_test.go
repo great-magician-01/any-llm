@@ -1,13 +1,14 @@
 package model
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
 
 func TestCreateExtKeyFormat(t *testing.T) {
 	d := testDB(t)
-	k, err := CreateExtKey(d, "test-label", 0, 0, nil)
+	k, err := CreateExtKey(d, "test-name", "test-remark", 0, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,8 +18,11 @@ func TestCreateExtKeyFormat(t *testing.T) {
 	if len(k.Key) < 39 {
 		t.Fatalf("key too short: %q (len %d)", k.Key, len(k.Key))
 	}
-	if k.Label != "test-label" {
-		t.Fatalf("label=%q", k.Label)
+	if k.Name != "test-name" {
+		t.Fatalf("name=%q", k.Name)
+	}
+	if k.Remark != "test-remark" {
+		t.Fatalf("remark=%q", k.Remark)
 	}
 	if !k.Enabled {
 		t.Fatal("should be enabled")
@@ -27,22 +31,76 @@ func TestCreateExtKeyFormat(t *testing.T) {
 
 func TestCreateExtKeysUnique(t *testing.T) {
 	d := testDB(t)
-	k1, _ := CreateExtKey(d, "a", 0, 0, nil)
-	k2, _ := CreateExtKey(d, "b", 0, 0, nil)
+	k1, _ := CreateExtKey(d, "a", "", 0, 0, nil)
+	k2, _ := CreateExtKey(d, "b", "", 0, 0, nil)
 	if k1.Key == k2.Key {
 		t.Fatal("duplicate keys generated")
 	}
 }
 
+// TestExtKeyNameUnique 名称唯一性（应用层，无 DB 约束）：同名活跃密钥被拒且不落库；
+// 更新时排除自己；软删除的行不占名称名额；空名不参与（接口直建/历史密钥可能没有名称）。
+func TestExtKeyNameUnique(t *testing.T) {
+	d := testDB(t)
+	prod, err := CreateExtKey(d, "prod", "", 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); !errors.Is(err, ErrExtKeyNameTaken) {
+		t.Fatalf("duplicate create err=%v want ErrExtKeyNameTaken", err)
+	}
+	list, _ := ListExtKeys(d)
+	if len(list) != 1 {
+		t.Fatalf("rejected duplicate must not insert: len=%d", len(list))
+	}
+
+	// 空名可以有多个
+	if _, err := CreateExtKey(d, "", "", 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateExtKey(d, "", "", 0, 0, nil); err != nil {
+		t.Fatalf("empty names should not collide: %v", err)
+	}
+
+	other, _ := CreateExtKey(d, "other", "", 0, 0, nil)
+	if err := UpdateExtKey(d, other.ID, "prod", "", true, 0, 0, nil); !errors.Is(err, ErrExtKeyNameTaken) {
+		t.Fatalf("rename onto taken name err=%v want ErrExtKeyNameTaken", err)
+	}
+	if got, _ := GetExtKeyByID(d, other.ID); got.Name != "other" {
+		t.Fatalf("rejected rename must not persist: name=%q", got.Name)
+	}
+	// 改成空闲名、保留自己的名字、改成空名都放行
+	if err := UpdateExtKey(d, other.ID, "other2", "", true, 0, 0, nil); err != nil {
+		t.Fatalf("rename to free name: %v", err)
+	}
+	if err := UpdateExtKey(d, other.ID, "other2", "note", true, 0, 0, nil); err != nil {
+		t.Fatalf("update keeping own name: %v", err)
+	}
+	if err := UpdateExtKey(d, other.ID, "", "", true, 0, 0, nil); err != nil {
+		t.Fatalf("update to empty name: %v", err)
+	}
+
+	// 软删除后名称释放
+	if err := DeleteExtKey(d, prod.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); err != nil {
+		t.Fatalf("name should be free after soft delete: %v", err)
+	}
+}
+
 func TestGetExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "n", "r", 0, 0, nil)
 	got, err := GetExtKey(d, k.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.ID != k.ID {
 		t.Fatalf("id=%d want %d", got.ID, k.ID)
+	}
+	if got.Name != "n" || got.Remark != "r" {
+		t.Fatalf("name=%q remark=%q", got.Name, got.Remark)
 	}
 	_, err = GetExtKey(d, "all-sk-nonexistent")
 	if err == nil {
@@ -52,7 +110,7 @@ func TestGetExtKey(t *testing.T) {
 
 func TestListExtKeysFullKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
 	list, err := ListExtKeys(d)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +125,7 @@ func TestListExtKeysFullKey(t *testing.T) {
 
 func TestDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +137,7 @@ func TestDeleteExtKey(t *testing.T) {
 
 func TestTouchExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
 	if err := TouchExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +151,7 @@ func TestTouchExtKey(t *testing.T) {
 // immediately fails auth lookups and disappears from lists.
 func TestSoftDeleteExtKey(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
 
 	if err := DeleteExtKey(d, k.ID); err != nil {
 		t.Fatal(err)
@@ -125,7 +183,7 @@ func TestSoftDeleteExtKey(t *testing.T) {
 // 非法 JSON 响亮失败而非静默放行。
 func TestExtKeyAllowedModels(t *testing.T) {
 	d := testDB(t)
-	k, _ := CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
 
 	// 默认：不限制
 	got, err := GetExtKey(d, k.Key)
