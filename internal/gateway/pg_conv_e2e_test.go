@@ -349,7 +349,7 @@ func TestPGConvUpstreamError(t *testing.T) {
 
 	var status string
 	var tt int
-	err := d.QueryRow(`SELECT status, total_tokens FROM ` + model.ConvShardName(time.Now())).Scan(&status, &tt)
+	err := d.QueryRow(`SELECT status, total_tokens FROM `+model.ConvShardName(time.Now())).Scan(&status, &tt)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

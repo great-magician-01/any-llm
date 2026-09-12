@@ -36,12 +36,12 @@ func TestConvShardNameRe(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"conversation_records",             // 历史分表不是月分表
-		"conversation_records_2026_9",      // 月份未零填充
-		"conversation_records_2026_091",    // 超长
-		"conversation_records_2026-09",     // 错误分隔符
-		"conversation_records_2026_09_bak", // 后缀
-		"xconversation_records_2026_09",    // 前缀
+		"conversation_records",                                   // 历史分表不是月分表
+		"conversation_records_2026_9",                            // 月份未零填充
+		"conversation_records_2026_091",                          // 超长
+		"conversation_records_2026-09",                           // 错误分隔符
+		"conversation_records_2026_09_bak",                       // 后缀
+		"xconversation_records_2026_09",                          // 前缀
 		`conversation_records_2026_09"; DROP TABLE ext_keys; --`, // 注入
 		"", // 空
 	}
@@ -134,10 +134,10 @@ func resetConvShardCache(t *testing.T) {
 
 func TestConvPageWindows(t *testing.T) {
 	cases := []struct {
-		name          string
-		counts        []int
-		offset, size  int
-		want          []convWindow
+		name         string
+		counts       []int
+		offset, size int
+		want         []convWindow
 	}{
 		{"空分表", nil, 0, 10, nil},
 		{"单表首页", []int{100}, 0, 20, []convWindow{{0, 0, 20}}},
