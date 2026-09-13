@@ -340,7 +340,9 @@ func migrateSoftDeletePG(d *sql.DB) error {
 		`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_format_check`,
 		`ALTER TABLE upstream_models DROP CONSTRAINT IF EXISTS upstream_models_upstream_id_fkey`,
 		`ALTER TABLE usage_records DROP CONSTRAINT IF EXISTS usage_records_ext_key_id_fkey`,
-		`ALTER TABLE conversation_records DROP CONSTRAINT IF EXISTS conversation_records_ext_key_id_fkey`,
+		// conversation_records 迁移不再建表（改应用层按月分表），新库没有这张表：
+		// 必须 ALTER TABLE IF EXISTS，否则存量库升级保留的这一步在新库上 42P01。
+		`ALTER TABLE IF EXISTS conversation_records DROP CONSTRAINT IF EXISTS conversation_records_ext_key_id_fkey`,
 		// 去掉内联 UNIQUE 约束（连同其索引），改由下面的部分唯一索引接管
 		`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_name_key`,
 		`ALTER TABLE upstream_models DROP CONSTRAINT IF EXISTS upstream_models_upstream_id_model_name_key`,
