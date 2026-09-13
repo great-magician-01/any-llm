@@ -38,8 +38,9 @@ func TestCreateExtKeysUnique(t *testing.T) {
 	}
 }
 
-// TestExtKeyNameUnique 名称唯一性（应用层，无 DB 约束）：同名活跃密钥被拒且不落库；
-// 更新时排除自己；软删除的行不占名称名额；空名不参与（接口直建/历史密钥可能没有名称）。
+// TestExtKeyNameUnique 名称唯一性：同名活跃密钥被拒且不落库；更新时排除自己；
+// 软删除的行不占名称名额；空名不参与（接口直建/历史密钥可能没有名称）。
+// 应用层判定之外还有部分唯一索引 idx_ext_keys_label 在 DB 层兜底（见 db 包）。
 func TestExtKeyNameUnique(t *testing.T) {
 	d := testDB(t)
 	prod, err := CreateExtKey(d, "prod", "", 0, 0, nil)
@@ -86,6 +87,77 @@ func TestExtKeyNameUnique(t *testing.T) {
 	}
 	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); err != nil {
 		t.Fatalf("label should be free after soft delete: %v", err)
+	}
+}
+
+// TestExtKeyLabelTrimmed 名称按 TrimSpace 归一存储：仅靠前后空白区分的名字视为
+// 同名（UI 侧也 trim，两端口径一致）。
+func TestExtKeyLabelTrimmed(t *testing.T) {
+	d := testDB(t)
+	k, err := CreateExtKey(d, " prod ", "", 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k.Label != "prod" {
+		t.Fatalf("label=%q want trimmed prod", k.Label)
+	}
+	if got, _ := GetExtKeyByID(d, k.ID); got.Label != "prod" {
+		t.Fatalf("persisted label=%q want prod", got.Label)
+	}
+	if _, err := CreateExtKey(d, "prod", "", 0, 0, nil); !errors.Is(err, ErrExtKeyLabelTaken) {
+		t.Fatalf("duplicate after trim err=%v want ErrExtKeyLabelTaken", err)
+	}
+	if err := UpdateExtKey(d, k.ID, " prod ", "r", true, 0, 0, nil); err != nil {
+		t.Fatalf("re-save trimmed-to-same label: %v", err)
+	}
+}
+
+// TestExtKeyUpdateLegacyDuplicateLabel 老库里本就有重名活跃 key（唯一性约束加入前
+// 的数据）时，不改名的更新不能被别人的重名锁死；只有改到占用中的名字才被拒。
+// 重名状态靠先删掉兜底索引再裸 UPDATE 模拟（有索引时造不出来——这正是索引的意义）。
+func TestExtKeyUpdateLegacyDuplicateLabel(t *testing.T) {
+	d := testDB(t)
+	if _, err := CreateExtKey(d, "dup", "", 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := CreateExtKey(d, "other", "", 0, 0, nil)
+	if _, err := d.Exec(`DROP INDEX idx_ext_keys_label`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE ext_keys SET label='dup' WHERE id=?`, b.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 不改名的部分更新（限额/备注/启停）放行
+	if err := UpdateExtKey(d, b.ID, "dup", "only-remark", true, 100, 0, nil); err != nil {
+		t.Fatalf("non-rename update on legacy duplicate: %v", err)
+	}
+	got, _ := GetExtKeyByID(d, b.ID)
+	if got.Label != "dup" || got.Remark != "only-remark" || got.DailyTokenLimit != 100 {
+		t.Fatalf("update not persisted: %+v", got)
+	}
+	// 改到另一个占用中的名字仍然被拒
+	if _, err := CreateExtKey(d, "taken", "", 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateExtKey(d, b.ID, "taken", "", true, 0, 0, nil); !errors.Is(err, ErrExtKeyLabelTaken) {
+		t.Fatalf("rename onto taken label err=%v want ErrExtKeyLabelTaken", err)
+	}
+}
+
+// TestExtKeyLabelUniqueIndex 重名活跃 key 连裸 SQL 都插不进（DB 层兜底生效）。
+func TestExtKeyLabelUniqueIndex(t *testing.T) {
+	d := testDB(t)
+	k, _ := CreateExtKey(d, "idx-prod", "", 0, 0, nil)
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-rawdup', 'idx-prod')`); err == nil {
+		t.Fatal("raw duplicate label insert should be rejected by idx_ext_keys_label")
+	}
+	// 软删后不占名额：裸插同名也放行
+	if err := DeleteExtKey(d, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-rawdup', 'idx-prod')`); err != nil {
+		t.Fatalf("label should be reusable after soft delete: %v", err)
 	}
 }
 

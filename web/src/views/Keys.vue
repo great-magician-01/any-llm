@@ -2,27 +2,24 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip, NSelect } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listKeys, createKey, updateKey, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
+import { listKeys, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
 import { listUpstreams, listModels } from '../api/upstreams'
 import { listAliases } from '../api/aliases'
 import { formatInt } from '../utils/format'
 import { buildOmpYaml } from '../utils/ompConfig'
+import { useKeyForms } from '../composables/useKeyForms'
 import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
 
-// create modal: 'form' = filling form, 'done' = showing generated key
-const showCreateModal = ref(false)
-const createModalState = ref<'form' | 'done'>('form')
-const createForm = ref({ label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
-const newlyCreatedKey = ref('')
-
-// edit modal
-const showEditModal = ref(false)
-const editing = ref<ExtKey | null>(null)
-const editForm = ref({ label: '', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] as string[] })
+// 新增/编辑弹窗的表单状态与保存逻辑在 composables/useKeyForms（两套皮肤共用一份）
+const {
+  showCreateModal, createModalState, createForm, newlyCreatedKey,
+  showEditModal, editForm,
+  openCreate, saveCreate, resetCreateForm, openEdit, saveEdit,
+} = useKeyForms(keys, { reload: () => load(), ensureModelOptions })
 
 // 模型白名单选项：各上游模型（upstream/model）+ 别名，与 /v1/models 一致。
 // 打开表单时懒加载一次。
@@ -188,12 +185,6 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   },
 ])
 
-// 名称唯一（服务端为准，这里只是省一次往返的即时提示）；空名不参与
-function labelTaken(label: string, exceptID?: number) {
-  if (!label) return false
-  return keys.value.some((k) => k.label === label && k.id !== exceptID)
-}
-
 async function load() {
   keys.value = await listKeys()
   // load usage in parallel
@@ -202,80 +193,6 @@ async function load() {
   keys.value.forEach((k, i) => {
     if (results[i]) usageByKey.value[k.id] = results[i] as UsageTotals
   })
-}
-
-function openCreate() {
-  createForm.value = { label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
-  newlyCreatedKey.value = ''
-  createModalState.value = 'form'
-  showCreateModal.value = true
-  ensureModelOptions()
-}
-
-async function saveCreate() {
-  const label = createForm.value.label.trim()
-  if (!label) {
-    message.warning('请填写名称')
-    return
-  }
-  if (labelTaken(label)) {
-    message.warning('名称已存在，请换一个')
-    return
-  }
-  try {
-    const k = await createKey(label, createForm.value.remark.trim(), createForm.value.daily_token_limit, createForm.value.monthly_token_limit, createForm.value.allowed_models)
-    newlyCreatedKey.value = k.key
-    createModalState.value = 'done'
-    await load()
-  } catch (e: any) {
-    message.error('创建失败：' + (e?.response?.data?.error || e?.message || String(e)))
-  }
-}
-
-function resetCreateForm() {
-  createForm.value = { label: '', remark: '', daily_token_limit: 0, monthly_token_limit: 0, allowed_models: [] }
-  newlyCreatedKey.value = ''
-  createModalState.value = 'form'
-}
-
-function openEdit(row: ExtKey) {
-  editing.value = row
-  editForm.value = {
-    label: row.label,
-    remark: row.remark,
-    enabled: row.enabled,
-    daily_token_limit: row.daily_token_limit,
-    monthly_token_limit: row.monthly_token_limit,
-    allowed_models: row.allowed_models ?? [],
-  }
-  showEditModal.value = true
-  ensureModelOptions()
-}
-
-async function saveEdit() {
-  if (!editing.value) return
-  const cur = editing.value
-  const label = editForm.value.label.trim()
-  if (labelTaken(label, cur.id)) {
-    message.warning('名称已存在，请换一个')
-    return
-  }
-  try {
-    await updateKey(cur.id, {
-      label,
-      remark: editForm.value.remark,
-      enabled: editForm.value.enabled,
-      daily_token_limit: editForm.value.daily_token_limit,
-      monthly_token_limit: editForm.value.monthly_token_limit,
-      allowed_models: editForm.value.allowed_models,
-    })
-    showEditModal.value = false
-    editing.value = null
-    await load()
-    message.success('已保存')
-  } catch (e: any) {
-    message.error('保存失败：' + (e?.response?.data?.error || e?.message || String(e)))
-  }
 }
 
 async function del(id: number) {

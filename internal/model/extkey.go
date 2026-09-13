@@ -17,14 +17,16 @@ const keyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// ErrExtKeyLabelTaken 报告名称与其它活跃密钥重复。唯一性只做在应用层（不加 DB
-// 约束）：名称是给人看的标识，允许历史/接口直建的密钥没有名称（空名不参与），
-// 且软删除的行不占名称名额，删掉后同名可重建。
+// ErrExtKeyLabelTaken 报告名称与其它活跃密钥重复。唯一性在应用层判定（友好 400），
+// 并由部分唯一索引 idx_ext_keys_label 在 DB 层兜底，两者口径一致：允许历史/接口
+// 直建的密钥没有名称（空名不参与），且软删除的行不占名称名额，删掉后同名可重建。
 var ErrExtKeyLabelTaken = errors.New("key label already exists")
 
 // CreateExtKey 新建密钥。读取+写入都在调用方的 writeSync 闭包里完成时，db.Writer
-// 会把它们串行化，两次并发创建同名不会同时通过检查。
+// 会把它们串行化，两次并发创建同名不会同时通过检查。名称按 TrimSpace 归一后存储，
+// 与 UI 的 trim 行为一致（避免仅靠前后空白区分的「视觉重名」）。
 func CreateExtKey(d *sql.DB, label, remark string, dailyLimit, monthlyLimit int, allowedModels []string) (*ExtKey, error) {
+	label = strings.TrimSpace(label)
 	taken, err := ExtKeyLabelTaken(d, label, 0)
 	if err != nil {
 		return nil, err
@@ -141,18 +143,28 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 }
 
 func UpdateExtKey(d *sql.DB, id int64, label, remark string, enabled bool, dailyLimit, monthlyLimit int, allowedModels []string) error {
-	taken, err := ExtKeyLabelTaken(d, label, id)
-	if err != nil {
-		return err
+	label = strings.TrimSpace(label)
+	// 当前名称在本函数内读（通常已处于 writeSync 闭包，随写入一起串行化）。
+	var curLabel string
+	if err := d.QueryRow(db.Rebind(d, `SELECT label FROM ext_keys WHERE id=? AND is_active = 1`), id).Scan(&curLabel); err != nil {
+		return fmt.Errorf("load ext key %d label: %w", id, err)
 	}
-	if taken {
-		return ErrExtKeyLabelTaken
+	// 只在真正改名时查重：唯一性约束是后加的，老数据可能本就重名——不改名的
+	// 更新（启停/限额/备注）不该被别人的重名锁死。
+	if label != curLabel {
+		taken, err := ExtKeyLabelTaken(d, label, id)
+		if err != nil {
+			return err
+		}
+		if taken {
+			return ErrExtKeyLabelTaken
+		}
 	}
 	en := 0
 	if enabled {
 		en = 1
 	}
-	_, err = d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
 		label, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)

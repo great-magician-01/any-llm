@@ -35,6 +35,27 @@ func TestCreateKey(t *testing.T) {
 	}
 }
 
+func TestCreateKeyInvalidJSON(t *testing.T) {
+	a, d := setupAPI(t)
+	// 截断的 body 必须 400，而不是按零值静默建出无名 key
+	req := httptest.NewRequest("POST", "/api/admin/keys", strings.NewReader(`{"label":"prod"`))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("truncated body status=%d want 400", w.Code)
+	}
+	// 类型错误（allowed_models 传字符串）同样 400，不得当成「不限模型」落库
+	req = httptest.NewRequest("POST", "/api/admin/keys", strings.NewReader(`{"label":"prod","allowed_models":"gpt"}`))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("wrong-type body status=%d want 400", w.Code)
+	}
+	if list, _ := model.ListExtKeys(d); len(list) != 0 {
+		t.Fatalf("rejected bodies must not persist: %+v", list)
+	}
+}
+
 func TestKeyNameUnique(t *testing.T) {
 	a, d := setupAPI(t)
 	model.CreateExtKey(d, "taken", "", 0, 0, nil)

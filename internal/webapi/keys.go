@@ -60,7 +60,11 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		MonthlyTokenLimit int      `json:"monthly_token_limit"`
 		AllowedModels     []string `json:"allowed_models"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		logger.Warn("admin: create key invalid JSON", "err", err)
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
 		logger.Warn("admin: create key negative token limit", "daily", req.DailyTokenLimit, "monthly", req.MonthlyTokenLimit)
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
