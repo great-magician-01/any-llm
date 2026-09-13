@@ -585,7 +585,7 @@ func usageSummaryE2E(d *sql.DB, groupBy, from, to string) ([]summaryRow, error) 
 	switch groupBy {
 	case "key":
 		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
-		selectCol = `COALESCE(NULLIF(k.name, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
+		selectCol = `COALESCE(NULLIF(k.label, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
 		groupCol = "k.id, u.ext_key_id"
 	case "upstream":
 		selectCol, groupCol = "u.upstream_name", "u.upstream_name"

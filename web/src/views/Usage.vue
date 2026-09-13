@@ -98,9 +98,15 @@ const distSlices = computed(() => {
   const sorted = [...summaries.value].sort((a, b) => b.total_tokens - a.total_tokens)
   const top = sorted.slice(0, 6)
   const rest = sorted.slice(6)
-  const slices = top.map((s, i) => ({ name: s.group_key, value: s.total_tokens, color: PALETTE[i % PALETTE.length] }))
+  // 同名 key（软删后重建）会产生相同 name，图例 key 用 ext_key_id 兜底唯一
+  const slices = top.map((s, i) => ({
+    id: s.ext_key_id != null ? `key-${s.ext_key_id}` : `grp-${s.group_key}`,
+    name: s.group_key,
+    value: s.total_tokens,
+    color: PALETTE[i % PALETTE.length],
+  }))
   if (rest.length) {
-    slices.push({ name: `其他 ${rest.length} 项`, value: rest.reduce((a, s) => a + s.total_tokens, 0), color: '#475569' })
+    slices.push({ id: '__rest__', name: `其他 ${rest.length} 项`, value: rest.reduce((a, s) => a + s.total_tokens, 0), color: '#475569' })
   }
   return slices
 })
@@ -144,7 +150,11 @@ const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
   {
     title: groupBy.value === 'key' ? '密钥' : groupBy.value === 'upstream' ? '上游' : '模型',
     key: 'group_key',
-    render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px; font-weight: 600; color: var(--text)' }, row.group_key),
+    // 按密钥汇总时附上 #id：同名 key（软删后重建）的多行靠它区分
+    render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px; font-weight: 600; color: var(--text)' }, [
+      row.group_key,
+      row.ext_key_id != null ? h('span', { style: 'color: var(--text-4); font-weight: 400' }, ` #${row.ext_key_id}`) : null,
+    ]),
   },
   { title: '请求数', key: 'request_count', render: (row) => h('span', { class: 'mono' }, formatInt(row.request_count)) },
   { title: '总 Token', key: 'total_tokens', render: (row) => h('span', { class: 'mono', style: 'color: var(--brand-hover); font-weight: 600' }, formatInt(row.total_tokens)) },
@@ -268,7 +278,7 @@ onMounted(loadAll)
         <div v-if="distSlices.length" class="donut-row">
           <DonutChart :slices="distSlices" :size="168" center-label="总 Token" :format-value="formatCompact" />
           <ul class="donut-legend">
-            <li v-for="s in distSlices" :key="s.name">
+            <li v-for="s in distSlices" :key="s.id">
               <span class="legend-dot" :style="{ background: s.color }"></span>
               <span class="legend-name mono">{{ s.name }}</span>
               <span class="legend-val mono">{{ formatPercent(s.value, totals.tokens) }}</span>

@@ -329,7 +329,8 @@ func TestSumTokens(t *testing.T) {
 
 // TestUsageSummaryByGroupKeyName 按 key 汇总展示密钥名称而非 id：名称关联自
 // ext_keys（软删除的行保留，历史用量照样显示名称），名称为空或 key 不存在的
-// 记录回退 #id，连 id 都没有的旧记录显示 —；分组仍按 ext_key_id（同名不合并）。
+// 记录回退 #id，连 id 都没有的旧记录显示 —；分组仍按 ext_key_id：同名（软删
+// 后重建）的 key 不合并成一行，且每行带 ext_key_id 供客户端区分同名行。
 func TestUsageSummaryByGroupKeyName(t *testing.T) {
 	d := testDB(t)
 	named, _ := CreateExtKey(d, "my-app", "", 0, 0, nil)
@@ -353,32 +354,51 @@ func TestUsageSummaryByGroupKeyName(t *testing.T) {
 	if err := DeleteExtKey(d, gone.ID); err != nil {
 		t.Fatal(err)
 	}
+	// 软删释放名称后重建同名 key：新旧两行 group_key 相同，靠 ext_key_id 区分
+	reborn, err := CreateExtKey(d, "gone-key", "", 0, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert(&reborn.ID, 8)
 
 	sums, err := UsageSummaryByGroup(d, "key", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := make(map[string]UsageSummary, len(sums))
-	for _, s := range sums {
-		got[s.GroupKey] = s
+	if len(sums) != 6 {
+		t.Fatalf("groups=%+v want 6", sums)
 	}
-	if len(got) != 5 {
-		t.Fatalf("groups=%v want 5", got)
+	byID := func(id int64) *UsageSummary {
+		for i := range sums {
+			if sums[i].ExtKeyID != nil && *sums[i].ExtKeyID == id {
+				return &sums[i]
+			}
+		}
+		return nil
 	}
-	if s := got["my-app"]; s.RequestCount != 2 || s.TotalTokens != 30 {
+	if s := byID(named.ID); s == nil || s.GroupKey != "my-app" || s.RequestCount != 2 || s.TotalTokens != 30 {
 		t.Fatalf("named group=%+v", s)
 	}
-	if s := got["gone-key"]; s.RequestCount != 1 || s.TotalTokens != 4 {
+	if s := byID(gone.ID); s == nil || s.GroupKey != "gone-key" || s.RequestCount != 1 || s.TotalTokens != 4 {
 		t.Fatalf("soft-deleted key should keep its name: %+v", s)
 	}
-	if s := got[fmt.Sprintf("#%d", unnamed.ID)]; s.RequestCount != 1 || s.TotalTokens != 5 {
+	if s := byID(reborn.ID); s == nil || s.GroupKey != "gone-key" || s.RequestCount != 1 || s.TotalTokens != 8 {
+		t.Fatalf("recreated same-name key must stay a separate row: %+v", s)
+	}
+	if s := byID(unnamed.ID); s == nil || s.GroupKey != fmt.Sprintf("#%d", unnamed.ID) || s.TotalTokens != 5 {
 		t.Fatalf("empty name should fall back to #id: %+v", s)
 	}
-	if s := got["#9999"]; s.RequestCount != 1 || s.TotalTokens != 7 {
+	if s := byID(orphan); s == nil || s.GroupKey != "#9999" || s.TotalTokens != 7 {
 		t.Fatalf("unknown key should fall back to #id: %+v", s)
 	}
-	if s := got["—"]; s.RequestCount != 1 || s.TotalTokens != 3 {
-		t.Fatalf("record without key id: %+v", s)
+	var noKey *UsageSummary
+	for i := range sums {
+		if sums[i].ExtKeyID == nil {
+			noKey = &sums[i]
+		}
+	}
+	if noKey == nil || noKey.GroupKey != "—" || noKey.TotalTokens != 3 {
+		t.Fatalf("record without key id: %+v", noKey)
 	}
 
 	// 改名随关联即时生效（用量记录不存名称快照）
@@ -391,11 +411,11 @@ func TestUsageSummaryByGroupKeyName(t *testing.T) {
 	}
 	var renamed *UsageSummary
 	for i := range sums {
-		if sums[i].GroupKey == "renamed" {
+		if sums[i].ExtKeyID != nil && *sums[i].ExtKeyID == named.ID {
 			renamed = &sums[i]
 		}
 	}
-	if renamed == nil || renamed.TotalTokens != 30 {
+	if renamed == nil || renamed.GroupKey != "renamed" || renamed.TotalTokens != 30 {
 		t.Fatalf("rename not reflected: %+v", sums)
 	}
 }

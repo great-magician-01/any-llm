@@ -10,7 +10,10 @@ import (
 )
 
 type UsageSummary struct {
-	GroupKey         string `json:"group_key"`
+	GroupKey string `json:"group_key"`
+	// ExtKeyID 仅 group_by=key 时填充：group_key 只是展示名（同名不合并），
+	// 客户端需要 id 才能区分同名行/回链到密钥。其它维度为 null/缺省。
+	ExtKeyID         *int64 `json:"ext_key_id,omitempty"`
 	RequestCount     int    `json:"request_count"`
 	TotalTokens      int    `json:"total_tokens"`
 	PromptTokens     int    `json:"prompt_tokens"`
@@ -172,6 +175,8 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 	// 每个维度给出三元组：展示表达式（即 group_key）、FROM 子句、GROUP BY 表达式。
 	fromClause := "usage_records u"
 	selectCol, groupCol := "u.model", "u.model"
+	// idCol 仅 key 维度追加 u.ext_key_id（客户端用它区分同名行），其它维度为空。
+	idCol := ""
 	switch groupBy {
 	case "key":
 		// 展示密钥名称而非 id。仍按 ext_key_id 分组（同名 key 不合并成一行），
@@ -180,14 +185,15 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
 		selectCol = `COALESCE(NULLIF(k.label, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
 		groupCol = "k.id, u.ext_key_id"
+		idCol = ", u.ext_key_id"
 	case "upstream":
 		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
 	}
-	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
+	q := fmt.Sprintf(`SELECT %s AS gk%s, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),
 		COALESCE(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN completion_tokens ELSE 0 END) * 1000.0
 			/ NULLIF(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN duration_ms ELSE 0 END), 0), 0)
-		FROM %s`, selectCol, fromClause)
+		FROM %s`, selectCol, idCol, fromClause)
 	var conditions []string
 	var args []any
 	if from != "" {
@@ -218,8 +224,13 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 	out := make([]UsageSummary, 0)
 	for rows.Next() {
 		var s UsageSummary
-		if err := rows.Scan(&s.GroupKey, &s.RequestCount, &s.TotalTokens, &s.PromptTokens,
-			&s.CompletionTokens, &s.OkCount, &s.ErrorCount, &s.AvgTokensPerSec); err != nil {
+		dest := []any{&s.GroupKey}
+		if idCol != "" {
+			dest = append(dest, &s.ExtKeyID)
+		}
+		dest = append(dest, &s.RequestCount, &s.TotalTokens, &s.PromptTokens,
+			&s.CompletionTokens, &s.OkCount, &s.ErrorCount, &s.AvgTokensPerSec)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
