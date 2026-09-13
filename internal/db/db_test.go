@@ -97,6 +97,57 @@ func TestOpenSQLite_BackfillsMissingExtKeyCols(t *testing.T) {
 	}
 }
 
+// 历史库留有重名活跃 key（label 唯一性是后加的）时唯一索引建不起来：启动不阻断、
+// 不自动改别人的数据，只告警；人工去重后下次启动自动补上。
+func TestOpenSQLite_LabelIndexToleratesLegacyDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup-labels.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟历史重名：先摘掉索引再裸插（索引在时这种状态造不出来）
+	if _, err := d.Exec(`DROP INDEX idx_ext_keys_label`); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"all-sk-a", "all-sk-b"} {
+		if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES (?, 'dup')`, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Close()
+
+	countIndex := func(d *sql.DB) int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_ext_keys_label'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// 有冲突时重开：启动成功，索引缺席（冲突只告警）
+	d2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen with legacy duplicates: %v", err)
+	}
+	if n := countIndex(d2); n != 0 {
+		t.Fatalf("index should be absent while duplicates exist: n=%d", n)
+	}
+	// 人工去重后重开：索引自动补上
+	if _, err := d2.Exec(`UPDATE ext_keys SET label='deduped' WHERE key='all-sk-b'`); err != nil {
+		t.Fatal(err)
+	}
+	d2.Close()
+	d3, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d3.Close()
+	if n := countIndex(d3); n != 1 {
+		t.Fatalf("index should appear after manual dedupe: n=%d", n)
+	}
+}
+
 func TestOpenPG_DSNEncodesSpecialChars(t *testing.T) {
 	// Verify user/password with URL-special characters round-trip through the
 	// DSN that OpenPG builds. We can't connect here, but pgx.ParseConfig
