@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 // 表设计原则：不使用外键约束（删除一律应用层软删除，is_active=0 标记，
@@ -225,13 +227,14 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
 CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
 `
 
-// extraCols 列出建表语句之外还要保证存在的列，连同 ALTER TABLE 补列用的完整
-// 列定义（类型 + NOT NULL + 默认值）。老库需要回填，新库由上面的 CREATE TABLE
-// 提供；CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，缺列会一直潜伏到查询
-// 时才以 42703 暴露（list ext keys: column "label" does not exist），所以除了
-// 建表语句，这里也必须列一份。
+// extraCols 列出「初始 schema 之后才加入」的列，连同 ALTER TABLE 补列用的完整
+// 列定义（类型 + NOT NULL + 默认值）：本项目的老库升级后合理缺失这些列，需要回填；
+// 新库由上面的 CREATE TABLE 提供。补列只在列不存在时执行，幂等；coldef 需能直接
+// 用于两种方言的 ADD COLUMN。
 //
-// 补列只在列不存在时执行，幂等；coldef 需能直接用于两种方言的 ADD COLUMN。
+// 初始 schema 就有的列（如 ext_keys.label）明确不在这里兜底：CREATE TABLE IF NOT
+// EXISTS 对已存在的同名表是空操作，若那张表不是本项目按当前形态建的，缺列会在查询
+// 时以 42703 暴露——此时应人工修库，而不是静默补一个语义不明的空壳列把库搞乱。
 var extraCols = []struct {
 	table, column, coldef string
 }{
@@ -245,8 +248,7 @@ var extraCols = []struct {
 	{"ext_keys", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
 	{"ext_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
-	// 备注（原始 schema 里没有，老库回填）。名称列是初始 schema 的 label，
-	// 见上面「改过名的列不要写在这里」
+	// 备注（初始 schema 之后才加入，老库回填）
 	{"ext_keys", "remark", "TEXT NOT NULL DEFAULT ''"},
 	{"upstream_models", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 200000"},
@@ -282,8 +284,10 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 	switch dialect {
 	case DialectPostgres:
 		var n int
+		// 限定当前 schema：同库其他 schema（另一实例/残留测试 schema）里的
+		// 同名表不算数，否则它们的列会让本 schema 的补列被误判跳过。
 		err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
-			WHERE table_name = $1 AND column_name = $2`, table, col).Scan(&n)
+			WHERE table_name = $1 AND column_name = $2 AND table_schema = current_schema()`, table, col).Scan(&n)
 		return n > 0, err
 	default:
 		rows, err := d.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
@@ -336,7 +340,9 @@ func migrateSoftDeletePG(d *sql.DB) error {
 		`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_format_check`,
 		`ALTER TABLE upstream_models DROP CONSTRAINT IF EXISTS upstream_models_upstream_id_fkey`,
 		`ALTER TABLE usage_records DROP CONSTRAINT IF EXISTS usage_records_ext_key_id_fkey`,
-		`ALTER TABLE conversation_records DROP CONSTRAINT IF EXISTS conversation_records_ext_key_id_fkey`,
+		// conversation_records 迁移不再建表（改应用层按月分表），新库没有这张表：
+		// 必须 ALTER TABLE IF EXISTS，否则存量库升级保留的这一步在新库上 42P01。
+		`ALTER TABLE IF EXISTS conversation_records DROP CONSTRAINT IF EXISTS conversation_records_ext_key_id_fkey`,
 		// 去掉内联 UNIQUE 约束（连同其索引），改由下面的部分唯一索引接管
 		`ALTER TABLE upstreams DROP CONSTRAINT IF EXISTS upstreams_name_key`,
 		`ALTER TABLE upstream_models DROP CONSTRAINT IF EXISTS upstream_models_upstream_id_model_name_key`,
@@ -360,11 +366,10 @@ type sqliteTableSpec struct {
 	table     string // 表名
 	rebuildIf func(sqlText string) bool
 	// create 为新表 DDL（无外键、无内联 UNIQUE、含 is_active——usage_records
-	// 无软删除列，仅去 REFERENCES）。insertCols 为新表列清单，selectExprs 为
-	// 从旧表取数的表达式清单（逐列对应）。
-	create      string
-	insertCols  []string
-	selectExprs []string
+	// 无软删除列，仅去 REFERENCES）。cols 为列清单，INSERT 与 SELECT 两侧同名
+	// 同序搬运，共用一份以避免两侧清单漂移。
+	create string
+	cols   []string
 }
 
 // sqliteSoftDeleteSpecs 列出需要重建的表。注意：重建 DDL 与 migrationSQLite
@@ -388,8 +393,7 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		insertCols:  []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "updated_at", "is_active"},
-		selectExprs: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "updated_at", "is_active"},
+		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "updated_at", "is_active"},
 	},
 	{
 		table: "upstream_models",
@@ -405,8 +409,7 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    max_output_length INTEGER NOT NULL DEFAULT 200000,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		insertCols:  []string{"id", "upstream_id", "model_name", "manual", "context_length", "max_output_length", "is_active"},
-		selectExprs: []string{"id", "upstream_id", "model_name", "manual", "context_length", "max_output_length", "is_active"},
+		cols: []string{"id", "upstream_id", "model_name", "manual", "context_length", "max_output_length", "is_active"},
 	},
 	{
 		table: "ext_keys",
@@ -426,11 +429,9 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    last_used_at DATETIME,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		// 走重建的都是「旧库」（schema 仍带内联 UNIQUE）：列名就是 label，改名
-		// （name → label）在重建之后跑，所以这里直接按 label 搬运。remark 由
-		// extraCols 在重建前补好，故可直接搬运。
-		insertCols:  []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
-		selectExprs: []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
+		// 走重建的都是「旧库」（schema 仍带内联 UNIQUE）。remark 等后期加入的
+		// 列由 extraCols 在重建前补齐（OpenSQLite 的调用顺序保证），按名搬运。
+		cols: []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
 	},
 	{
 		table: "usage_records",
@@ -456,8 +457,7 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    status TEXT NOT NULL DEFAULT 'ok',
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		insertCols:  []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
-		selectExprs: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
+		cols: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
 	},
 }
 
@@ -483,11 +483,11 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 			continue
 		}
 		bak := spec.table + "_bak"
+		cols := strings.Join(spec.cols, ", ")
 		steps := []string{
 			fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, spec.table, bak),
 			spec.create,
-			fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s`,
-				spec.table, strings.Join(spec.insertCols, ", "), strings.Join(spec.selectExprs, ", "), bak),
+			fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s`, spec.table, cols, cols, bak),
 			fmt.Sprintf(`DROP TABLE %s`, bak),
 		}
 		for i, s := range steps {
@@ -530,6 +530,40 @@ func usageIndexDDL() []string {
 		`CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id)`,
 	}
+}
+
+// extKeyLabelIndexDDL 是 ext_keys.label 唯一性的 DB 兜底：活跃且非空的名称不可
+// 重复，口径与应用层 ExtKeyLabelTaken 一致（空名不参与、软删行不占名额）。
+// 不放进 uniqueIndexDDL：历史库可能存在唯一性约束加入前留下的重名活跃 key，
+// 建索引会失败，需要容错处理（见 ensureExtKeyLabelIndex）。
+const extKeyLabelIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_label ON ext_keys(label) WHERE is_active = 1 AND label <> ''`
+
+// ensureExtKeyLabelIndex 在每次启动时尝试建立 label 唯一索引。历史库有重名活跃
+// key 时建索引必然失败：不自动改名去重（不动别人的数据），也不阻断启动（单进程
+// 下应用层检查仍生效）——打出冲突明细，人工去重后下次启动这里会自动补上。
+func ensureExtKeyLabelIndex(d *sql.DB) {
+	_, err := d.Exec(extKeyLabelIndexDDL)
+	if err == nil {
+		return
+	}
+	var dupes []string
+	rows, qerr := d.Query(`SELECT label, COUNT(*) FROM ext_keys WHERE is_active = 1 AND label <> '' GROUP BY label HAVING COUNT(*) > 1`)
+	if qerr == nil {
+		for rows.Next() {
+			var label string
+			var n int
+			if serr := rows.Scan(&label, &n); serr != nil {
+				break
+			}
+			dupes = append(dupes, fmt.Sprintf("%q×%d", label, n))
+		}
+		if rows.Err() != nil {
+			dupes = nil
+		}
+		rows.Close()
+	}
+	logger.Warn("db: 无法创建 ext_keys label 唯一索引（存在重名活跃 key）；应用层检查仍生效，人工去重后重启自动补上",
+		"err", err, "duplicates", dupes)
 }
 
 // MigratePGForTest 对已连接的 PG 执行与 OpenPG 相同的完整迁移管线。导出供

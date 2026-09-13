@@ -47,6 +47,7 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate soft delete: %w", err)
 	}
+	ensureExtKeyLabelIndex(d)
 	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
@@ -101,6 +102,7 @@ func OpenPG(cfg PGConfig) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate soft delete: %w", err)
 	}
+	ensureExtKeyLabelIndex(d)
 	return d, nil
 }
 
