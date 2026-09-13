@@ -32,7 +32,9 @@ func pgTestDB(t *testing.T) *sql.DB {
 	// search_path 走连接参数而非 SET：pgx 连接池里 SET 只影响单条连接，
 	// 池内其他连接会漏配。
 	cfg.RuntimeParams["search_path"] = schema
-	d := stdlib.OpenDB(*cfg)
+	// 与 OpenPG 一致注册 timestamp→本地时区的 codec，否则扫出的 created_at
+	// 标为 UTC（生产路径不会有这种行为，测试连接也不该有）。
+	d := stdlib.OpenDB(*cfg, stdlib.OptionAfterConnect(registerLocalTimestamp))
 	if err := d.Ping(); err != nil {
 		d.Close()
 		t.Fatalf("ping: %v", err)
