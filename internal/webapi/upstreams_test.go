@@ -287,6 +287,105 @@ func TestCreateUpstream_ExplicitDisabled(t *testing.T) {
 	}
 }
 
+// TestCreateUpstream_MaxConcurrent 并发上限：缺省给默认值 100，显式值生效，
+// 显式 0 = 不限，负数拒绝。
+func TestCreateUpstream_MaxConcurrent(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) (int64, int, int) {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		body, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			return 0, 0, w.Code
+		}
+		var resp struct {
+			ID            int64 `json:"id"`
+			MaxConcurrent int   `json:"max_concurrent"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID, resp.MaxConcurrent, 200
+	}
+
+	// 缺省 → 默认 100
+	id, mc, code := create(map[string]any{"name": "d1"})
+	if code != 200 || mc != model.DefaultMaxConcurrent {
+		t.Fatalf("omitted: code=%d max_concurrent=%d want default %d", code, mc, model.DefaultMaxConcurrent)
+	}
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != model.DefaultMaxConcurrent {
+		t.Fatalf("stored max_concurrent=%d", u.MaxConcurrent)
+	}
+
+	// 显式 50
+	_, mc, code = create(map[string]any{"name": "d2", "max_concurrent": 50})
+	if code != 200 || mc != 50 {
+		t.Fatalf("explicit 50: code=%d max_concurrent=%d", code, mc)
+	}
+
+	// 显式 0 = 不限
+	_, mc, code = create(map[string]any{"name": "d3", "max_concurrent": 0})
+	if code != 200 || mc != 0 {
+		t.Fatalf("explicit 0: code=%d max_concurrent=%d", code, mc)
+	}
+
+	// 负数 → 400
+	if _, _, code = create(map[string]any{"name": "d4", "max_concurrent": -1}); code != 400 {
+		t.Fatalf("negative: code=%d want 400", code)
+	}
+}
+
+// TestUpdateUpstream_MaxConcurrent 更新并发上限：指针语义——给了就改（含 0 =
+// 不限），没给保持现状；负数拒绝。
+func TestUpdateUpstream_MaxConcurrent(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai", MaxConcurrent: 100})
+
+	do := func(body map[string]any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	if w := do(map[string]any{"max_concurrent": 7}); w.Code != 200 {
+		t.Fatalf("set 7 status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != 7 {
+		t.Fatalf("max_concurrent=%d want 7", u.MaxConcurrent)
+	}
+
+	// 字段缺省保持现状
+	if w := do(map[string]any{"name": "u2"}); w.Code != 200 {
+		t.Fatalf("rename status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != 7 {
+		t.Fatalf("absent field must keep current value, got %d", u.MaxConcurrent)
+	}
+
+	// 显式 0 = 不限
+	if w := do(map[string]any{"max_concurrent": 0}); w.Code != 200 {
+		t.Fatalf("set 0 status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != 0 {
+		t.Fatalf("max_concurrent=%d want 0 (unlimited)", u.MaxConcurrent)
+	}
+
+	if w := do(map[string]any{"max_concurrent": -5}); w.Code != 400 {
+		t.Fatalf("negative status=%d want 400", w.Code)
+	}
+}
+
 // TestUpdateUpstream_EnableDisable verifies the PATCH-style enabled toggle:
 // explicit value flips the state, absent field (old clients sending the full
 // form without enabled) preserves it.

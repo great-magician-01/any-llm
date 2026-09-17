@@ -304,6 +304,77 @@ func TestImportConfig_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestImportConfig_MaxConcurrent pins max_concurrent in config transfer:
+// export carries it; import applies it when present, keeps the current value
+// when absent, defaults a newly-created upstream to DefaultMaxConcurrent, and
+// rejects negatives.
+func TestImportConfig_MaxConcurrent(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://x", APIKey: "k", Format: "openai", MaxConcurrent: 42})
+
+	// 导出带上 max_concurrent
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d", w.Code)
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Upstreams) != 1 || out.Upstreams[0]["max_concurrent"] != float64(42) {
+		t.Fatalf("export upstreams=%v", out.Upstreams)
+	}
+
+	// 导入显式值 → 覆盖
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{
+		"upstreams": []map[string]any{
+			{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai", "max_concurrent": 33},
+			{"name": "fresh", "base_url": "https://y", "api_key": "k", "format": "openai", "max_concurrent": 0},
+		},
+	})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ := model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != 33 {
+		t.Fatalf("after import max_concurrent=%d want 33", u.MaxConcurrent)
+	}
+	fresh, err := model.GetUpstreamByName(d, "fresh")
+	if err != nil || fresh.MaxConcurrent != 0 {
+		t.Fatalf("fresh explicit 0 = unlimited: %+v err=%v", fresh, err)
+	}
+
+	// 导入缺省 → 保留现状
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{
+		"upstreams": []map[string]any{
+			{"name": "u", "base_url": "https://x2", "api_key": "k2", "format": "openai"},
+			{"name": "fresh2", "base_url": "https://z", "api_key": "k", "format": "openai"},
+		},
+	})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = model.GetUpstreamByID(d, id)
+	if u.MaxConcurrent != 33 {
+		t.Fatalf("absent max_concurrent must keep current value, got %d", u.MaxConcurrent)
+	}
+	fresh2, err := model.GetUpstreamByName(d, "fresh2")
+	if err != nil || fresh2.MaxConcurrent != model.DefaultMaxConcurrent {
+		t.Fatalf("fresh2 omitted → default %d: %+v err=%v", model.DefaultMaxConcurrent, fresh2, err)
+	}
+
+	// 负数 → 400，且整体拒绝
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{
+		"upstreams": []map[string]any{{"name": "bad", "base_url": "https://x", "api_key": "k", "format": "openai", "max_concurrent": -1}},
+	})
+	if w.Code != 400 {
+		t.Fatalf("negative status=%d want 400", w.Code)
+	}
+	if _, err := model.GetUpstreamByName(d, "bad"); err == nil {
+		t.Fatal("negative max_concurrent should reject the whole file")
+	}
+}
+
 // TestImportConfig_SkipsUnresolvableBindings: bindings referencing upstreams
 // that exist neither in the file nor in the DB are dropped; an alias with no
 // resolvable bindings left is skipped entirely. Bindings may also reference

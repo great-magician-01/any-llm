@@ -4,6 +4,7 @@ export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
   enabled: boolean
   daily_token_limit: number; monthly_token_limit: number
+  max_concurrent: number
   model_count?: number
   created_at?: string; updated_at?: string
 }

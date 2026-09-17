@@ -33,6 +33,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		Enabled           *bool  `json:"enabled"`
 		DailyTokenLimit   int    `json:"daily_token_limit"`
 		MonthlyTokenLimit int    `json:"monthly_token_limit"`
+		MaxConcurrent     *int   `json:"max_concurrent"`
 		FetchModels       bool   `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -50,8 +51,17 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "token limits must be >= 0"})
 		return
 	}
+	if req.MaxConcurrent != nil && *req.MaxConcurrent < 0 {
+		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
+		return
+	}
+	// 缺省给默认并发上限；显式 0 = 不限。
+	maxConcurrent := model.DefaultMaxConcurrent
+	if req.MaxConcurrent != nil {
+		maxConcurrent = *req.MaxConcurrent
+	}
 	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format,
-		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit}
+		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit, MaxConcurrent: maxConcurrent}
 	var id int64
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
@@ -119,6 +129,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		Enabled           *bool  `json:"enabled"`
 		DailyTokenLimit   *int   `json:"daily_token_limit"`
 		MonthlyTokenLimit *int   `json:"monthly_token_limit"`
+		MaxConcurrent     *int   `json:"max_concurrent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: update upstream invalid JSON", "id", id, "err", err)
@@ -131,6 +142,10 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	if req.MonthlyTokenLimit != nil && *req.MonthlyTokenLimit < 0 {
 		writeJSON(w, 400, map[string]any{"error": "monthly_token_limit must be >= 0"})
+		return
+	}
+	if req.MaxConcurrent != nil && *req.MaxConcurrent < 0 {
+		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
 		return
 	}
 	if req.Name != "" {
@@ -160,6 +175,9 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	if req.MonthlyTokenLimit != nil {
 		u.MonthlyTokenLimit = *req.MonthlyTokenLimit
+	}
+	if req.MaxConcurrent != nil {
+		u.MaxConcurrent = *req.MaxConcurrent
 	}
 	if req.Enabled != nil {
 		u.Enabled = *req.Enabled

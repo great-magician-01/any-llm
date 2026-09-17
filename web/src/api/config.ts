@@ -18,6 +18,7 @@ export interface ConfigUpstream {
   enabled?: boolean
   daily_token_limit?: number
   monthly_token_limit?: number
+  max_concurrent?: number
   models?: ConfigUpstreamModel[]
 }
 

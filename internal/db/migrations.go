@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    max_concurrent INTEGER NOT NULL DEFAULT 100,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_active INTEGER NOT NULL DEFAULT 1
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     enabled INTEGER NOT NULL DEFAULT 1,
     daily_token_limit INTEGER NOT NULL DEFAULT 0,
     monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+    max_concurrent INTEGER NOT NULL DEFAULT 100,
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     is_active INTEGER NOT NULL DEFAULT 1
@@ -242,6 +244,8 @@ var extraCols = []struct {
 	{"upstreams", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"upstreams", "is_active", "INTEGER NOT NULL DEFAULT 1"},
 	{"upstreams", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+	// 每上游并发上限（默认 100，0 = 不限）
+	{"upstreams", "max_concurrent", "INTEGER NOT NULL DEFAULT 100"},
 	{"ext_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	{"ext_keys", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"ext_keys", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
@@ -389,11 +393,14 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    enabled INTEGER NOT NULL DEFAULT 1,
 		    daily_token_limit INTEGER NOT NULL DEFAULT 0,
 		    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+		    max_concurrent INTEGER NOT NULL DEFAULT 100,
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
-		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "created_at", "updated_at", "is_active"},
+		// extraCols 先于重建执行（OpenSQLite 的调用顺序保证），老表此时已补
+		// max_concurrent 列，按名搬运不丢值。
+		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "max_concurrent", "created_at", "updated_at", "is_active"},
 	},
 	{
 		table: "upstream_models",
