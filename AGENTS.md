@@ -68,6 +68,7 @@ All settings load from environment variables. A `.env` file in the working direc
 ## Logging
 
 - `internal/logger` wraps stdlib `log/slog` (text handler), writing to **both** stdout and the configured log file (append mode, parent dirs auto-created)
+- Log files rotate daily (local time): the file lives at `<dir>/<YYYY-MM-DD>/<name>.log`; `dailyFileWriter` checks the date on every write and opens the new day's file after midnight — no restart needed
 - All HTTP requests logged via `gateway.LoggingMiddleware` (method, path, status, size, duration, remote)
 - Gateway completion requests additionally log: key id/label, upstream, model, in_format, stream flag, token usage, status
 - Upstream errors are logged with status code and truncated response body (≤512 chars)
