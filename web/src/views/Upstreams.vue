@@ -13,7 +13,7 @@ import AppIcon from '../components/AppIcon.vue'
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, fetch_models: true })
 const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
@@ -146,7 +146,7 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, fetch_models: true } }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, fetch_models: true } }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
@@ -387,6 +387,14 @@ const columns: DataTableColumns<Upstream> = [
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
+  {
+    title: '并发上限',
+    key: 'max_concurrent',
+    width: 100,
+    render: (row) => row.max_concurrent > 0
+      ? h('span', { class: 'mono' }, formatInt(row.max_concurrent))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
+  },
   { title: '操作', key: 'actions', width: 360, render: (row) => h(NSpace, { size: 8, wrap: false }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
@@ -465,7 +473,7 @@ onMounted(() => {
         :bordered="false"
         :columns="columns"
         :data="upstreams"
-        :scroll-x="1400"
+        :scroll-x="1500"
         :row-key="(row: Upstream) => row.id"
         :expanded-row-keys="expandedRowKeys"
         @update:expanded-row-keys="onExpand"
@@ -507,6 +515,15 @@ onMounted(() => {
               :min="0"
               :step="10000"
               placeholder="0 表示不限"
+              style="width: 100%"
+            />
+          </n-form-item>
+          <n-form-item label="并发上限">
+            <n-input-number
+              v-model:value="form.max_concurrent"
+              :min="0"
+              :step="10"
+              placeholder="0 表示不限，默认 100"
               style="width: 100%"
             />
           </n-form-item>

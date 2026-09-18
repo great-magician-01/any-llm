@@ -18,8 +18,8 @@ import (
 //
 // 导入语义：同名覆盖——上游全字段覆盖、模型列表精确替换；别名绑定整体替换。
 // 文件里没出现的现有配置原样保留。字段级例外：enabled / 两个 token 上限 /
-// models 在文件里缺省时保留现状（导入侧用指针/nil 区分「没给」），其余字段
-// 一律以文件为准。绑定指向的上游在文件与库中都不存在时丢弃该绑定（计数
+// 并发上限 / models 在文件里缺省时保留现状（导入侧用指针/nil 区分「没给」），
+// 其余字段一律以文件为准。绑定指向的上游在文件与库中都不存在时丢弃该绑定（计数
 // bindings_dropped）；一个可解析绑定都不剩的别名整个跳过。文件内重名条目
 // （上游/别名/单上游内模型）整体 400 拒绝。导入非单事务：中途 DB 失败时
 // 已提交的条目会保留，直接重导同一文件即可收敛（同名覆盖幂等）。
@@ -41,6 +41,7 @@ type configUpstream struct {
 	Enabled           *bool                 `json:"enabled"`
 	DailyTokenLimit   *int                  `json:"daily_token_limit"`
 	MonthlyTokenLimit *int                  `json:"monthly_token_limit"`
+	MaxConcurrent     *int                  `json:"max_concurrent"`
 	Models            []configUpstreamModel `json:"models"`
 }
 
@@ -88,7 +89,7 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		Upstreams: make([]configUpstream, 0, len(ups)), Aliases: make([]configAlias, 0, len(aliases))}
 	for _, u := range ups {
 		cu := configUpstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format,
-			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit}
+			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit, MaxConcurrent: &u.MaxConcurrent}
 		en := u.Enabled
 		cu.Enabled = &en
 		models, err := model.ListModels(a.db, u.ID)
@@ -238,6 +239,9 @@ func validateImport(in *configFile) error {
 		if u.MonthlyTokenLimit != nil && *u.MonthlyTokenLimit < 0 {
 			return fmt.Errorf("upstreams[%d]: monthly_token_limit must be >= 0", i)
 		}
+		if u.MaxConcurrent != nil && *u.MaxConcurrent < 0 {
+			return fmt.Errorf("upstreams[%d]: max_concurrent must be >= 0 (0 = unlimited)", i)
+		}
 		seen := make(map[string]bool, len(u.Models))
 		for j := range u.Models {
 			m := &u.Models[j]
@@ -278,7 +282,8 @@ func validateImport(in *configFile) error {
 func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	ex, err := model.GetUpstreamByName(d, u.Name)
 	if errors.Is(err, sql.ErrNoRows) {
-		nu := &model.Upstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Enabled: true}
+		nu := &model.Upstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Enabled: true,
+			MaxConcurrent: model.DefaultMaxConcurrent}
 		if u.Enabled != nil {
 			nu.Enabled = *u.Enabled
 		}
@@ -287,6 +292,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 		}
 		if u.MonthlyTokenLimit != nil {
 			nu.MonthlyTokenLimit = *u.MonthlyTokenLimit
+		}
+		if u.MaxConcurrent != nil {
+			nu.MaxConcurrent = *u.MaxConcurrent
 		}
 		id, err := model.CreateUpstream(d, nu)
 		if err != nil {
@@ -320,6 +328,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	}
 	if u.MonthlyTokenLimit != nil {
 		ex.MonthlyTokenLimit = *u.MonthlyTokenLimit
+	}
+	if u.MaxConcurrent != nil {
+		ex.MaxConcurrent = *u.MaxConcurrent
 	}
 	if err := model.UpdateUpstream(d, ex); err != nil {
 		return 0, false, fmt.Errorf("update upstream %q: %w", u.Name, err)

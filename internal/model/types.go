@@ -3,17 +3,20 @@ package model
 import "time"
 
 type Upstream struct {
-	ID                int64     `json:"id"`
-	Name              string    `json:"name"`
-	BaseURL           string    `json:"base_url"`
-	APIKey            string    `json:"api_key"`
-	Format            string    `json:"format"`
-	Enabled           bool      `json:"enabled"`
-	DailyTokenLimit   int       `json:"daily_token_limit"`
-	MonthlyTokenLimit int       `json:"monthly_token_limit"`
-	ModelCount        int       `json:"model_count"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                int64  `json:"id"`
+	Name              string `json:"name"`
+	BaseURL           string `json:"base_url"`
+	APIKey            string `json:"api_key"`
+	Format            string `json:"format"`
+	Enabled           bool   `json:"enabled"`
+	DailyTokenLimit   int    `json:"daily_token_limit"`
+	MonthlyTokenLimit int    `json:"monthly_token_limit"`
+	// MaxConcurrent 该上游允许的在途请求并发上限；0 = 不限，新建默认
+	// DefaultMaxConcurrent。由网关在 dispatch 前按上游 ID 的信号量强制执行。
+	MaxConcurrent int       `json:"max_concurrent"`
+	ModelCount    int       `json:"model_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type UpstreamModel struct {

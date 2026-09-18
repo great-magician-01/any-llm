@@ -173,7 +173,7 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 	if err != nil {
 		return false, nil, fmt.Errorf("resolve alias %q: %w", name, err)
 	}
-	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.created_at, u.updated_at, b.model_name
+	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, b.model_name
 		FROM model_alias_bindings b JOIN upstreams u ON u.id = b.upstream_id AND u.is_active = 1 AND u.enabled = 1
 		WHERE b.alias_id = ? AND b.is_active = 1 ORDER BY b.priority, b.id`), aliasID)
 	if err != nil {
@@ -184,7 +184,7 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 		t := AliasTarget{Upstream: &Upstream{}}
 		var enabled int
 		if err := rows.Scan(&t.Upstream.ID, &t.Upstream.Name, &t.Upstream.BaseURL, &t.Upstream.APIKey, &t.Upstream.Format,
-			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt,
+			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.MaxConcurrent, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt,
 			&t.ModelName); err != nil {
 			return true, nil, err
 		}

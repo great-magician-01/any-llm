@@ -20,7 +20,7 @@ func testDB(t *testing.T) *sql.DB {
 
 func TestCreateAndGetUpstream(t *testing.T) {
 	d := testDB(t)
-	id, err := CreateUpstream(d, &Upstream{Name: "my-openai", BaseURL: "https://api.openai.com", APIKey: "sk-xxx", Format: "openai"})
+	id, err := CreateUpstream(d, &Upstream{Name: "my-openai", BaseURL: "https://api.openai.com", APIKey: "sk-xxx", Format: "openai", MaxConcurrent: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,12 +34,28 @@ func TestCreateAndGetUpstream(t *testing.T) {
 	if got.Name != "my-openai" || got.BaseURL != "https://api.openai.com" || got.APIKey != "sk-xxx" || got.Format != "openai" {
 		t.Fatalf("got=%+v", got)
 	}
+	if got.MaxConcurrent != 42 {
+		t.Fatalf("max_concurrent=%d want 42", got.MaxConcurrent)
+	}
 	byName, err := GetUpstreamByName(d, "my-openai")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if byName.ID != id {
-		t.Fatalf("byName id=%d want %d", byName.ID, id)
+	if byName.ID != id || byName.MaxConcurrent != 42 {
+		t.Fatalf("byName=%+v want id=%d", byName, id)
+	}
+	list, err := ListUpstreams(d)
+	if err != nil || len(list) != 1 || list[0].MaxConcurrent != 42 {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+	// UpdateUpstream 全量覆盖：改其他字段不得清掉 max_concurrent（先 Get 再存约定）
+	got.BaseURL = "https://changed"
+	if err := UpdateUpstream(d, got); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := GetUpstreamByID(d, id)
+	if again.MaxConcurrent != 42 || again.BaseURL != "https://changed" {
+		t.Fatalf("after update=%+v", again)
 	}
 }
 
