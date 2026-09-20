@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 any-llm is a single-binary LLM API gateway. It exposes OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`) endpoints, routes to multiple upstream providers (also OpenAI/Anthropic/Responses format), and translates between any inbound/upstream format pair through a normalized intermediate representation (IR). It embeds a Vue 3 admin SPA and records per-request token usage. Backend is stdlib `net/http` only — no framework. `AGENTS.md` holds the full env-var table, route list, and operational details; read it for anything not covered here.
 
+## Git workflow
+
+- **Documentation-only changes** (`CLAUDE.md`, `AGENTS.md`, `readme.md`, `docs/**`) are committed **directly on `master`** — no branch, no PR needed.
+- **Anything that changes code** (`bugfix` / `feat` / `refactor`, i.e. any `.go`, `web/`, migration, Dockerfile, or CI change, tests included) must be done on a **new branch** — never commit it straight to `master`.
+- Branch names follow `<type>/<slug>` (see recent history: `fix/log-daily-rotation`, `feat/upstream-concurrency-limit`), then merged back to `master` by PR.
+
 ## Commands
 
 ```bash

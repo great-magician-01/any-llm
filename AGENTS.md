@@ -10,6 +10,12 @@
 - **Translation layer**: requests flow through an IR (`internal/translate/`) — OpenAI/Anthropic in/out, any upstream format
 - **9 internal packages**: `auth`, `config`, `db`, `gateway`, `logger`, `model`, `translate`, `upstream`, `webapi`
 
+## Git workflow
+
+- **Documentation-only changes** (`CLAUDE.md`, `AGENTS.md`, `readme.md`, `docs/**`) are committed **directly on `master`** — no branch, no PR needed.
+- **Anything that changes code** (`bugfix` / `feat` / `refactor`, i.e. any `.go`, `web/`, migration, Dockerfile, or CI change, tests included) must be done on a **new branch** — never commit it straight to `master`.
+- Branch names follow `<type>/<slug>` (see recent history: `fix/log-daily-rotation`, `feat/upstream-concurrency-limit`), then merged back to `master` by PR.
+
 ## Build & Run
 
 ```bash
