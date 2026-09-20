@@ -43,7 +43,7 @@ func pgTestDB(t *testing.T) *sql.DB {
 		d.Close()
 		t.Fatalf("create schema: %v", err)
 	}
-	if err := MigratePGForTest(d); err != nil {
+	if err := MigrateForTest(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 		d.Close()
 		t.Fatalf("migrate: %v", err)
@@ -841,14 +841,8 @@ CREATE TABLE conversation_records (
 	}
 
 	// 与 OpenPG 相同的迁移管线
-	if _, err := d.Exec(migrationPG); err != nil {
-		t.Fatalf("migrationPG: %v", err)
-	}
-	if err := migrateExtraCols(d); err != nil {
-		t.Fatalf("extraCols: %v", err)
-	}
-	if err := migrateSoftDelete(d); err != nil {
-		t.Fatalf("soft delete migrate: %v", err)
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
 	}
 
 	// 名称列仍是 label（旧值保留），remark 列就位

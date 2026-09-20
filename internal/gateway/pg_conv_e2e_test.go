@@ -44,7 +44,7 @@ func pgConvTestDB(t *testing.T) *sql.DB {
 		d.Close()
 		t.Fatalf("create schema: %v", err)
 	}
-	if err := db.MigratePGForTest(d); err != nil {
+	if err := db.MigrateForTest(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 		d.Close()
 		t.Fatalf("migrate: %v", err)

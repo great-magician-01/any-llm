@@ -190,7 +190,7 @@ func TestOpenPG_FreshCreatesAllTables(t *testing.T) {
 	if err := d.Ping(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
-	if _, err := d.Exec(migrationPG); err != nil {
+	if err := MigrateForTest(d); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	for _, table := range []string{"upstreams", "upstream_models", "ext_keys", "usage_records"} {
