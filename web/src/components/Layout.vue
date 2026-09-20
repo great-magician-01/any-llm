@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import client from '../api/client'
 import BrandMark from './BrandMark.vue'
 import AppIcon, { type IconName } from './AppIcon.vue'
+import ThemeToggle from './ThemeToggle.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -54,12 +55,15 @@ const menuItems = [
             <span class="admin-avatar">A</span>
             <span class="admin-name">管理员</span>
           </div>
-          <button class="logout-btn" title="退出登录" @click="logout">
-            <AppIcon name="logout" :size="15" />
-            <span>退出登录</span>
-          </button>
+          <div class="footer-actions">
+            <ThemeToggle />
+            <button class="logout-btn" title="退出登录" @click="logout">
+              <AppIcon name="logout" :size="15" />
+              <span>退出登录</span>
+            </button>
+          </div>
         </div>
-        <div class="theme-switch" @click="router.push('/glass/dashboard')">
+        <div class="suite-switch" @click="router.push('/glass/dashboard')">
           <AppIcon name="swap" :size="14" />
           <span>切换到毛玻璃版</span>
         </div>
@@ -138,6 +142,11 @@ const menuItems = [
   color: var(--text-2);
   white-space: nowrap;
 }
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .logout-btn {
   display: inline-flex;
   align-items: center;
@@ -157,7 +166,7 @@ const menuItems = [
   color: #fb7185;
   background: rgba(251, 113, 133, 0.08);
 }
-.theme-switch {
+.suite-switch {
   margin-top: 10px;
   display: flex;
   align-items: center;
@@ -175,7 +184,7 @@ const menuItems = [
     border-color 0.15s ease,
     background 0.15s ease;
 }
-.theme-switch:hover {
+.suite-switch:hover {
   color: var(--brand-hover);
   border-color: rgba(91, 140, 255, 0.4);
   background: rgba(91, 140, 255, 0.1);

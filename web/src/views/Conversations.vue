@@ -237,7 +237,7 @@ onMounted(load)
   margin: 6px 0 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(2, 6, 18, 0.5);
+  background: var(--surface-2);
   border: 1px solid var(--border-soft);
   color: var(--text-3);
   font-size: 12.5px;
@@ -256,7 +256,7 @@ onMounted(load)
   margin-top: 16px;
 }
 .msg {
-  border-left: 2px solid #475569;
+  border-left: 2px solid var(--text-4);
   padding: 2px 0 2px 14px;
   min-width: 0;
 }
@@ -286,7 +286,7 @@ onMounted(load)
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(2, 6, 18, 0.5);
+  background: var(--surface-2);
   border: 1px solid var(--border-soft);
   font-size: 12.5px;
   line-height: 1.6;

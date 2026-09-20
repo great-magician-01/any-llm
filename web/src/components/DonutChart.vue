@@ -154,7 +154,7 @@ function pct(i: number): string {
   padding: 6px 9px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(10, 15, 26, 0.94);
+  background: var(--tip-bg);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(6px);
   font-size: 11.5px;
