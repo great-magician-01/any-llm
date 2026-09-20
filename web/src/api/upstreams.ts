@@ -43,9 +43,10 @@ export async function listModels(upstreamId: number) {
   return data.data as UpstreamModel[]
 }
 
-export const DEFAULT_MODEL_LENGTH = 200000
+export const DEFAULT_MODEL_CONTEXT_LENGTH = 1000000
+export const DEFAULT_MODEL_MAX_OUTPUT_LENGTH = 200000
 
-export async function addModel(upstreamId: number, model_name: string, context_length = DEFAULT_MODEL_LENGTH, max_output_length = DEFAULT_MODEL_LENGTH) {
+export async function addModel(upstreamId: number, model_name: string, context_length = DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length = DEFAULT_MODEL_MAX_OUTPUT_LENGTH) {
   await client.post(`/upstreams/${upstreamId}/models`, { model_name, context_length, max_output_length })
 }
 

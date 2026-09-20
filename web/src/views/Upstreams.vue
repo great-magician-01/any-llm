@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
+import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
 import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '../api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
@@ -39,7 +39,7 @@ const importing = ref(false)
 
 function modelOptsFor(id: number) {
   if (!newModelOpts.value[id]) {
-    newModelOpts.value[id] = { context_length: DEFAULT_MODEL_LENGTH, max_output_length: DEFAULT_MODEL_LENGTH }
+    newModelOpts.value[id] = { context_length: DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length: DEFAULT_MODEL_MAX_OUTPUT_LENGTH }
   }
   return newModelOpts.value[id]
 }
@@ -285,7 +285,7 @@ const columns: DataTableColumns<Upstream> = [
         h('div', { style: 'display: flex; align-items: center; gap: 4px' }, [
           h(NInputNumber, {
             value: opts.context_length,
-            'onUpdate:value': (v: number | null) => { opts.context_length = v ?? DEFAULT_MODEL_LENGTH },
+            'onUpdate:value': (v: number | null) => { opts.context_length = v ?? DEFAULT_MODEL_CONTEXT_LENGTH },
             min: 0,
             step: 1000,
             placeholder: '上下文长度',
@@ -300,7 +300,7 @@ const columns: DataTableColumns<Upstream> = [
         ]),
         h(NInputNumber, {
           value: opts.max_output_length,
-          'onUpdate:value': (v: number | null) => { opts.max_output_length = v ?? DEFAULT_MODEL_LENGTH },
+          'onUpdate:value': (v: number | null) => { opts.max_output_length = v ?? DEFAULT_MODEL_MAX_OUTPUT_LENGTH },
           min: 0,
           step: 1000,
           placeholder: '最大输出长度',

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
     upstream_id INTEGER NOT NULL,
     model_name TEXT NOT NULL,
     manual INTEGER NOT NULL DEFAULT 0,
-    context_length INTEGER NOT NULL DEFAULT 200000,
+    context_length INTEGER NOT NULL DEFAULT 1000000,
     max_output_length INTEGER NOT NULL DEFAULT 200000,
     is_active INTEGER NOT NULL DEFAULT 1
 );
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS upstream_models (
     upstream_id BIGINT NOT NULL,
     model_name TEXT NOT NULL,
     manual INTEGER NOT NULL DEFAULT 0,
-    context_length INTEGER NOT NULL DEFAULT 200000,
+    context_length INTEGER NOT NULL DEFAULT 1000000,
     max_output_length INTEGER NOT NULL DEFAULT 200000,
     is_active INTEGER NOT NULL DEFAULT 1
 );
@@ -255,7 +255,7 @@ var extraCols = []struct {
 	// 备注（初始 schema 之后才加入，老库回填）
 	{"ext_keys", "remark", "TEXT NOT NULL DEFAULT ''"},
 	{"upstream_models", "is_active", "INTEGER NOT NULL DEFAULT 1"},
-	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 200000"},
+	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 1000000"},
 	{"upstream_models", "max_output_length", "INTEGER NOT NULL DEFAULT 200000"},
 	{"usage_records", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
 	{"usage_records", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"},
@@ -412,7 +412,7 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    upstream_id INTEGER NOT NULL,
 		    model_name TEXT NOT NULL,
 		    manual INTEGER NOT NULL DEFAULT 0,
-		    context_length INTEGER NOT NULL DEFAULT 200000,
+		    context_length INTEGER NOT NULL DEFAULT 1000000,
 		    max_output_length INTEGER NOT NULL DEFAULT 200000,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
