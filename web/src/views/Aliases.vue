@@ -5,6 +5,7 @@ import type { DataTableColumns } from 'naive-ui'
 import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '../api/aliases'
 import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '../api/upstreams'
 import AppIcon from '../components/AppIcon.vue'
+import { aliasUpstreamOptions } from '../utils/aliasOptions'
 
 const message = useMessage()
 const aliases = ref<ModelAlias[]>([])
@@ -19,8 +20,10 @@ const form = ref<{ name: string; bindings: BindingRow[] }>({ name: '', bindings:
 // 模型下拉选项按上游缓存，选中上游时按需加载
 const modelOptions = ref<Record<number, UpstreamModel[]>>({})
 
+// 禁用的上游不进下拉；但编辑时已指向禁用上游的旧绑定要能显示上游名，
+// 所以这些上游补成不可选项保留（见 aliasUpstreamOptions）。
 const upstreamOptions = computed(() =>
-  upstreams.value.map((u) => ({ label: `${u.name}（${u.format}）`, value: u.id as number })),
+  aliasUpstreamOptions(upstreams.value, form.value.bindings.map((b) => b.upstream_id)),
 )
 
 function modelOptionsFor(upstreamId: number | null) {
