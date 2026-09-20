@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     max_concurrent INTEGER NOT NULL DEFAULT 100,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
     is_active INTEGER NOT NULL DEFAULT 1
 );
 
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS upstreams (
     max_concurrent INTEGER NOT NULL DEFAULT 100,
     created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP(0),
     is_active INTEGER NOT NULL DEFAULT 1
 );
 
@@ -246,6 +248,13 @@ var extraCols = []struct {
 	{"upstreams", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	// 每上游并发上限（默认 100，0 = 不限）
 	{"upstreams", "max_concurrent", "INTEGER NOT NULL DEFAULT 100"},
+	// 有效期截止时刻；可空，NULL = 永久有效。到点后网关侧等同禁用（见
+	// model.Upstream.Expired）。与 ext_keys.last_used_at 一致不做 NOT NULL 回填。
+	// 这里必须写 TIMESTAMP 而不是 SQLite DDL 里那个 DATETIME：coldef 要同时
+	// 对两种方言合法，而 PG 没有 datetime 这个类型名（ALTER TABLE ADD COLUMN
+	// 会 42704）。SQLite 对 DATE/DATETIME/TIMESTAMP 的亲和性与驱动解析完全
+	// 一致（modernc/sqlite 三者都转 time.Time），换拼写无行为差异。
+	{"upstreams", "expires_at", "TIMESTAMP"},
 	{"ext_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 	{"ext_keys", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
 	{"ext_keys", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
@@ -396,11 +405,12 @@ var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 		    max_concurrent INTEGER NOT NULL DEFAULT 100,
 		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		    expires_at DATETIME,
 		    is_active INTEGER NOT NULL DEFAULT 1
 		)`,
 		// extraCols 先于重建执行（OpenSQLite 的调用顺序保证），老表此时已补
-		// max_concurrent 列，按名搬运不丢值。
-		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "max_concurrent", "created_at", "updated_at", "is_active"},
+		// max_concurrent / expires_at 列，按名搬运不丢值。
+		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "max_concurrent", "created_at", "updated_at", "expires_at", "is_active"},
 	},
 	{
 		table: "upstream_models",

@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, useMessage } from 'naive-ui'
+import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
 import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '../api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
 import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '../utils/balance'
+import { expiryLabel, expiryToISO, isoToExpiry } from '../utils/upstreamStatus'
 import { formatInt, formatTime } from '../utils/format'
 import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
+// 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
+// ISO 字符串；null = 不填 = 永久有效。
+const expiryPicker = ref<number | null>(null)
 const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
@@ -133,6 +137,9 @@ async function doImport() {
 }
 async function save() {
   try {
+    // 有效期由独立的选择器 ref 持有，提交前转成 ISO 覆写——这样清空选择器时
+    // 会显式发出 null（后端据此清除有效期），而不是把字段整个省掉。
+    form.value.expires_at = expiryToISO(expiryPicker.value)
     if (editing.value?.id) {
       await updateUpstream(editing.value.id, form.value)
     } else {
@@ -146,11 +153,11 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, fetch_models: true } }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
-function edit(u: Upstream) { editing.value = u; form.value = { ...u }; showForm.value = true }
+function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); showForm.value = true }
 function add() { editing.value = null; resetForm(); showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function toggleEnabled(row: Upstream, v: boolean) {
@@ -339,6 +346,17 @@ const columns: DataTableColumns<Upstream> = [
   { title: '名称', key: 'name', width: 130, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
   { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
+  {
+    title: '有效期至',
+    key: 'expires_at',
+    width: 150,
+    render: (row) => {
+      const { text, tone } = expiryLabel(row)
+      if (tone === 'error') return h(NTag, { type: 'error', bordered: false, size: 'small' }, { default: () => text })
+      if (tone === 'muted') return h('span', { style: 'color: var(--text-4)' }, text)
+      return h('span', { style: 'font-size: 12.5px' }, text)
+    },
+  },
   { title: '地址', key: 'base_url', minWidth: 180, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
@@ -473,7 +491,7 @@ onMounted(() => {
         :bordered="false"
         :columns="columns"
         :data="upstreams"
-        :scroll-x="1500"
+        :scroll-x="1650"
         :row-key="(row: Upstream) => row.id"
         :expanded-row-keys="expandedRowKeys"
         @update:expanded-row-keys="onExpand"
@@ -500,6 +518,15 @@ onMounted(() => {
             </n-radio-group>
           </n-form-item>
           <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
+          <n-form-item label="有效期至">
+            <n-date-picker
+              v-model:value="expiryPicker"
+              type="datetime"
+              clearable
+              placeholder="不填表示永久有效"
+              style="width: 100%"
+            />
+          </n-form-item>
           <n-form-item label="单日 token 上限">
             <n-input-number
               v-model:value="form.daily_token_limit"

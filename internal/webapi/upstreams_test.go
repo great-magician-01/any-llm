@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/model"
@@ -424,5 +425,135 @@ func TestUpdateUpstream_EnableDisable(t *testing.T) {
 	u, _ = model.GetUpstreamByID(d, id)
 	if !u.Enabled {
 		t.Fatal("upstream should be re-enabled")
+	}
+}
+
+// TestUpstreamExpiry_API 覆盖管理端三态：创建时设置、update 显式设置/清除/
+// 缺省保留，以及非法格式 400。缺省保留这一条尤其重要——toggleEnabled 那种
+// 只发 {"enabled":...} 的部分 PATCH 不能把有效期清掉。
+func TestUpstreamExpiry_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) int64 {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			ID int64 `json:"id"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	at := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	later := at.Add(48 * time.Hour)
+
+	// 创建时设置
+	id := create(map[string]any{"expires_at": at})
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt == nil || !u.ExpiresAt.Equal(at) {
+		t.Fatalf("create expires_at=%v, want %v", u.ExpiresAt, at)
+	}
+
+	// 缺省 → 保留现状（顺带确认其它字段仍能正常更新）
+	if w := do(id, map[string]any{"name": "u2"}); w.Code != 200 {
+		t.Fatalf("rename status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt == nil || !u.ExpiresAt.Equal(at) {
+		t.Fatalf("absent expires_at=%v, want preserved %v", u.ExpiresAt, at)
+	}
+
+	// 部分 PATCH（只发 enabled，前端的开关走这条路）也不能清掉有效期
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt == nil || !u.ExpiresAt.Equal(at) {
+		t.Fatalf("partial patch cleared expires_at=%v, want %v", u.ExpiresAt, at)
+	}
+
+	// 显式设置新值
+	if w := do(id, map[string]any{"expires_at": later}); w.Code != 200 {
+		t.Fatalf("extend status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt == nil || !u.ExpiresAt.Equal(later) {
+		t.Fatalf("extend expires_at=%v, want %v", u.ExpiresAt, later)
+	}
+
+	// 显式 null → 清除，恢复永久有效
+	if w := do(id, map[string]any{"expires_at": nil}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt != nil {
+		t.Fatalf("clear expires_at=%v, want nil", u.ExpiresAt)
+	}
+
+	// 空串同样视为清除（前端选择器清空时两种都可能发出来）
+	if w := do(id, map[string]any{"expires_at": at}); w.Code != 200 {
+		t.Fatalf("set status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := do(id, map[string]any{"expires_at": ""}); w.Code != 200 {
+		t.Fatalf("clear-empty status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt != nil {
+		t.Fatalf("clear-empty expires_at=%v, want nil", u.ExpiresAt)
+	}
+
+	// 非法格式 → 400，且不写库
+	if w := do(id, map[string]any{"expires_at": "not-a-time"}); w.Code != 400 {
+		t.Fatalf("invalid status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := model.GetUpstreamByID(d, id); u.ExpiresAt != nil {
+		t.Fatalf("invalid expires_at=%v, want nil (unchanged)", u.ExpiresAt)
+	}
+}
+
+// TestUpstreamExpiry_TimezoneHandling 带 Z / 非本地偏移的输入必须落到同一
+// 绝对时刻。SQLite 存 RFC3339 文本无所谓，但 PG 的 TIMESTAMP(0) 写入时丢弃
+// 时区只存墙钟（internal/db/pgtime.go），位置不归一就会偏几个时区。
+func TestUpstreamExpiry_TimezoneHandling(t *testing.T) {
+	a, d := setupAPI(t)
+	// 用一个必定非本地的偏移构造目标时刻（UTC 正午）
+	want := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+
+	b, _ := json.Marshal(map[string]any{"name": "u", "base_url": "https://x", "api_key": "k",
+		"format": "openai", "expires_at": want.Format(time.RFC3339)})
+	req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID int64 `json:"id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	got, _ := model.GetUpstreamByID(d, resp.ID)
+	if got.ExpiresAt == nil {
+		t.Fatal("expires_at not stored")
+	}
+	if !got.ExpiresAt.Equal(want) {
+		t.Fatalf("expires_at=%v (%s), want same instant as %v",
+			got.ExpiresAt, got.ExpiresAt.Format(time.RFC3339), want)
+	}
+	// 亚秒被截断（与 PG TIMESTAMP(0) 口径一致，前端选择器按秒级回填）
+	if got.ExpiresAt.Nanosecond() != 0 {
+		t.Fatalf("expires_at has sub-second precision: %v", got.ExpiresAt)
 	}
 }

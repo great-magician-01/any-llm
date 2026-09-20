@@ -5,6 +5,8 @@ export interface Upstream {
   enabled: boolean
   daily_token_limit: number; monthly_token_limit: number
   max_concurrent: number
+  /** 有效期截止时刻（ISO 带偏移）；null/缺省 = 永久有效。到期后网关侧等同禁用。 */
+  expires_at?: string | null
   model_count?: number
   created_at?: string; updated_at?: string
 }

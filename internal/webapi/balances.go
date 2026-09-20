@@ -28,10 +28,12 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snaps := make([]*model.BalanceSnapshot, len(upstreams))
+	now := time.Now()
 	var wg sync.WaitGroup
 	for i := range upstreams {
 		u := &upstreams[i]
-		if !u.Enabled || upstream.BalanceVendor(u) == "" {
+		// 禁用与已过有效期的上游都不拉取：后者等同失效，别再浪费厂商调用
+		if !u.Enabled || u.Expired(now) || upstream.BalanceVendor(u) == "" {
 			continue
 		}
 		wg.Add(1)
