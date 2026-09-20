@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/great-magician-01/any-llm/internal/db"
 )
 
 func TestConvShardName(t *testing.T) {
@@ -53,7 +55,11 @@ func TestConvShardNameRe(t *testing.T) {
 }
 
 func TestConvShardDDL(t *testing.T) {
-	stmts := convShardDDL("conversation_records_2026_09")
+	// PG：共享序列 + 建表 + 三个独立索引，共 5 条
+	stmts, err := convShardDDL(db.DialectPostgres, "conversation_records_2026_09")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(stmts) != 5 {
 		t.Fatalf("want 5 stmts, got %d", len(stmts))
 	}
@@ -71,9 +77,30 @@ func TestConvShardDDL(t *testing.T) {
 			t.Errorf("index stmt %d: %q", i, stmts[2+i])
 		}
 	}
+
+	// MySQL：没有序列，索引内联，只 1 条
+	my, err := convShardDDL(db.DialectMySQL, "conversation_records_2026_09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(my) != 1 {
+		t.Fatalf("mysql want 1 stmt, got %d", len(my))
+	}
+	if strings.Contains(my[0], "nextval") || strings.Contains(my[0], "AUTO_INCREMENT") {
+		t.Errorf("mysql shard must not use a sequence: %q", my[0])
+	}
+	if !strings.Contains(my[0], "`id` BIGINT NOT NULL PRIMARY KEY") {
+		t.Errorf("mysql shard id must be an explicit non-autoincrement PK: %q", my[0])
+	}
+
+	// SQLite 不做分表：拒绝渲染，而不是生成一份永远不会被执行的 DDL。
+	if _, err := convShardDDL(db.DialectSQLite, "conversation_records_2026_09"); err == nil {
+		t.Error("sqlite sharding should be rejected")
+	}
+
 	// 非法表名不生成 DDL
-	if convShardDDL("conversation_records_2026_9; DROP TABLE ext_keys") != nil {
-		t.Error("bad name should yield nil")
+	if _, err := convShardDDL(db.DialectPostgres, "conversation_records_2026_9; DROP TABLE ext_keys"); err == nil {
+		t.Error("bad name should yield an error")
 	}
 }
 

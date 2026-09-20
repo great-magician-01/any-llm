@@ -47,9 +47,8 @@ func CreateAlias(d *sql.DB, a *ModelAlias) (int64, error) {
 	}
 	defer tx.Rollback()
 	now := time.Now()
-	var id int64
-	err = tx.QueryRow(db.Rebind(d, `INSERT INTO model_aliases (name, created_at, updated_at) VALUES (?,?,?) RETURNING id`),
-		a.Name, now, now).Scan(&id)
+	id, err := db.InsertReturningIDTx(tx, d, `INSERT INTO model_aliases (name, created_at, updated_at) VALUES (?,?,?) RETURNING id`,
+		a.Name, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create alias %q: %w", a.Name, err)
 	}

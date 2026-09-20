@@ -39,9 +39,10 @@ func CreateExtKey(d *sql.DB, label, remark string, dailyLimit, monthlyLimit int,
 		return nil, err
 	}
 	now := time.Now()
-	var id int64
-	err = d.QueryRow(db.Rebind(d, `INSERT INTO ext_keys (key, label, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`),
-		key, label, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now).Scan(&id)
+	// key 列要按方言引用：MySQL 的 key 是保留字，不包反引号会语法错误。
+	keyCol := db.QuoteIdent(d, "key")
+	id, err := db.InsertReturningID(d, `INSERT INTO ext_keys (`+keyCol+`, label, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`,
+		key, label, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
@@ -61,11 +62,12 @@ func generateKey() (string, error) {
 }
 
 func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
+	keyCol := db.QuoteIdent(d, "key")
 	k := &ExtKey{}
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE key=? AND is_active = 1`), key).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, `+keyCol+`, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE `+keyCol+`=? AND is_active = 1`), key).
 		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
@@ -83,11 +85,12 @@ func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 }
 
 func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
+	keyCol := db.QuoteIdent(d, "key")
 	k := &ExtKey{}
 	var enabled int
 	var lastUsed sql.NullTime
 	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
+	err := d.QueryRow(db.Rebind(d, `SELECT id, `+keyCol+`, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
 		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
@@ -105,7 +108,8 @@ func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
 }
 
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	rows, err := d.Query(`SELECT id, key, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	keyCol := db.QuoteIdent(d, "key")
+	rows, err := d.Query(`SELECT id, ` + keyCol + `, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}

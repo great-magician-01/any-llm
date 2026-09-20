@@ -37,17 +37,17 @@ type ConversationRecord struct {
 	CreatedAt           time.Time `json:"created_at"`
 }
 
-// InsertConversation 写入一条对话归档。只在 PG 上被调用（网关层门控）；
-// PG 下按 created_at 月份路由到月分表（缺表时自动建表并注册进缓存，
-// 见 conversation_shard.go），SQLite 走单表（仅单测使用）。两个 IR 列用
-// ?::jsonb 占位，Rebind 会把 ? 重写为 $N 并保留 ::jsonb 转换。
+// InsertConversation 写入一条对话归档。只在启用归档的方言（PG / MySQL）上被调用
+// （网关层门控）；按 created_at 月份路由到月分表（缺表时自动建表并注册进缓存，
+// 见 conversation_shard.go），SQLite 走单表（仅单测使用）。两个 IR 列的占位符
+// 按方言渲染：PG 的 jsonb 需要 ?::jsonb 转换，其余方言直接绑字符串。
 func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 	ts := r.CreatedAt
 	if ts.IsZero() {
 		ts = time.Now()
 	}
 	table := convBaseTable
-	if db.DialectOf(d) == db.DialectPostgres {
+	if db.DialectOf(d).SupportsConversationArchive() {
 		key := convMonthKey(ts)
 		name, ok := convShardForMonth(key)
 		if !ok {
@@ -59,7 +59,7 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 		table = name
 	}
 	err := insertConversationInto(d, table, r, ts)
-	if err != nil && db.DialectOf(d) == db.DialectPostgres && isUndefinedTable(err) {
+	if err != nil && db.DialectOf(d).SupportsConversationArchive() && db.IsUndefinedTable(err) {
 		// 缓存与 catalog 不一致（如表被外部 DROP）：重建并重试一次。
 		if cerr := EnsureConversationShard(d, ts); cerr != nil {
 			return fmt.Errorf("re-ensure conversation shard: %w", cerr)
@@ -74,24 +74,90 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 
 // insertConversationInto 执行向指定分表的单行插入。table 必须已过
 // convShardNameRe 白名单或为 convBaseTable（本包内部保证），不接受外部输入。
+//
+// 列清单与占位符都由 db.ConversationShardCols() 驱动，避免两份清单漂移。MySQL
+// 没有序列，id 要显式传（计数器表）；PG 交 DEFAULT nextval 自动分配，不传 id。
 func insertConversationInto(d *sql.DB, table string, r *ConversationRecord, ts time.Time) error {
 	stream := 0
 	if r.Stream {
 		stream = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `INSERT INTO `+table+`
-		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
-		 harness, user_agent, stream, status,
-		 prompt_tokens, completion_tokens, total_tokens,
-		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-		 request_ir, response_ir, request_raw, response_raw, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?)`),
-		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
-		r.Harness, r.UserAgent, stream, r.Status,
-		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
-		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
-		r.RequestIR, r.ResponseIR, r.RequestRaw, r.ResponseRaw, ts)
+	names := db.ConversationShardCols()
+	cols := make([]string, 0, len(names)+1)
+	ph := make([]string, 0, len(names)+1)
+	args := make([]any, 0, len(names)+1)
+	if db.DialectOf(d) == db.DialectMySQL {
+		id, err := db.NextShardID(d, convSeqName)
+		if err != nil {
+			return fmt.Errorf("alloc shard id: %w", err)
+		}
+		cols, ph, args = append(cols, "id"), append(ph, "?"), append(args, id)
+	}
+	for _, name := range names {
+		col, ok := db.ColumnByName(name)
+		if !ok {
+			return fmt.Errorf("unknown conversation column %q", name)
+		}
+		cols = append(cols, name)
+		if col.Type == db.TypeJSON {
+			ph = append(ph, db.JSONPlaceholder(d))
+		} else {
+			ph = append(ph, "?")
+		}
+		args = append(args, convInsertArg(name, r, stream, ts))
+	}
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO `+table+` (`+strings.Join(cols, ", ")+`)
+		VALUES (`+strings.Join(ph, ", ")+`)`), args...)
 	return err
+}
+
+// convInsertArg 按列名取插入值。与 db.ConversationShardCols 的清单一一对应。
+func convInsertArg(name string, r *ConversationRecord, stream int, ts time.Time) any {
+	switch name {
+	case "ext_key_id":
+		return r.ExtKeyID
+	case "upstream_id":
+		return r.UpstreamID
+	case "upstream_name":
+		return r.UpstreamName
+	case "model":
+		return r.Model
+	case "in_format":
+		return r.InFormat
+	case "up_format":
+		return r.UpFormat
+	case "harness":
+		return r.Harness
+	case "user_agent":
+		return r.UserAgent
+	case "stream":
+		return stream
+	case "status":
+		return r.Status
+	case "prompt_tokens":
+		return r.PromptTokens
+	case "completion_tokens":
+		return r.CompletionTokens
+	case "total_tokens":
+		return r.TotalTokens
+	case "cache_read_tokens":
+		return r.CacheReadTokens
+	case "cache_creation_tokens":
+		return r.CacheCreationTokens
+	case "reasoning_tokens":
+		return r.ReasoningTokens
+	case "request_ir":
+		return r.RequestIR
+	case "response_ir":
+		return r.ResponseIR
+	case "request_raw":
+		return r.RequestRaw
+	case "response_raw":
+		return r.ResponseRaw
+	case "created_at":
+		return ts
+	}
+	return nil
 }
 
 // convMetaCols 是列表/详情查询共用的元数据列，不含 request_ir/response_ir/
@@ -129,7 +195,7 @@ func scanConversation(scan func(dest ...any) error, r *ConversationRecord, withI
 }
 
 // ConversationRecordsList 分页列出对话归档（新到旧），只含元数据列。
-// page/size 规范化与 UsageRecordsList 一致。PG 下跨分表按块翻页
+// page/size 规范化与 UsageRecordsList 一致。PG/MySQL 下跨分表按块翻页
 // （见 conversation_shard.go）；SQLite 走单表（仅单测使用）。
 func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, int, error) {
 	if page < 1 {
@@ -138,7 +204,7 @@ func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, i
 	if size < 1 || size > 200 {
 		size = 50
 	}
-	if db.DialectOf(d) != db.DialectPostgres {
+	if !db.DialectOf(d).SupportsConversationArchive() {
 		total, err := countConversations(d, convBaseTable)
 		if err != nil {
 			return nil, 0, err
@@ -233,9 +299,9 @@ func listConversationsFrom(d *sql.DB, table string, limit, offset int) ([]Conver
 
 // GetConversation 取单条归档，含 request_ir/response_ir；raw 字节不查询
 // （JSON 输出为 null），避免 base64 大响应。不存在时返回 sql.ErrNoRows。
-// PG 下跨全部分表按 id 查（各分支独立 WHERE id=?，均走主键索引）。
+// PG/MySQL 下跨全部分表按 id 查（各分支独立 WHERE id=?，均走主键索引）。
 func GetConversation(d *sql.DB, id int64) (*ConversationRecord, error) {
-	if db.DialectOf(d) == db.DialectPostgres {
+	if db.DialectOf(d).SupportsConversationArchive() {
 		shards, err := convShardSnapshot(d)
 		if err != nil {
 			return nil, fmt.Errorf("conversation shards: %w", err)

@@ -65,12 +65,15 @@ func (s *SessionStore) Put(id string, msgs []translate.Message) error {
 		return fmt.Errorf("session encode: %w", err)
 	}
 	now := time.Now()
-	_, err = s.db.Exec(
-		db.Rebind(s.db, `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET messages = excluded.messages, last_used_at = excluded.last_used_at`),
-		id, string(data), now, now,
-	)
+	q := `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
+		 VALUES (?, ?, ?, ?)` + db.UpsertSuffix(s.db, "id", "messages", "last_used_at")
+	args := []any{id, string(data), now, now}
+	// MySQL 的 ON DUPLICATE KEY UPDATE 用 VALUES(col) 引用新值，要把 SET 里出现的
+	// 列按顺序再传一遍；PG/SQLite 引用 excluded.*，不需要额外参数。
+	if db.DialectOf(s.db) == db.DialectMySQL {
+		args = append(args, string(data), now)
+	}
+	_, err = s.db.Exec(db.Rebind(s.db, q), args...)
 	if err != nil {
 		return fmt.Errorf("session put: %w", err)
 	}

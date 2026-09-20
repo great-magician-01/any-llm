@@ -13,7 +13,7 @@ const rows = ref<ConversationListItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
-// SQLite 下后端返回 disabled: true（对话归档仅 PostgreSQL 记录）
+// SQLite 下后端返回 disabled: true（对话归档仅 PostgreSQL / MySQL 记录）
 const disabled = ref(false)
 
 async function load() {
@@ -102,7 +102,7 @@ onMounted(load)
     <header class="page-header">
       <div>
         <h1>对话记录</h1>
-        <p>查看归档的完整请求与响应内容（仅 PostgreSQL 记录）</p>
+        <p>查看归档的完整请求与响应内容（仅 PostgreSQL / MySQL 记录）</p>
       </div>
       <div class="page-header-side">
         <n-button quaternary circle @click="load">
@@ -112,7 +112,7 @@ onMounted(load)
     </header>
 
     <n-card v-if="disabled" class="panel">
-      <n-empty description="对话归档仅在使用 PostgreSQL（DB_TYPE=postgres）时记录" />
+      <n-empty description="对话归档仅在使用 PostgreSQL 或 MySQL（DB_TYPE=postgres/mysql）时记录" />
     </n-card>
 
     <n-card v-else title="对话明细" class="panel">

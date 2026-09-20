@@ -77,14 +77,10 @@ func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, erro
 	if days < 1 {
 		days = 1
 	}
-	// modernc.org/sqlite stores time.Time as "YYYY-MM-DD HH:MM:SS.nnnnnnnnn
-	// +ZZZZ CST" — not parseable by SQLite's date functions, so the day is
-	// taken from the first 10 chars. PG stores a real TIMESTAMP and uses
-	// date_trunc. Both expressions produce a "YYYY-MM-DD" text bucket.
-	bucketExpr := "substr(created_at, 1, 10)"
-	if db.DialectOf(d) == db.DialectPostgres {
-		bucketExpr = "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')"
-	}
+	// 三种方言各有一个「截到本地日」的表达式，统一产出 "YYYY-MM-DD" 文本：
+	// PG 用 date_trunc，MySQL 用 DATE_FORMAT，SQLite 取前 10 个字符
+	// （modernc/sqlite 把 time.Time 存成驱动格式，SQLite 的日期函数解析不了）。
+	bucketExpr := db.DayBucketExpr(d, "created_at")
 	rows, err := d.Query(db.Rebind(d, `SELECT `+bucketExpr+` AS bucket,
 		COUNT(*),
 		COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
@@ -183,8 +179,13 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		// 名称从 ext_keys 关联读出——软删除的行保留，历史用量照样显示名称。
 		// 名称为空或 key 已不存在的记录回退 #id，连 id 都没有的旧记录显示 —。
 		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
-		selectCol = `COALESCE(NULLIF(k.label, ''), '#' || CAST(u.ext_key_id AS TEXT), '—')`
-		groupCol = "k.id, u.ext_key_id"
+		// '#' || CAST(u.ext_key_id AS TEXT)；MySQL 的 || 是逻辑或，改用 CONCAT。
+		hashID := db.ConcatExpr(d, "'#'", db.CastTextExpr(d, "u.ext_key_id"))
+		selectCol = "COALESCE(NULLIF(k.label, ''), " + hashID + ", '—')"
+		// 分组带上 k.label：k.label 由主键 k.id 函数决定，加上它语义完全不变，
+		// 但三种方言都不会再撞 ONLY_FULL_GROUP_BY（PG 靠函数依赖识别，MySQL 8
+		// 默认开启 ONLY_FULL_GROUP_BY 且识别更严格）。
+		groupCol = "k.id, k.label, u.ext_key_id"
 		idCol = ", u.ext_key_id"
 	case "upstream":
 		selectCol, groupCol = "u.upstream_name", "u.upstream_name"

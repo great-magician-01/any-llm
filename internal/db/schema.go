@@ -792,7 +792,13 @@ func createTableStmts(d Dialect) ([]string, error) {
 // ConversationShardDDL 渲染一张对话归档月分表的 DDL。MySQL 的索引内联；PG 另需
 // CREATE SEQUENCE（由 ShardSequenceStatements 提供）。name 必须已过
 // model.convShardNameRe 白名单。
+//
+// SQLite 拒绝渲染：它走 conversation_records 单表路径，没有分表机制。生成一份
+// 永远不会被执行的 DDL 只会让人误以为 SQLite 也支持分表。
 func ConversationShardDDL(d Dialect, tableName string, seqName string) ([]string, error) {
+	if d == DialectSQLite {
+		return nil, fmt.Errorf("conversation sharding is not supported on sqlite")
+	}
 	suffix := strings.TrimPrefix(tableName, "conversation_records_")
 	t := Table{Name: tableName, Cols: conversationRecordsCols, Idx: convShardIndexes(suffix)}
 	cfg := DDLConfig{IfNotExists: true}

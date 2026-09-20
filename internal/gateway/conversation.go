@@ -44,10 +44,10 @@ type convCtx struct {
 
 // snapshotRequestIR 在 dispatch 解码后、responses session 合并前对请求 IR 做
 // 一次 JSON 快照，供故障转移各次候选调用的 newConvCtx 共用（保证 request_ir
-// 是客户端原始请求而非合并历史后的形态）。非 PG 或 marshal 失败返回 nil，
-// 后续 newConvCtx 随之返回 nil（归档关闭）。
+// 是客户端原始请求而非合并历史后的形态）。归档关闭（SQLite）或 marshal 失败
+// 返回 nil，后续 newConvCtx 随之返回 nil（归档关闭）。
 func (g *Gateway) snapshotRequestIR(irReq *translate.Request) []byte {
-	if db.DialectOf(g.db) != db.DialectPostgres {
+	if !db.DialectOf(g.db).SupportsConversationArchive() {
 		return nil
 	}
 	b, err := json.Marshal(irReq)
