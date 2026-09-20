@@ -76,7 +76,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_2026_09_harness  ON conversation_records_202
 - **id 保留主键**（普通表无分区键限制），默认值指向共享序列 —— 详情查询 `WHERE id=?` 在每张分表上都走主键索引。
 - 共享序列：建表前 `CREATE SEQUENCE IF NOT EXISTS conversation_records_id_seq`（存量库该序列已存在且归旧表所有，直接复用；全新库则新建）。
 - 索引名带月份后缀（索引名 schema 级唯一）。
-- 全新库：`migrationPG` 中**移除**原 `conversation_records` 建表 SQL，新库只有月分表、不再有 base 表。存量库的 base 表自动成为历史分表，无需任何操作。
+- 全新库：schema 定义（`internal/db/schema.go`）里**不含** base 表 `conversation_records`，新库只有月分表。存量库的 base 表自动成为历史分表，无需任何操作。
 
 ### 4.3 写入路由
 
@@ -186,7 +186,7 @@ UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conv
 | `internal/model/conversation_shard.go`（新） | 分表命名/建表（`EnsureConversationShard`）/注册缓存（`LoadConvShards` + 包级变量）/`convPageWindows` 纯函数 |
 | `internal/model/conversation_shard_test.go`（新） | 命名、正则、排序、分页窗口计算、DDL 生成、注册缓存行为的单测 |
 | `internal/model/conversation.go` | `InsertConversation` 缓存查表+建表重试；`ConversationRecordsList` 分块分页；`GetConversation` 跨分表 UNION ALL；三者加 PG/SQLite 分支 |
-| `internal/db/migrations.go` | `migrationPG` 移除 base 表建表 SQL（`migrateSoftDeletePG` 的 FK 兜底保留，对存量库仍生效） |
+| `internal/db/migrations.go` | 移除 base 表建表 SQL（`migrateSoftDeletePG` 的 FK 兜底保留，对存量库仍生效）；分表 DDL 改由 `db.ConversationShardDDL` 按方言渲染 |
 | `cmd/any-llm/main.go` | PG 时启动 `LoadConvShards` + `EnsureConversationShard`（失败记 warn，不阻断——插入路径会兜底重试） |
 | `internal/gateway/pg_conv_e2e_test.go` | e2e 断言改查月分表/经 model 层（原断言直查 base 表） |
 | `AGENTS.md` | conversations 条目补充分表说明 |

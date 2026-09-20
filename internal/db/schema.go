@@ -16,7 +16,7 @@ import (
 //
 // 表设计原则（沿用原注释）：不使用外键约束，删除一律应用层软删除（is_active=0），
 // 唯一性用「仅活跃行」的部分唯一索引实现 —— 软删除的行不占唯一名额，同名资源
-// 删除后可重建。MySQL 没有部分索引，见 renderPartialUnique 的降级说明。
+// 删除后可重建。MySQL 没有部分索引，见 partialUniqueColumns 的降级说明。
 
 // ColType 是列的语义类型，与方言无关。
 type ColType int
@@ -43,7 +43,7 @@ type Column struct {
 	AutoID bool
 	// PrimaryKey 用于非自增主键（如 response_sessions.id）。
 	PrimaryKey bool
-	// Len 只对 MySQL 有意义，见下方 validateMySQLColumn。0 = 保持 TEXT。
+	// Len 只对 MySQL 有意义，见下方 validateMySQL。0 = 保持 TEXT。
 	Len int
 }
 

@@ -7,7 +7,8 @@ import (
 )
 
 // createConvTable 建 PG conversation_records 的 SQLite 等价表（仅查询用到的列），
-// 让列表/详情查询可以单测；真实建表只在 migrationPG（SQLite 不建此表）。
+// 让列表/详情查询可以单测；SQLite 不建此表（归档仅在 PG / MySQL 启用），
+// PG / MySQL 上的建表由 model.EnsureConversationShard 按需完成。
 func createConvTable(t *testing.T, d *sql.DB) {
 	t.Helper()
 	_, err := d.Exec(`CREATE TABLE conversation_records (
