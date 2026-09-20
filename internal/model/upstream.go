@@ -8,11 +8,31 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
+// timePtr 把可空时间列转成 *time.Time（无效 → nil）。与 extkey.go 里
+// LastUsedAt 的写法等价，这里抽成函数是因为上游有四个读取站点都要用。
+func timePtr(nt sql.NullTime) *time.Time {
+	if !nt.Valid {
+		return nil
+	}
+	t := nt.Time
+	return &t
+}
+
+// nullTime 把可空到期时间转成 sql.NullTime 再绑定（nil → SQL NULL）。不直接
+// 传 *time.Time：pgx 的 stdlib driver 对 driver.Valuer 是直通的
+// （CheckNamedValue 直接 return nil），nil 指针的 Valuer 行为两个驱动不一致。
+func nullTime(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 	var id int64
 	now := time.Now()
-	err := d.QueryRow(db.Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now).Scan(&id)
+	err := d.QueryRow(db.Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt)).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
@@ -22,12 +42,14 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
 	var enabled int
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at FROM upstreams WHERE id=? AND is_active = 1`), id).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt)
+	var expiresAt sql.NullTime
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at FROM upstreams WHERE id=? AND is_active = 1`), id).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
 	}
 	u.Enabled = enabled != 0
+	u.ExpiresAt = timePtr(expiresAt)
 	return u, nil
 }
 
@@ -36,17 +58,19 @@ func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
 	var enabled int
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at FROM upstreams WHERE name=? AND is_active = 1`), name).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt)
+	var expiresAt sql.NullTime
+	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at FROM upstreams WHERE name=? AND is_active = 1`), name).
+		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
 	u.Enabled = enabled != 0
+	u.ExpiresAt = timePtr(expiresAt)
 	return u, nil
 }
 
 func ListUpstreams(d *sql.DB) ([]Upstream, error) {
-	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at,
+	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
 		FROM upstreams u WHERE u.is_active = 1 ORDER BY u.id`)
 	if err != nil {
@@ -57,10 +81,12 @@ func ListUpstreams(d *sql.DB) ([]Upstream, error) {
 	for rows.Next() {
 		var u Upstream
 		var enabled int
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &u.ModelCount); err != nil {
+		var expiresAt sql.NullTime
+		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt, &u.ModelCount); err != nil {
 			return nil, err
 		}
 		u.Enabled = enabled != 0
+		u.ExpiresAt = timePtr(expiresAt)
 		out = append(out, u)
 	}
 	return out, nil
@@ -73,8 +99,8 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	if u.Enabled {
 		en = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=? WHERE id=? AND is_active = 1`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, en, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), u.ID)
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=? WHERE id=? AND is_active = 1`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, en, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}

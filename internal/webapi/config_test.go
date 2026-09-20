@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/model"
 )
@@ -537,5 +538,83 @@ func TestImportConfig_DBBindingErrorPropagates(t *testing.T) {
 	})
 	if w.Code < 400 {
 		t.Fatalf("DB error must fail the import, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestConfigImport_ExpiresAt 覆盖有效期在配置迁移里的三态：缺省保留现状、
+// 显式 null 清除、具体值设置。与 enabled 的指针语义对齐。
+func TestConfigImport_ExpiresAt(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://old", APIKey: "sk-old", Format: "openai"})
+	at := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	later := at.Add(48 * time.Hour)
+	u, _ := model.GetUpstreamByID(d, id)
+	u.ExpiresAt = &at
+	model.UpdateUpstream(d, u)
+
+	// 1. 文件里没有 expires_at → 保留现状
+	postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "u", "base_url": "https://x", "api_key": "sk-x", "format": "openai"},
+	}})
+	if got, _ := model.GetUpstreamByID(d, id); got.ExpiresAt == nil || !got.ExpiresAt.Equal(at) {
+		t.Fatalf("absent expires_at=%v, want preserved %v", got.ExpiresAt, at)
+	}
+
+	// 2. 显式给出新值 → 覆盖
+	postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "u", "base_url": "https://x", "api_key": "sk-x", "format": "openai", "expires_at": later},
+	}})
+	if got, _ := model.GetUpstreamByID(d, id); got.ExpiresAt == nil || !got.ExpiresAt.Equal(later) {
+		t.Fatalf("set expires_at=%v, want %v", got.ExpiresAt, later)
+	}
+
+	// 3. 显式 null → 清除，恢复永久有效
+	postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "u", "base_url": "https://x", "api_key": "sk-x", "format": "openai", "expires_at": nil},
+	}})
+	if got, _ := model.GetUpstreamByID(d, id); got.ExpiresAt != nil {
+		t.Fatalf("clear expires_at=%v, want nil", got.ExpiresAt)
+	}
+}
+
+// TestExportConfig_ExpiresAt 导出必须带上有效期（含 null），否则备份恢复后
+// 会静默丢掉到期时间。
+func TestExportConfig_ExpiresAt(t *testing.T) {
+	a, d := setupAPI(t)
+	at := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai", ExpiresAt: &at})
+	model.CreateUpstream(d, &model.Upstream{Name: "perm", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byName := map[string]map[string]any{}
+	for _, u := range out.Upstreams {
+		byName[u["name"].(string)] = u
+	}
+	// 设置了有效期的：字段存在且是 RFC3339 字符串
+	v, ok := byName["u"]["expires_at"]
+	if !ok {
+		t.Fatalf("expires_at missing from export: %v", byName["u"])
+	}
+	s, _ := v.(string)
+	if s == "" {
+		t.Fatal("expires_at should be a timestamp string")
+	}
+	if got, err := time.Parse(time.RFC3339, s); err != nil || !got.Equal(at) {
+		t.Fatalf("expires_at=%q parsed=%v err=%v, want %v", s, got, err, at)
+	}
+	// 永久有效的：显式写出 null（不是缺省——缺省在导入侧意味着「保留现状」）
+	v, ok = byName["perm"]["expires_at"]
+	if !ok {
+		t.Fatalf("expires_at missing for permanent upstream: %v", byName["perm"])
+	}
+	if v != nil {
+		t.Fatalf("permanent expires_at=%v, want null", v)
 	}
 }

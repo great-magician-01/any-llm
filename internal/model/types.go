@@ -17,6 +17,15 @@ type Upstream struct {
 	ModelCount    int       `json:"model_count"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// ExpiresAt 有效期截止时刻；nil = 永久有效。到点后该上游在网关侧等同禁用
+	// （直连 404、别名候选跳过、/v1/models 隐藏），续期即恢复——不改 enabled，
+	// 两个维度互相独立。
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+// Expired 到点即失效（含等于截止时刻的那一刻）。now 由调用方传入，便于测试边界。
+func (u *Upstream) Expired(now time.Time) bool {
+	return u.ExpiresAt != nil && !now.Before(*u.ExpiresAt)
 }
 
 type UpstreamModel struct {

@@ -77,8 +77,14 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		Created int64  `json:"created"`
 	}
 	var data []modelObj
+	now := time.Now()
+	// 已过有效期的上游与禁用同样不对外暴露（行保留，续期即恢复）
+	expiredByID := make(map[int64]bool, len(upstreams))
 	for _, u := range upstreams {
-		if !u.Enabled { // 禁用的上游不对外暴露模型（行保留，重新启用即恢复）
+		if u.Expired(now) {
+			expiredByID[u.ID] = true
+		}
+		if !u.Enabled || expiredByID[u.ID] {
 			continue
 		}
 		models, err := model.ListModels(g.db, u.ID)
@@ -106,7 +112,8 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		for _, a := range aliases {
 			hasUsable := false
 			for _, b := range a.Bindings {
-				if b.UpstreamName != "" && b.UpstreamEnabled { // 绑定指向的上游仍活跃且启用
+				// 绑定指向的上游仍活跃、启用且未过期
+				if b.UpstreamName != "" && b.UpstreamEnabled && !expiredByID[b.UpstreamID] {
 					hasUsable = true
 					break
 				}
@@ -175,7 +182,9 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	// 固定对外模型（别名）：对整个 model 字符串精确匹配，命中后按绑定优先级
 	// 得到候选链，dispatch 内逐候选尝试并自动故障转移。别名优先于
 	// 'name/model' 直连拆分（管理员显式配置即可遮蔽直连路由）。
-	found, targets, err := model.ResolveAliasTargets(g.db, probe.Model)
+	// now 一次取定：同一请求内别名解析与直连路由的到期口径一致。
+	now := time.Now()
+	found, targets, err := model.ResolveAliasTargets(g.db, probe.Model, now)
 	if err != nil {
 		logger.Error("gateway: resolve model alias DB error", "model", probe.Model, "err", err)
 		WriteError(w, 500, inFormat, "failed to resolve model alias: "+err.Error(), "internal_error")
@@ -234,6 +243,12 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	}
 	if !u.Enabled {
 		WriteError(w, 404, inFormat, "upstream '"+name+"' is disabled", "not_found_error")
+		return
+	}
+	// 与禁用分开报：管理员主动关掉的上游，「已禁用」比「已过期」更可操作
+	// （后者该去续期）。改有效期即可恢复，无需重新点启用。
+	if u.Expired(now) {
+		WriteError(w, 404, inFormat, "upstream '"+name+"' is expired", "not_found_error")
 		return
 	}
 

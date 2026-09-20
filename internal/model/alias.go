@@ -160,11 +160,15 @@ func listBindings(d *sql.DB, where string, args ...any) ([]AliasBinding, error) 
 }
 
 // ResolveAliasTargets 网关热路径：按对外名称精确匹配活跃别名，返回按优先级
-// 排序的候选链；绑定指向的上游若已删除/不活跃/已禁用则跳过（禁用的候选直接
-// 从链中消失，故障转移自然落到下一候选）。found=false 表示别名不存在（调用
-// 方回落到 name/model 直连拆分）；found=true 但 targets 为空表示别名存在但
-// 无可用绑定。
-func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTarget, err error) {
+// 排序的候选链；绑定指向的上游若已删除/不活跃/已禁用/已过期则跳过（不可用的
+// 候选直接从链中消失，故障转移自然落到下一候选）。found=false 表示别名不存在
+// （调用方回落到 name/model 直连拆分）；found=true 但 targets 为空表示别名存在
+// 但无可用绑定。
+//
+// 过期判定放在 Go 侧（比较 now 与行上的 ExpiresAt）而不是 SQL 的 JOIN 条件：
+// SQLite 的 DATETIME 文本与 PG 的 timestamp 在驱动层的格式/时区处理不一致，
+// 跨方言写比较条件容易踩坑；而候选行本就是完整读出来的，Go 侧判断零成本。
+func ResolveAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targets []AliasTarget, err error) {
 	var aliasID int64
 	err = d.QueryRow(db.Rebind(d, `SELECT id FROM model_aliases WHERE name=? AND is_active = 1`), name).Scan(&aliasID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -173,7 +177,7 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 	if err != nil {
 		return false, nil, fmt.Errorf("resolve alias %q: %w", name, err)
 	}
-	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, b.model_name
+	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at, b.model_name
 		FROM model_alias_bindings b JOIN upstreams u ON u.id = b.upstream_id AND u.is_active = 1 AND u.enabled = 1
 		WHERE b.alias_id = ? AND b.is_active = 1 ORDER BY b.priority, b.id`), aliasID)
 	if err != nil {
@@ -183,12 +187,17 @@ func ResolveAliasTargets(d *sql.DB, name string) (found bool, targets []AliasTar
 	for rows.Next() {
 		t := AliasTarget{Upstream: &Upstream{}}
 		var enabled int
+		var expiresAt sql.NullTime
 		if err := rows.Scan(&t.Upstream.ID, &t.Upstream.Name, &t.Upstream.BaseURL, &t.Upstream.APIKey, &t.Upstream.Format,
-			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.MaxConcurrent, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt,
+			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.MaxConcurrent, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt, &expiresAt,
 			&t.ModelName); err != nil {
 			return true, nil, err
 		}
 		t.Upstream.Enabled = enabled != 0
+		t.Upstream.ExpiresAt = timePtr(expiresAt)
+		if t.Upstream.Expired(now) {
+			continue // 已过有效期：候选作废，故障转移落到下一绑定
+		}
 		targets = append(targets, t)
 	}
 	return true, targets, rows.Err()

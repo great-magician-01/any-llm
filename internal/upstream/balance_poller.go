@@ -89,7 +89,8 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 	}
 	for i := range upstreams {
 		u := &upstreams[i]
-		if !u.Enabled {
+		// 禁用与已过有效期的上游都不拉取：后者等同失效，别再浪费厂商调用
+		if !u.Enabled || u.Expired(time.Now()) {
 			continue
 		}
 		vendor, payload, err := FetchBalance(ctx, p.client, u)

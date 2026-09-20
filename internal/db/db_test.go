@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -55,6 +56,14 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='enabled'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("upstreams.enabled missing: n=%d err=%v", n, err)
+	}
+	// 新库 upstreams 带可空的有效期列（NULL = 永久有效）
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.expires_at missing: n=%d err=%v", n, err)
+	}
+	// 可空：新插入的行不带该列也是 NULL
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at' AND "notnull"=0`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.expires_at should be nullable: n=%d err=%v", n, err)
 	}
 }
 
@@ -298,6 +307,22 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	var enabled int
 	if err := got.QueryRow(`SELECT enabled FROM upstreams WHERE name='u1'`).Scan(&enabled); err != nil || enabled != 1 {
 		t.Fatalf("enabled backfill: v=%d err=%v", enabled, err)
+	}
+	// expires_at 由 extraCols 补成可空列，且必须活过表重建（sqliteSoftDeleteSpecs
+	// 的 cols 漏了它就会被重建丢掉，要等下次重启才补回来——这里盯住这一点）
+	var expiresAt sql.NullTime
+	if err := got.QueryRow(`SELECT expires_at FROM upstreams WHERE name='u1'`).Scan(&expiresAt); err != nil {
+		t.Fatalf("expires_at dropped by rebuild: %v", err)
+	}
+	if expiresAt.Valid {
+		t.Fatalf("legacy row expires_at=%v, want NULL", expiresAt.Time)
+	}
+	// 补上的列真的能用：写一个到期时刻再读回
+	if _, err := got.Exec(`UPDATE upstreams SET expires_at=? WHERE name='u1'`, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("write expires_at: %v", err)
+	}
+	if err := got.QueryRow(`SELECT expires_at FROM upstreams WHERE name='u1'`).Scan(&expiresAt); err != nil || !expiresAt.Valid {
+		t.Fatalf("expires_at round-trip: valid=%v err=%v", expiresAt.Valid, err)
 	}
 	var id1 int64
 	if err := got.QueryRow(`SELECT id FROM upstreams WHERE name='u1'`).Scan(&id1); err != nil || id1 != 1 {

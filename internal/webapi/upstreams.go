@@ -26,15 +26,16 @@ func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name              string `json:"name"`
-		BaseURL           string `json:"base_url"`
-		APIKey            string `json:"api_key"`
-		Format            string `json:"format"`
-		Enabled           *bool  `json:"enabled"`
-		DailyTokenLimit   int    `json:"daily_token_limit"`
-		MonthlyTokenLimit int    `json:"monthly_token_limit"`
-		MaxConcurrent     *int   `json:"max_concurrent"`
-		FetchModels       bool   `json:"fetch_models"`
+		Name              string  `json:"name"`
+		BaseURL           string  `json:"base_url"`
+		APIKey            string  `json:"api_key"`
+		Format            string  `json:"format"`
+		Enabled           *bool   `json:"enabled"`
+		ExpiresAt         optTime `json:"expires_at"`
+		DailyTokenLimit   int     `json:"daily_token_limit"`
+		MonthlyTokenLimit int     `json:"monthly_token_limit"`
+		MaxConcurrent     *int    `json:"max_concurrent"`
+		FetchModels       bool    `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: create upstream invalid JSON", "err", err)
@@ -62,6 +63,9 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	u := &model.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format,
 		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit, MaxConcurrent: maxConcurrent}
+	if req.ExpiresAt.set {
+		u.ExpiresAt = req.ExpiresAt.value()
+	}
 	var id int64
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
@@ -122,14 +126,15 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	var req struct {
-		Name              string `json:"name"`
-		BaseURL           string `json:"base_url"`
-		APIKey            string `json:"api_key"`
-		Format            string `json:"format"`
-		Enabled           *bool  `json:"enabled"`
-		DailyTokenLimit   *int   `json:"daily_token_limit"`
-		MonthlyTokenLimit *int   `json:"monthly_token_limit"`
-		MaxConcurrent     *int   `json:"max_concurrent"`
+		Name              string  `json:"name"`
+		BaseURL           string  `json:"base_url"`
+		APIKey            string  `json:"api_key"`
+		Format            string  `json:"format"`
+		Enabled           *bool   `json:"enabled"`
+		ExpiresAt         optTime `json:"expires_at"`
+		DailyTokenLimit   *int    `json:"daily_token_limit"`
+		MonthlyTokenLimit *int    `json:"monthly_token_limit"`
+		MaxConcurrent     *int    `json:"max_concurrent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: update upstream invalid JSON", "id", id, "err", err)
@@ -181,6 +186,10 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	if req.Enabled != nil {
 		u.Enabled = *req.Enabled
+	}
+	// 必须在 UpdateUpstream（全量覆盖）之前合并；缺省保留现状，null 清除
+	if req.ExpiresAt.set {
+		u.ExpiresAt = req.ExpiresAt.value()
 	}
 	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
 		logger.Error("admin: update upstream DB write failed", "id", id, "name", u.Name, "err", err)

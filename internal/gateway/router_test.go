@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/model"
@@ -221,6 +222,77 @@ func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	}
 	if !ids["on/m2"] || !ids["live-alias"] {
 		t.Fatalf("enabled upstream missing: %+v", ids)
+	}
+}
+
+// 直连请求已过有效期的上游 → 404，与禁用分开报（该去续期，不是去点启用）。
+func TestRouteExpiredUpstream(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "old", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u, _ := model.GetUpstreamByID(d, uid)
+	// 仍启用，只是有效期已过——两个维度必须互相独立
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	u.ExpiresAt = &at
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"old/m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("status=%d want 404, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "is expired") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+// /v1/models 同样不列出已过期上游的模型与别名；到期判定独立于 enabled
+// （上游仍处于启用状态，只是有效期过了）。
+func TestModelsEndpointExcludesExpired(t *testing.T) {
+	g, d := setupGateway(t)
+	old, _ := model.CreateUpstream(d, &model.Upstream{Name: "old", BaseURL: "b", APIKey: "k", Format: "openai"})
+	on, _ := model.CreateUpstream(d, &model.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, old, "m1", false, 0, 0)
+	model.AddModel(d, on, "m2", false, 0, 0)
+	model.CreateAlias(d, &model.ModelAlias{Name: "dead-alias", Bindings: []model.AliasBinding{{UpstreamID: old, ModelName: "m1"}}})
+	model.CreateAlias(d, &model.ModelAlias{Name: "live-alias", Bindings: []model.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
+
+	u, _ := model.GetUpstreamByID(d, old)
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	u.ExpiresAt = &at
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	if !u.Enabled {
+		t.Fatal("expiry must not touch enabled")
+	}
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	ids := map[string]bool{}
+	for _, m := range resp.Data {
+		ids[m.ID] = true
+	}
+	if ids["old/m1"] || ids["dead-alias"] {
+		t.Fatalf("expired upstream leaked to /v1/models: %+v", ids)
+	}
+	if !ids["on/m2"] || !ids["live-alias"] {
+		t.Fatalf("unexpired upstream missing: %+v", ids)
 	}
 }
 

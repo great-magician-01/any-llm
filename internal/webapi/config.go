@@ -18,8 +18,9 @@ import (
 //
 // 导入语义：同名覆盖——上游全字段覆盖、模型列表精确替换；别名绑定整体替换。
 // 文件里没出现的现有配置原样保留。字段级例外：enabled / 两个 token 上限 /
-// 并发上限 / models 在文件里缺省时保留现状（导入侧用指针/nil 区分「没给」），
-// 其余字段一律以文件为准。绑定指向的上游在文件与库中都不存在时丢弃该绑定（计数
+// 并发上限 / expires_at / models 在文件里缺省时保留现状（导入侧用指针/nil
+// 区分「没给」，expires_at 另需区分「显式 null = 清除有效期」），其余字段
+// 一律以文件为准。绑定指向的上游在文件与库中都不存在时丢弃该绑定（计数
 // bindings_dropped）；一个可解析绑定都不剩的别名整个跳过。文件内重名条目
 // （上游/别名/单上游内模型）整体 400 拒绝。导入非单事务：中途 DB 失败时
 // 已提交的条目会保留，直接重导同一文件即可收敛（同名覆盖幂等）。
@@ -39,6 +40,7 @@ type configUpstream struct {
 	APIKey            string                `json:"api_key"`
 	Format            string                `json:"format"`
 	Enabled           *bool                 `json:"enabled"`
+	ExpiresAt         optTime               `json:"expires_at"`
 	DailyTokenLimit   *int                  `json:"daily_token_limit"`
 	MonthlyTokenLimit *int                  `json:"monthly_token_limit"`
 	MaxConcurrent     *int                  `json:"max_concurrent"`
@@ -89,7 +91,8 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		Upstreams: make([]configUpstream, 0, len(ups)), Aliases: make([]configAlias, 0, len(aliases))}
 	for _, u := range ups {
 		cu := configUpstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format,
-			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit, MaxConcurrent: &u.MaxConcurrent}
+			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit, MaxConcurrent: &u.MaxConcurrent,
+			ExpiresAt: optTime{set: true, t: u.ExpiresAt}}
 		en := u.Enabled
 		cu.Enabled = &en
 		models, err := model.ListModels(a.db, u.ID)
@@ -296,6 +299,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 		if u.MaxConcurrent != nil {
 			nu.MaxConcurrent = *u.MaxConcurrent
 		}
+		if u.ExpiresAt.set {
+			nu.ExpiresAt = u.ExpiresAt.value()
+		}
 		id, err := model.CreateUpstream(d, nu)
 		if err != nil {
 			return 0, false, fmt.Errorf("create upstream %q: %w", u.Name, err)
@@ -331,6 +337,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	}
 	if u.MaxConcurrent != nil {
 		ex.MaxConcurrent = *u.MaxConcurrent
+	}
+	if u.ExpiresAt.set {
+		ex.ExpiresAt = u.ExpiresAt.value()
 	}
 	if err := model.UpdateUpstream(d, ex); err != nil {
 		return 0, false, fmt.Errorf("update upstream %q: %w", u.Name, err)
