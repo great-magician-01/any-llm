@@ -4,7 +4,7 @@
 
 - **Monorepo**: Go backend (root, module `github.com/great-magician-01/any-llm`) + Vue 3 SPA frontend (`web/`)
 - **Backend**: single-binary Go app with embedded frontend via `//go:embed web/dist` (relative to `cmd/any-llm/`)
-- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite. Two parallel page sets: classic dark theme (`web/src/views/`, routes `/login`, `/dashboard`, ...) and a glassmorphism set (`web/src/glass/`, same pages under the `/glass` route prefix, e.g. `/glass/dashboard`) — glass views reuse `web/src/api`, `web/src/utils` and shared components (`StatCard`, `BarChart`, ...), adapting via CSS-var overrides in `web/src/glass/glass.css` + a nested `n-config-provider` in `web/src/glass/GlassShell.vue`; `body.glass-mode` (toggled by the router) styles teleported popups
+- **Frontend**: Vue 3 + Naive UI + Vue Router (hash history) + Axios, built with Vite. Two parallel page sets: classic dark theme (`web/src/views/`, routes `/login`, `/dashboard`, ...) and a glassmorphism set (`web/src/glass/`, same pages under the `/glass` route prefix, e.g. `/glass/dashboard`) — glass views reuse `web/src/api`, `web/src/utils` and shared components (`StatCard`, `BarChart`, ...), adapting via CSS-var overrides in `web/src/glass/glass.css` + a nested `n-config-provider` in `web/src/glass/GlassShell.vue`; `body.glass-mode` (toggled by the router) styles teleported popups. Both sets support light/dark: `web/src/composables/useTheme.ts` resolves the mode (localStorage `any-llm-theme` > `prefers-color-scheme` > dark) onto `<html data-theme>`, an inline script in `web/index.html` presets it before first paint, and each set ships two `GlobalThemeOverrides` (`web/src/theme.ts`, `web/src/glass/theme.ts` — surfaces/text/borders only, brand colors shared) plus a `:root[data-theme='light']` CSS-var block per stylesheet; `web/src/components/ThemeToggle.vue` is the entry point (both sidebars + both login pages)
 - **DB**: SQLite (`modernc.org/sqlite`, pure Go, no CGO) or PostgreSQL (`jackc/pgx/v5`); selected via `DB_TYPE`. Tables auto-created on startup via `db.OpenSQLite` / `db.OpenPG`
 - **No frameworks** on backend: stdlib `net/http` only
 - **Translation layer**: requests flow through an IR (`internal/translate/`) — OpenAI/Anthropic in/out, any upstream format
@@ -41,7 +41,7 @@ go test ./internal/gateway -v            # single package with verbose
 ```
 
 - Backend tests use stdlib `testing`, in-memory SQLite via `t.TempDir()`
-- Frontend tests: vitest + happy-dom (`cd web && npm run test`), covering the router auth guard and the axios 401 interceptor
+- Frontend tests: vitest + happy-dom (`cd web && npm run test`), covering the router auth guard, the axios 401 interceptor and the theme composable
 - **CI**: `.github/workflows/ci.yml` runs gofmt check, `go vet`, `go test`, `go build` (with a stub `cmd/any-llm/web/dist/`), plus `npm run test` and `npm run build`
 - No golangci-lint/staticcheck config — linting is gofmt + go vet only
 

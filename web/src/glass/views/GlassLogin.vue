@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import client from '../../api/client'
 import BrandMark from '../../components/BrandMark.vue'
+import ThemeToggle from '../../components/ThemeToggle.vue'
 
 const router = useRouter()
 const password = ref('')
@@ -55,7 +56,10 @@ async function login() {
         {{ error }}
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
-      <button class="switch-link" @click="router.push('/login')">切换到经典版</button>
+      <div class="login-extra">
+        <ThemeToggle />
+        <button class="switch-link" @click="router.push('/login')">切换到经典版</button>
+      </div>
     </div>
   </div>
 </template>
@@ -74,12 +78,11 @@ async function login() {
   position: relative;
   width: 380px;
   padding: 44px 38px 30px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  /* 毛玻璃表面统一走 glass.css 在 .glass-root 上定义的变量，随主题切换 */
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 22px;
-  box-shadow:
-    0 24px 64px rgba(3, 8, 24, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: var(--glass-shadow-lg);
   backdrop-filter: blur(24px) saturate(1.5);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   display: flex;
@@ -135,8 +138,15 @@ async function login() {
   letter-spacing: 0.08em;
   color: var(--text-4);
 }
+.login-extra {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
 .switch-link {
-  margin-top: 12px;
+  margin-top: 4px;
   padding: 4px 8px;
   border: none;
   background: transparent;

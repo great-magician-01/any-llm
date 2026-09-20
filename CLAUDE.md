@@ -22,7 +22,7 @@ go vet ./...                           # lint is gofmt + go vet only (checked in
 
 # Frontend
 cd web && npm run dev                  # Vite dev server, proxies /api and /v1 to :6718
-cd web && npm run test                 # vitest (router auth guard, axios 401 interceptor)
+cd web && npm run test                 # vitest (router auth guard, axios 401 interceptor, theme composable)
 cd web && npm run build                # vue-tsc typecheck + vite build + copy dist to ../cmd/any-llm/web/dist
 
 # Build the binary (frontend dist MUST exist first — it is embedded)
@@ -84,6 +84,8 @@ One `http.ServeMux` serves three traffic classes: `/v1/*` (gateway), `/api/admin
 ### Frontend (web/)
 
 Vue 3 + TypeScript + Naive UI + Vue Router (hash history) + Axios. `src/views/` holds one page per feature (Dashboard, Upstreams, Keys, Usage, Login); `src/api/` has typed API modules with a shared axios instance whose response interceptor redirects to login on 401. Vite dev server proxies `/api` and `/v1` to `localhost:6718`.
+
+**明暗主题**（`src/composables/useTheme.ts`）：解析优先级 localStorage `any-llm-theme` > `prefers-color-scheme` > 暗色。主题挂在 `<html data-theme="light|dark">` 上，`style.css` 的 `:root` 仍是暗色默认值，浅色靠 `:root[data-theme='light']` 覆盖变量；`App.vue` / `glass/GlassShell.vue` 按同一个状态在 naive-ui 的 `darkTheme` / `lightTheme` 与两套 `themeOverrides` 之间切换（`src/theme.ts`、`src/glass/theme.ts`，两套只差表面/文字/边框，品牌色共用）。`index.html` 有一段等价的内联脚本负责首帧前预置 `data-theme` 防闪屏，改解析顺序要同步改它。切换入口是 `src/components/ThemeToggle.vue`（两个 Layout 侧栏 + 两个登录页）。注意 watcher 用 `flush: 'sync'`，且只有用户主动切换才写 localStorage（否则系统偏好会被固化）。
 
 ## Gotchas
 

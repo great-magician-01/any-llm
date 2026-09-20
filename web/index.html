@@ -5,6 +5,24 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>any-llm 管理后台</title>
+    <script>
+      // 必须在首帧绘制前定好主题，否则会先按 :root 的暗色画一帧再跳到浅色（闪屏）。
+      // 解析顺序与 src/composables/useTheme.ts 保持一致（内联脚本无法 import 模块）。
+      ;(function () {
+        var mode = null
+        try {
+          var v = localStorage.getItem('any-llm-theme')
+          if (v === 'light' || v === 'dark') mode = v
+        } catch (e) {}
+        if (!mode) {
+          mode =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark'
+        }
+        document.documentElement.dataset.theme = mode
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

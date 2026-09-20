@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import client from '../api/client'
 import BrandMark from '../components/BrandMark.vue'
 import AppIcon, { type IconName } from '../components/AppIcon.vue'
+import ThemeToggle from '../components/ThemeToggle.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -54,12 +55,15 @@ const menuItems = [
             <span class="admin-avatar">A</span>
             <span class="admin-name">管理员</span>
           </div>
-          <button class="logout-btn" title="退出登录" @click="logout">
-            <AppIcon name="logout" :size="15" />
-            <span>退出登录</span>
-          </button>
+          <div class="footer-actions">
+            <ThemeToggle />
+            <button class="logout-btn" title="退出登录" @click="logout">
+              <AppIcon name="logout" :size="15" />
+              <span>退出登录</span>
+            </button>
+          </div>
         </div>
-        <div class="theme-switch" @click="router.push('/dashboard')">
+        <div class="suite-switch" @click="router.push('/dashboard')">
           <AppIcon name="swap" :size="14" />
           <span>切换到经典版</span>
         </div>
@@ -76,7 +80,7 @@ const menuItems = [
 <style scoped>
 .sider {
   border-right: 1px solid var(--border-soft);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--sider-bg);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
@@ -140,6 +144,11 @@ const menuItems = [
   color: var(--text-2);
   white-space: nowrap;
 }
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .logout-btn {
   display: inline-flex;
   align-items: center;
@@ -159,7 +168,7 @@ const menuItems = [
   color: #fc8a9b;
   background: rgba(251, 113, 133, 0.1);
 }
-.theme-switch {
+.suite-switch {
   margin-top: 10px;
   display: flex;
   align-items: center;
@@ -177,7 +186,7 @@ const menuItems = [
     border-color 0.15s ease,
     background 0.15s ease;
 }
-.theme-switch:hover {
+.suite-switch:hover {
   color: var(--brand-hover);
   border-color: rgba(123, 163, 255, 0.4);
   background: rgba(123, 163, 255, 0.1);
