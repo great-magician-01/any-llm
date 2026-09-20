@@ -5,7 +5,7 @@
 
 ## 1. 背景与目标
 
-`conversation_records` 是网关的对话归档表，**仅 PostgreSQL 建表**（SQLite 无此表，网关层门控）。每行包含元数据 + `request_ir`/`response_ir` JSONB + `request_raw`/`response_raw` BYTEA（响应上限 64 MiB）。只增不减、无清理任务、单行体积大。
+`conversation_records` 是网关的对话归档表，**PostgreSQL 与 MySQL 建表**（SQLite 无此表，网关层门控；判定见 `db.Dialect.SupportsConversationArchive()`）。每行包含元数据 + `request_ir`/`response_ir` JSON + `request_raw`/`response_raw` 大字节（响应上限 64 MiB）。只增不减、无清理任务、单行体积大。
 
 **目标**：按时间对这张表分表，使查询/维护只触及相关时间段；**完全兼容存量数据**；**分表逻辑全部在应用层**（Go 代码负责路由与合并，不使用 PG 分区等数据库侧特性，不把业务下放数据库）。
 
@@ -41,7 +41,7 @@
 
 ### 4.2 分表结构
 
-每张月分表是独立普通表，列定义与原表完全一致，两处差异：
+每张月分表是独立普通表，列定义与原表完全一致，两处差异（下为 PG 形态；MySQL 变体见 §4.9）：
 
 ```sql
 CREATE TABLE IF NOT EXISTS conversation_records_2026_09 (
@@ -83,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_2026_09_harness  ON conversation_records_202
 `InsertConversation` 改动：
 
 1. 由 `r.CreatedAt`（缺省 `time.Now()`）算出月份键（`YYYY-MM`）；
+2. MySQL 下先经 `db.NextShardID` 从计数器表取一个共享 id（§4.9），PG 跳过这步；
 2. **查注册缓存**拿到月分表名；命中 → 直接 `INSERT`；
 3. 未命中 → 调 `EnsureConversationShard(d, month)` 建表并**注册进缓存**，然后 `INSERT`；若 `INSERT` 仍报 `undefined_table`（`42P01`，例如缓存刚加载后表被外部 drop）→ 重建一次再重试。
 
@@ -104,12 +105,14 @@ var convShards struct {
 }
 ```
 
-- **启动加载**：`LoadConvShards(d)` 从 catalog 一次性读出全部匹配表并填充缓存（可重复调用，每次全量重载——测试用它做 schema 隔离）：
+- **启动加载**：`LoadConvShards(d)` 从 catalog 一次性读出全部匹配表并填充缓存（可重复调用，每次全量重载——测试用它做 schema 隔离）。catalog 查询已收进 `db.ListTablesLike`，方言差异不外溢：
   ```sql
-  SELECT tablename FROM pg_tables
-  WHERE schemaname = current_schema()
-    AND (tablename = 'conversation_records' OR tablename ~ '^conversation_records_\d{4}_\d{2}$')
+  -- PostgreSQL
+  SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename LIKE $1
+  -- MySQL
+  SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE ?
   ```
+  两者都是粗粒度 `LIKE 'conversation_records%'`，真正的准入是 Go 侧的 `convShardNameRe` 白名单 + `== convBaseTable` 精确匹配——不为不同 catalog 的正则语法（PG 的 `~`、MySQL 的 `REGEXP`）分叉。
 - **建表注册**：`EnsureConversationShard` 成功后把新表名插入缓存（保持 months 新→旧有序）。
 - **惰性兜底**：读路径发现缓存未加载（如漏调启动加载）时自动从 catalog 加载一次再使用。
 - 读路径拿到的表名一律再经白名单正则校验后才拼进动态 SQL（表名来自 catalog/自身生成，无注入面）。
@@ -140,8 +143,41 @@ SELECT <cols>, request_ir, response_ir FROM conversation_records       WHERE id 
 
 ### 4.7 SQLite 与测试路径
 
-- 分表机制仅 PG 启用（`db.DialectOf` 门控）。SQLite 下 `InsertConversation` / 列表 / 详情保持**旧的单表逻辑**（该路径只被单测使用；生产上 handler 层已门控，SQLite 永不进这些函数）。
+- 分表机制在 PG 与 MySQL 上启用（`db.DialectOf(d).SupportsConversationArchive()` 门控）。SQLite 下 `InsertConversation` / 列表 / 详情保持**旧的单表逻辑**（该路径只被单测使用；生产上 handler 层已门控，SQLite 永不进这些函数）。
 - 现有 `internal/model/conversation_test.go`（SQLite 内存库、手工建单表）继续有效，覆盖非分表逻辑；分表逻辑由 PG e2e 与纯函数单测覆盖。
+
+### 4.9 MySQL 差异
+
+MySQL 没有 `CREATE SEQUENCE`，共享 id 用计数器表模拟：
+
+```sql
+CREATE TABLE IF NOT EXISTS id_sequences (
+  name VARCHAR(64) NOT NULL,
+  next_id BIGINT NOT NULL,          -- 已发出的最后一个 id（0 = 尚未发出）
+  PRIMARY KEY (name)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+分配一个 id 是两条语句（`db.NextShardID`）：
+
+```sql
+INSERT IGNORE INTO id_sequences (name, next_id) VALUES ('conversation_records_id_seq', 0);
+UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conversation_records_id_seq';
+```
+
+新 id 从 `UPDATE` 的 OK 包里读回（`res.LastInsertId()`），与连接无关。两条语句不是原子的，中途崩溃只会烧掉一个 id —— id 只要求唯一、不要求连续，可接受。PG 侧不变：`id` 列仍是 `DEFAULT nextval('<共享序列>')`，不显式传值。
+
+其余 MySQL 差异，都由 `internal/db` 的 schema 渲染器处理，`internal/model` 不感知：
+
+| 差异 | MySQL 处理 |
+|---|---|
+| 无 `CREATE INDEX IF NOT EXISTS` | 索引内联进 `CREATE TABLE`，故一张分表只有一条 DDL |
+| `JSON` 列不能带 `DEFAULT` | 丢掉 `'{}'` 默认值；`insertConversationInto` 恒给值 |
+| `BYTEA` / `JSONB` / `TIMESTAMP(0)` | `LONGBLOB` / `JSON` / `DATETIME(0)`（MySQL 的 `TIMESTAMP` 只到 2038 年） |
+| `TEXT` 不能建索引 | `harness`、`status` 等被索引或带默认值的列渲染成 `VARCHAR` |
+| `TEXT` 上限 64 KiB | `user_agent` 仍用 `TEXT`（UA 短）；真正长的文本列在别处已用 `LONGTEXT` |
+| 大小写/重音不敏感的默认排序规则 | 建表带 `COLLATE=utf8mb4_bin`，DSN 同设，保持与 PG/SQLite 一致的字节比较语义 |
+| `max_allowed_packet` 默认 64 MiB | 恰好等于 `response_raw` 的归档上限；DSN 用 `maxAllowedPacket=0` 跟随服务器值，启动时 < 128 MiB 告警 |
 
 ### 4.8 代码落点
 
@@ -172,7 +208,7 @@ SELECT <cols>, request_ir, response_ir FROM conversation_records       WHERE id 
 
 1. 单测：`convPageWindows` 各窗口边界（页跨分表、offset 跳过整表、空表、深翻页）、命名/排序/正则、DDL 生成。
 2. 现有 SQLite 单测保持绿（非分表路径回归）。
-3. PG e2e（`DB_TEST_PG_DSN` 存在才跑）：旧结构 + 数据 → 启动新版 → 断言旧数据经列表/详情可见、新写入落当月分表、翻页跨「月分表/历史分表」拼接正确、二次启动幂等。本机无 docker，需用户 PG 环境执行。
+3. PG e2e（`DB_TEST_PG_DSN` 存在才跑）、MySQL e2e（`DB_TEST_MYSQL_DSN` 存在才跑，`internal/db/mysql_e2e_test.go`，CI 里由 `mysql:8.0` service 提供）：旧结构 + 数据 → 启动新版 → 断言旧数据经列表/详情可见、新写入落当月分表、翻页跨「月分表/历史分表」拼接正确、二次启动幂等。本机无 docker，需用户 PG 环境执行。
 4. 回归：`go test ./...`、`go vet ./...`（gofmt 检查先 strip `\r`）。
 5. 现网验证：部署重启 → 发新请求 → 确认落 `conversation_records_当月`；管理页历史数据/详情/翻页正常。
 
