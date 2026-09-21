@@ -15,7 +15,7 @@ export interface OmpModel {
 }
 
 export interface OmpConfigOptions {
-  /** 网关地址，如 http://localhost:6718（不含 /v1，openai-completions 会拼接 /v1/chat/completions） */
+  /** 网关地址，如 http://localhost:6718/v1（含 /v1；openai-completions 只会拼接 /chat/completions） */
   baseUrl: string
   /** ext key 明文（apiKey 字段支持字面值） */
   apiKey: string

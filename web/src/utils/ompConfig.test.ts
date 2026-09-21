@@ -15,7 +15,7 @@ const HEADER = `# ============================================================
 describe('buildOmpYaml', () => {
   it('生成指向网关的中转配置：所有模型统一推理、名称原样', () => {
     const yaml = buildOmpYaml({
-      baseUrl: 'http://localhost:6718',
+      baseUrl: 'http://localhost:6718/v1', // 含 /v1，omp 自拼 /chat/completions
       apiKey: 'all-sk-test0000000000000000000000000',
       models: [
         { id: 'deepseek/deepseek-v4-pro', contextWindow: 1000000, maxTokens: 384000 },
@@ -25,7 +25,7 @@ describe('buildOmpYaml', () => {
     expect(yaml).toBe(
       HEADER + `providers:
   any-llm:
-    baseUrl: http://localhost:6718
+    baseUrl: http://localhost:6718/v1
     api: openai-completions
     apiKey: all-sk-test0000000000000000000000000
     authHeader: true

@@ -47,10 +47,11 @@ async function ensureModelOptions() {
 }
 
 const origin = computed(() => window.location.origin)
+// 客户端 base_url：OpenAI 兼容客户端填 <origin>/v1（SDK 自拼 /chat/completions），
+// Anthropic SDK 填根地址（自拼 /v1/messages）。
 const endpoints = computed(() => [
-  { label: 'OpenAI - Chat Completions', method: 'POST', url: `${origin.value}/v1/chat/completions` },
-  { label: 'OpenAI - Models', method: 'GET', url: `${origin.value}/v1/models` },
-  { label: 'Anthropic - Messages', method: 'POST', url: `${origin.value}/v1/messages` },
+  { label: 'OpenAI base_url', url: `${origin.value}/v1` },
+  { label: 'Anthropic base_url', url: origin.value },
 ])
 
 const columns = computed<DataTableColumns<ExtKey>>(() => [
@@ -250,7 +251,7 @@ async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | nu
 async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
   const rows = await collectUpstreamModels()
   return buildOmpYaml({
-    baseUrl: origin.value,
+    baseUrl: `${origin.value}/v1`,
     apiKey,
     models: rows
       .filter((m) => !(allowedModels && allowedModels.length > 0 && !allowedModels.includes(`${m.upstream}/${m.model_name}`)))
@@ -362,13 +363,13 @@ onMounted(load)
       </div>
     </header>
 
-    <n-card title="访问端点" class="panel">
+    <n-card title="访问地址" class="panel">
       <p style="margin: 0 0 12px; color: var(--text-3); font-size: 13px">
-        可直接复制以下 URL 作为客户端 base_url，模型名格式：<code class="mono code-chip">upstream-name/model-name</code>
+        复制以下 URL 作为客户端 base_url（OpenAI 兼容客户端用 <code class="mono code-chip">/v1</code> 后缀，Anthropic SDK 用根地址），模型名格式：<code class="mono code-chip">upstream-name/model-name</code>
       </p>
       <n-space vertical :size="10">
         <n-input-group v-for="ep in endpoints" :key="ep.url">
-          <n-tag :bordered="false" :type="ep.method === 'POST' ? 'success' : 'info'" class="mono" style="min-width: 64px; justify-content: center">{{ ep.method }}</n-tag>
+          <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center">{{ ep.label }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
           <n-button type="primary" @click="copyKey(ep.url, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
