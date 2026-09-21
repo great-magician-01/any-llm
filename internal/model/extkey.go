@@ -46,7 +46,10 @@ func CreateExtKey(d *sql.DB, label, remark string, dailyLimit, monthlyLimit int,
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
-	return &ExtKey{ID: id, Key: key, Label: label, Remark: remark, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}, nil
+	k := &ExtKey{ID: id, Key: key, Label: label, Remark: remark, Enabled: true, DailyTokenLimit: dailyLimit, MonthlyTokenLimit: monthlyLimit, AllowedModels: allowedModels, CreatedAt: now}
+	// 落库即入缓存：新建的 key 下一个请求就能命中，不必再查一次。
+	putExtKey(k)
+	return k, nil
 }
 
 func generateKey() (string, error) {
@@ -143,6 +146,8 @@ func DeleteExtKey(d *sql.DB, id int64) error {
 	if err != nil {
 		return fmt.Errorf("delete ext key: %w", err)
 	}
+	// 缓存里按 key 字符串索引，删除时只有 ID，逐出即止（下个请求回库自然落空）。
+	evictExtKeyByID(id)
 	return nil
 }
 
@@ -173,6 +178,9 @@ func UpdateExtKey(d *sql.DB, id int64, label, remark string, enabled bool, daily
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
+	// 读回整行回填缓存：与 UpdateUpstream 的「先 Get 再存」不同，这里参数里没有
+	// key 字符串与 created_at，拼不出完整行，故多一次 SELECT（仅管理端 PATCH 路径）。
+	refreshExtKey(d, id)
 	return nil
 }
 
@@ -190,6 +198,9 @@ func ExtKeyLabelTaken(d *sql.DB, label string, excludeID int64) (bool, error) {
 	return n > 0, nil
 }
 
+// TouchExtKey 只更新 last_used_at：该列不参与热路径任何判定（鉴权看
+// key/enabled，路由看 allowed_models），为它失效缓存等于每请求都失效，
+// 故这里故意不碰缓存——库里是最新的，缓存里保持读取时的值即可。
 func TouchExtKey(d *sql.DB, id int64) error {
 	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET last_used_at=? WHERE id=? AND is_active = 1`), time.Now(), id)
 	if err != nil {

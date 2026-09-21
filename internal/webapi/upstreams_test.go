@@ -18,6 +18,10 @@ import (
 
 func setupAPI(t *testing.T) (*API, *sql.DB) {
 	t.Helper()
+	// 配置读缓存是 model 包级、进程内的，而每个用例都是一个临时库（见
+	// gateway 的 setupGateway）。
+	model.ResetConfigCache()
+	t.Cleanup(model.ResetConfigCache)
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)

@@ -58,6 +58,9 @@ func CreateAlias(d *sql.DB, a *ModelAlias) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit create alias %q: %w", a.Name, err)
 	}
+	// 逐出同名条目（软删后重建的场景：DeleteAlias 已逐出，这里是防御），
+	// 下一个请求按新绑定重新解析。
+	evictAliasByName(a.Name)
 	return id, nil
 }
 
@@ -135,7 +138,8 @@ func ListAliases(d *sql.DB) ([]ModelAlias, error) {
 }
 
 // listBindings 取绑定并联查上游名（含指向上游已软删除的绑定，供管理端展示）；
-// 网关解析用 ResolveAliasTargets，会跳过上游不活跃或已禁用的绑定。
+// 网关解析用 resolveAliasCandidates（经 CachedAliasTargets 读缓存），会跳过上游
+// 不活跃或已禁用的绑定。
 func listBindings(d *sql.DB, where string, args ...any) ([]AliasBinding, error) {
 	rows, err := d.Query(db.Rebind(d, `SELECT b.id, b.alias_id, b.upstream_id, b.model_name, b.priority,
 		COALESCE((SELECT u.name FROM upstreams u WHERE u.id = b.upstream_id AND u.is_active = 1), '') AS upstream_name,
@@ -158,29 +162,39 @@ func listBindings(d *sql.DB, where string, args ...any) ([]AliasBinding, error) 
 	return out, rows.Err()
 }
 
-// ResolveAliasTargets 网关热路径：按对外名称精确匹配活跃别名，返回按优先级
-// 排序的候选链；绑定指向的上游若已删除/不活跃/已禁用/已过期则跳过（不可用的
-// 候选直接从链中消失，故障转移自然落到下一候选）。found=false 表示别名不存在
-// （调用方回落到 name/model 直连拆分）；found=true 但 targets 为空表示别名存在
-// 但无可用绑定。
+// ResolveAliasTargets 按对外名称解析别名候选链，返回按优先级排序、且未过有效期
+// 的候选。found=false 表示别名不存在（调用方回落到 name/model 直连拆分）；
+// found=true 但 targets 为空表示别名存在但无可用绑定。网关热路径请用
+// CachedAliasTargets（同一口径，只是走读缓存）。
 //
 // 过期判定放在 Go 侧（比较 now 与行上的 ExpiresAt）而不是 SQL 的 JOIN 条件：
 // SQLite 的 DATETIME 文本与 PG 的 timestamp 在驱动层的格式/时区处理不一致，
 // 跨方言写比较条件容易踩坑；而候选行本就是完整读出来的，Go 侧判断零成本。
 func ResolveAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targets []AliasTarget, err error) {
-	var aliasID int64
-	err = d.QueryRow(db.Rebind(d, `SELECT id FROM model_aliases WHERE name=? AND is_active = 1`), name).Scan(&aliasID)
+	found, _, candidates, err := resolveAliasCandidates(d, name)
+	if err != nil || !found {
+		return found, nil, err
+	}
+	return true, liveTargets(candidates, now), nil
+}
+
+// resolveAliasCandidates 按对外名称精确匹配活跃别名，返回原始候选链（不过滤
+// 有效期，按优先级排序）。found=false 表示别名不存在。缓存路径与未缓存路径共用
+// 这一份解析逻辑：缓存存原始候选，过期判定留给读时按 now 做，这样「时间走过
+// expires_at」不需要失效任何条目。
+func resolveAliasCandidates(d *sql.DB, name string) (found bool, id int64, candidates []AliasTarget, err error) {
+	err = d.QueryRow(db.Rebind(d, `SELECT id FROM model_aliases WHERE name=? AND is_active = 1`), name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil, nil
+		return false, 0, nil, nil
 	}
 	if err != nil {
-		return false, nil, fmt.Errorf("resolve alias %q: %w", name, err)
+		return false, 0, nil, fmt.Errorf("resolve alias %q: %w", name, err)
 	}
 	rows, err := d.Query(db.Rebind(d, `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at, b.model_name
 		FROM model_alias_bindings b JOIN upstreams u ON u.id = b.upstream_id AND u.is_active = 1 AND u.enabled = 1
-		WHERE b.alias_id = ? AND b.is_active = 1 ORDER BY b.priority, b.id`), aliasID)
+		WHERE b.alias_id = ? AND b.is_active = 1 ORDER BY b.priority, b.id`), id)
 	if err != nil {
-		return true, nil, fmt.Errorf("resolve alias %q bindings: %w", name, err)
+		return true, 0, nil, fmt.Errorf("resolve alias %q bindings: %w", name, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -190,16 +204,13 @@ func ResolveAliasTargets(d *sql.DB, name string, now time.Time) (found bool, tar
 		if err := rows.Scan(&t.Upstream.ID, &t.Upstream.Name, &t.Upstream.BaseURL, &t.Upstream.APIKey, &t.Upstream.Format,
 			&enabled, &t.Upstream.DailyTokenLimit, &t.Upstream.MonthlyTokenLimit, &t.Upstream.MaxConcurrent, &t.Upstream.CreatedAt, &t.Upstream.UpdatedAt, &expiresAt,
 			&t.ModelName); err != nil {
-			return true, nil, err
+			return true, 0, nil, err
 		}
 		t.Upstream.Enabled = enabled != 0
 		t.Upstream.ExpiresAt = timePtr(expiresAt)
-		if t.Upstream.Expired(now) {
-			continue // 已过有效期：候选作废，故障转移落到下一绑定
-		}
-		targets = append(targets, t)
+		candidates = append(candidates, t)
 	}
-	return true, targets, rows.Err()
+	return true, id, candidates, rows.Err()
 }
 
 // UpdateAlias 改名并整体替换绑定：旧绑定全软删、按新顺序插入（绑定无外部
@@ -223,6 +234,10 @@ func UpdateAlias(d *sql.DB, a *ModelAlias) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit update alias %d: %w", a.ID, err)
 	}
+	// 按 ID 逐出（覆盖改名前的旧名——缓存以名称为键，旧名只有按 ID 扫才找得到），
+	// 再按新名逐出，下一个请求重新解析。
+	evictAliasByID(a.ID)
+	evictAliasByName(a.Name)
 	return nil
 }
 
@@ -243,5 +258,6 @@ func DeleteAlias(d *sql.DB, id int64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete alias %d: %w", id, err)
 	}
+	evictAliasByID(id)
 	return nil
 }
