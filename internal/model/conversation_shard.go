@@ -2,7 +2,6 @@ package model
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -10,19 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-// conversation_records 应用层按月分表（仅 PG；SQLite 走单表路径，见
+// conversation_records 应用层按月分表（PG 与 MySQL；SQLite 走单表路径，见
 // conversation.go）。设计见 docs/conversation-sharding.md：
 //
 //   - 月分表 conversation_records_YYYY_MM，每月一张普通物理表；
 //   - 存量库的旧表 conversation_records 原地保留为「历史分表」，零迁移；
 //   - 写入按 created_at 月份路由，缺表时自动建（EnsureConversationShard）；
 //   - 分表集合由进程内注册缓存维护（convShardCache）：启动时 LoadConvShards
-//     从 catalog 全量加载，建表后立即注册，读写路径不再逐查询打 pg_tables；
-//   - 全部分表共享序列 conversation_records_id_seq（存量库沿用旧表
-//     BIGSERIAL 自带序列），id 全局唯一，详情查询 WHERE id=? 语义不变。
+//     从 catalog 全量加载，建表后立即注册，读写路径不再逐查询打 catalog；
+//   - 全部分表共享 id 序列（PG 用 CREATE SEQUENCE，MySQL 用 id_sequences
+//     计数器表模拟），id 全局唯一，详情查询 WHERE id=? 语义不变。
 const (
 	convBaseTable = "conversation_records"
 	convSeqName   = "conversation_records_id_seq"
@@ -60,24 +59,23 @@ var convShardCache struct {
 	hasBase bool
 }
 
-// LoadConvShards 从 catalog 全量重载分表注册缓存。仅 PG 调用；启动时调一次，
-// 可重复调用（每次重载）——PG e2e 测试用它做 schema 隔离。
+// LoadConvShards 从 catalog 全量重载分表注册缓存。由启动流程调用，可重复调用
+// （每次重载）—— e2e 测试用它做 schema 隔离。
 func LoadConvShards(d *sql.DB) error {
-	rows, err := d.Query(`SELECT tablename FROM pg_tables
-		WHERE schemaname = current_schema()
-		  AND (tablename = 'conversation_records' OR tablename ~ '^conversation_records_\d{4}_\d{2}$')`)
+	// 粗粒度 LIKE 捞候选，再由 Go 侧的 convShardNameRe 白名单复校验：不同 catalog
+	// 的正则语法不一样（PG 是 ~，MySQL 是 REGEXP），没必要为它分叉。
+	//
+	// 前缀必须用 convBaseTable（不带尾下划线）：存量库的旧 conversation_records
+	// 要作为「历史分表」被捞回来，用 convShardPfx 的 LIKE 'conversation_records_%'
+	// 会把它漏掉 —— 历史归档会从读路径整体消失。
+	names, err := db.ListTablesLike(d, convBaseTable)
 	if err != nil {
 		return fmt.Errorf("list conversation shards: %w", err)
 	}
-	defer rows.Close()
+	hasBase := false
 	var months []string
 	byMonth := make(map[string]string)
-	hasBase := false
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return err
-		}
+	for _, name := range names {
 		if name == convBaseTable {
 			hasBase = true
 			continue
@@ -87,9 +85,6 @@ func LoadConvShards(d *sql.DB) error {
 		}
 		months = append(months, name)
 		byMonth[convShardNameToKey(name)] = name
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(months)))
 	convShardCache.Lock()
@@ -148,53 +143,29 @@ func registerConvShard(key, name string) {
 	convShardCache.months[i] = name
 }
 
-// convShardDDL 生成一张月分表的完整 DDL（共享序列 + 建表 + 三个索引）。
-// 索引名 schema 级唯一，故带月份后缀。全部幂等（IF NOT EXISTS）。
-func convShardDDL(name string) []string {
+// convShardDDL 生成一张月分表的完整 DDL（共享序列 + 建表 + 索引）。
+// 索引名 schema 级唯一，故带月份后缀。全部幂等（IF NOT EXISTS）。MySQL 的索引
+// 内联在 CREATE TABLE 里，故只返回一条语句。
+// 表名必须已过 convShardNameRe 白名单。
+func convShardDDL(d db.Dialect, name string) ([]string, error) {
 	if !convShardNameRe.MatchString(name) {
-		return nil
+		return nil, fmt.Errorf("bad shard name %q", name)
 	}
-	suffix := name[len(convShardPfx):]
-	return []string{
-		fmt.Sprintf(`CREATE SEQUENCE IF NOT EXISTS %s`, convSeqName),
-		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-    id BIGINT NOT NULL DEFAULT nextval('%s') PRIMARY KEY,
-    ext_key_id BIGINT,
-    upstream_id BIGINT,
-    upstream_name TEXT NOT NULL,
-    model TEXT NOT NULL,
-    in_format TEXT NOT NULL,
-    up_format TEXT NOT NULL,
-    harness TEXT NOT NULL,
-    user_agent TEXT NOT NULL,
-    stream INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-    request_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
-    response_ir JSONB NOT NULL DEFAULT '{}'::jsonb,
-    request_raw BYTEA NOT NULL,
-    response_raw BYTEA NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
-)`, name, convSeqName),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_conv_%s_created ON %s(created_at)`, suffix, name),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_conv_%s_ext_key ON %s(ext_key_id)`, suffix, name),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_conv_%s_harness ON %s(harness)`, suffix, name),
+	stmts := db.ShardSequenceStatements(d, convSeqName)
+	table, err := db.ConversationShardDDL(d, name, convSeqName)
+	if err != nil {
+		return nil, err
 	}
+	return append(stmts, table...), nil
 }
 
 // EnsureConversationShard 确保 t 所属月份的分表存在并注册进缓存。幂等。
-// 仅 PG 调用；由启动流程（预建当月）与写入路径（缺表兜底）触发，
-// 跨月自愈，无需定时任务。
+// 由启动流程（预建当月）与写入路径（缺表兜底）触发，跨月自愈，无需定时任务。
 func EnsureConversationShard(d *sql.DB, t time.Time) error {
 	name := ConvShardName(t)
-	stmts := convShardDDL(name)
-	if stmts == nil {
-		return fmt.Errorf("bad shard name %q", name)
+	stmts, err := convShardDDL(db.DialectOf(d), name)
+	if err != nil {
+		return err
 	}
 	for _, s := range stmts {
 		if _, err := d.Exec(s); err != nil {
@@ -203,12 +174,6 @@ func EnsureConversationShard(d *sql.DB, t time.Time) error {
 	}
 	registerConvShard(convMonthKey(t), name)
 	return nil
-}
-
-// isUndefinedTable 判断 PG「表不存在」错误（SQLSTATE 42P01）。
-func isUndefinedTable(err error) bool {
-	var pe *pgconn.PgError
-	return errors.As(err, &pe) && pe.Code == "42P01"
 }
 
 // convWindow 描述一页结果在某张分表上的截取范围。

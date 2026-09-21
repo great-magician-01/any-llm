@@ -65,12 +65,12 @@ func (s *SessionStore) Put(id string, msgs []translate.Message) error {
 		return fmt.Errorf("session encode: %w", err)
 	}
 	now := time.Now()
-	_, err = s.db.Exec(
-		db.Rebind(s.db, `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET messages = excluded.messages, last_used_at = excluded.last_used_at`),
-		id, string(data), now, now,
-	)
+	q := `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
+		 VALUES (?, ?, ?, ?)` + db.UpsertSuffix(s.db, "id", "messages", "last_used_at")
+	// VALUES(col) 是 SQL 里的函数引用（指向同一条语句 VALUES 子句中该列的值），
+	// 由服务端解析，不占绑定参数位 —— 所以三种方言都只传 4 个参数，无需按方言
+	// 分流。PG/SQLite 的 excluded.<col> 同理。
+	_, err = s.db.Exec(db.Rebind(s.db, q), id, string(data), now, now)
 	if err != nil {
 		return fmt.Errorf("session put: %w", err)
 	}

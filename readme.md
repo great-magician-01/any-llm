@@ -12,10 +12,10 @@
 - **模型权限**：每个外部 Key 可限定可用模型白名单（别名或 `上游/模型`，留空 = 不限），越权请求返回 403，`/v1/models` 按 Key 过滤
 - **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或 Oh My Pi 配置
 - **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
-- **对话记录**：自动归档每次调用的完整请求/响应（仅 PostgreSQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
+- **对话记录**：自动归档每次调用的完整请求/响应（PostgreSQL / MySQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
 - **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量），保留历史趋势
 - **配置备份**：上游与别名配置一键导出/导入
-- **灵活存储**：支持 SQLite（默认，纯 Go）和 PostgreSQL
+- **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0.13+（同为纯 Go 驱动）
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
 - **双主题界面**：经典深色与毛玻璃主题，界面内一键切换
 
@@ -84,13 +84,13 @@ docker compose up -d
 | `ANY_LLM_BALANCE_INTERVAL` | `10m` | 厂商余额/额度快照轮询间隔：Go duration（`10m`、`30m`）或纯小时数；`0` = 关闭自动抓取（含启动时），管理页手动刷新仍可用 |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}`；留空仅输出到 stdout |
 | `ANY_LLM_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
-| `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` 或 `postgres`（不区分大小写） |
-| `DB_HOST` | `localhost` | PostgreSQL 主机（`DB_TYPE=postgres` 时生效） |
-| `DB_PORT` | `5432` | PostgreSQL 端口 |
-| `DB_USER` | `postgres` | PostgreSQL 用户名 |
-| `DB_PASSWORD` | （空） | PostgreSQL 密码 |
-| `DB_NAME` | `amanuensis` | PostgreSQL 数据库名 |
-| `DB_SCHEMA` | `public` | PostgreSQL schema（不存在则自动创建） |
+| `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` / `postgres` / `mysql`（不区分大小写） |
+| `DB_HOST` | `localhost` | PostgreSQL / MySQL 主机（`DB_TYPE=postgres` 或 `mysql` 时生效） |
+| `DB_PORT` | `5432` | PostgreSQL 端口；`mysql` 时默认 3306 |
+| `DB_USER` | `postgres` | PostgreSQL / MySQL 用户名 |
+| `DB_PASSWORD` | （空） | PostgreSQL / MySQL 密码 |
+| `DB_NAME` | `amanuensis` | PostgreSQL / MySQL 数据库名 |
+| `DB_SCHEMA` | `public` | PostgreSQL schema（不存在则自动创建）；MySQL 下忽略（库名即 `DB_NAME`） |
 
 复制 `.env.example` 为 `.env` 并修改后重启服务即可。
 
@@ -104,7 +104,7 @@ docker compose up -d
 2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、日/月 Token 限额；DeepSeek / Kimi 上游自动抓取余额快照；支持配置导出/导入
 3. **Keys（API 密钥）**：创建和管理外部 API Key，可填写名称与备注，设置日/月 Token 限额与可用模型白名单，一键复制调用示例或 Oh My Pi 配置
 4. **Aliases（模型别名）**：维护固定对外模型名及绑定列表
-5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（仅 PostgreSQL，SQLite 下显示禁用提示）
+5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（PostgreSQL / MySQL，SQLite 下显示禁用提示）
 6. **Usage（用量）**：Token 消耗、调用耗时（token/s）与按日汇总图表
 
 ### 调用网关
@@ -158,7 +158,7 @@ cmd/any-llm/          # 入口，嵌入前端 dist
 internal/
   auth/               # 会话认证（HMAC-SHA256，滑动续期）
   config/             # 环境变量加载
-  db/                 # 数据库初始化与迁移（SQLite / PostgreSQL）
+  db/                 # 数据库初始化与迁移（SQLite / PostgreSQL / MySQL，单一定义按方言渲染）
   gateway/            # 公开 API 网关路由
   logger/             # slog 日志封装
   model/              # 数据模型与 CRUD

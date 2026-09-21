@@ -11,11 +11,11 @@ import (
 	"github.com/great-magician-01/any-llm/internal/model"
 )
 
-// 对话归档的只读入口（仅 GET，路由层限定）。归档仅 PG 落库
+// 对话归档的只读入口（仅 GET，路由层限定）。归档在 PG / MySQL 上落库
 // （网关层门控），SQLite 时列表返回 disabled 标记、详情返回 400，
-// 前端据此提示「需要 PostgreSQL」而不是报未知错误。
+// 前端据此提示「需要 PostgreSQL 或 MySQL」而不是报未知错误。
 func (a *API) listConversations(w http.ResponseWriter, r *http.Request) {
-	if db.DialectOf(a.db) != db.DialectPostgres {
+	if !db.DialectOf(a.db).SupportsConversationArchive() {
 		writeJSON(w, 200, map[string]any{"data": []any{}, "total": 0, "disabled": true})
 		return
 	}
@@ -31,8 +31,8 @@ func (a *API) listConversations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getConversation(w http.ResponseWriter, r *http.Request, id int64) {
-	if db.DialectOf(a.db) != db.DialectPostgres {
-		writeJSON(w, 400, map[string]any{"error": "conversation archiving requires PostgreSQL"})
+	if !db.DialectOf(a.db).SupportsConversationArchive() {
+		writeJSON(w, 400, map[string]any{"error": "conversation archiving requires PostgreSQL or MySQL"})
 		return
 	}
 	rec, err := model.GetConversation(a.db, id)

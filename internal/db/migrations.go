@@ -9,267 +9,40 @@ import (
 	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
-// 表设计原则：不使用外键约束（删除一律应用层软删除，is_active=0 标记，
-// 历史记录靠存储的 name/id 关联），唯一性用「仅活跃行」的部分唯一索引实现
-// ——软删除的行不占唯一名额，同名资源删除后可重建。usage_records /
-// conversation_records 等归档表只存 id/name 快照，不依赖引用完整性。
-//
-// 注意：这里的 CREATE TABLE 与 sqliteSoftDeleteSpecs 里的重建 DDL 是重复的，
-// 新增/修改列时两处（及各自的 insertCols/selectExprs）必须同步。
-const migrationSQLite = `
-CREATE TABLE IF NOT EXISTS upstreams (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    format TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-    max_concurrent INTEGER NOT NULL DEFAULT 100,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS upstream_models (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    upstream_id INTEGER NOT NULL,
-    model_name TEXT NOT NULL,
-    manual INTEGER NOT NULL DEFAULT 0,
-    context_length INTEGER NOT NULL DEFAULT 1000000,
-    max_output_length INTEGER NOT NULL DEFAULT 200000,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS ext_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key TEXT NOT NULL,
-    label TEXT NOT NULL DEFAULT '',
-    remark TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-    allowed_models TEXT NOT NULL DEFAULT '',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at DATETIME,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS usage_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ext_key_id INTEGER,
-    upstream_id INTEGER,
-    upstream_name TEXT NOT NULL,
-    model TEXT NOT NULL,
-    in_format TEXT NOT NULL,
-    up_format TEXT NOT NULL,
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER NOT NULL DEFAULT 0,
-    stream INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
-CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id);
-CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id);
-
-CREATE TABLE IF NOT EXISTS response_sessions (
-    id TEXT PRIMARY KEY,
-    messages TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
-
--- model_aliases：固定对外模型名。客户端用别名请求，网关按绑定优先级
--- 依次尝试 model_alias_bindings 里的「上游+真实模型」，实现对外名称不变、
--- 内里自由切换与故障转移。
-CREATE TABLE IF NOT EXISTS model_aliases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS model_alias_bindings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    alias_id INTEGER NOT NULL,
-    upstream_id INTEGER NOT NULL,
-    model_name TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
--- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
--- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
-CREATE TABLE IF NOT EXISTS balance_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    upstream_id INTEGER NOT NULL,
-    upstream_name TEXT NOT NULL,
-    vendor TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at DATETIME NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
-`
-
-const migrationPG = `
-CREATE TABLE IF NOT EXISTS upstreams (
-    id BIGSERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    format TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-    max_concurrent INTEGER NOT NULL DEFAULT 100,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP(0),
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS upstream_models (
-    id BIGSERIAL PRIMARY KEY,
-    upstream_id BIGINT NOT NULL,
-    model_name TEXT NOT NULL,
-    manual INTEGER NOT NULL DEFAULT 0,
-    context_length INTEGER NOT NULL DEFAULT 1000000,
-    max_output_length INTEGER NOT NULL DEFAULT 200000,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS ext_keys (
-    id BIGSERIAL PRIMARY KEY,
-    key TEXT NOT NULL,
-    label TEXT NOT NULL DEFAULT '',
-    remark TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-    allowed_models TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at TIMESTAMP(0),
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS usage_records (
-    id BIGSERIAL PRIMARY KEY,
-    ext_key_id BIGINT,
-    upstream_id BIGINT,
-    upstream_name TEXT NOT NULL,
-    model TEXT NOT NULL,
-    in_format TEXT NOT NULL,
-    up_format TEXT NOT NULL,
-    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-    completion_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER NOT NULL DEFAULT 0,
-    stream INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ok',
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at);
-CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id);
-CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id);
-
-CREATE TABLE IF NOT EXISTS response_sessions (
-    id TEXT PRIMARY KEY,
-    messages TEXT NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_resp_sessions_used ON response_sessions(last_used_at);
-
-CREATE TABLE IF NOT EXISTS model_aliases (
-    id BIGSERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS model_alias_bindings (
-    id BIGSERIAL PRIMARY KEY,
-    alias_id BIGINT NOT NULL,
-    upstream_id BIGINT NOT NULL,
-    model_name TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-
--- conversation_records 不再由迁移建表：改为应用层按月分表
--- （conversation_records_YYYY_MM），由 model.EnsureConversationShard 按需创建，
--- 见 docs/conversation-sharding.md。存量库的旧表原地保留为历史分表，
--- 读取由应用层跨分表合并。migrateSoftDeletePG 里对该表旧外键的
--- DROP CONSTRAINT IF EXISTS 保留，用于存量库升级。
-
--- balance_snapshots：厂商余额/额度快照（后台轮询或手动刷新写入的归档表，
--- 只存 upstream id/name 快照，无外键、无软删除）。payload 是归一化 JSON。
-CREATE TABLE IF NOT EXISTS balance_snapshots (
-    id BIGSERIAL PRIMARY KEY,
-    upstream_id BIGINT NOT NULL,
-    upstream_name TEXT NOT NULL,
-    vendor TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_balance_snapshots_upstream ON balance_snapshots(upstream_id, id DESC);
-`
-
-// extraCols 列出「初始 schema 之后才加入」的列，连同 ALTER TABLE 补列用的完整
-// 列定义（类型 + NOT NULL + 默认值）：本项目的老库升级后合理缺失这些列，需要回填；
-// 新库由上面的 CREATE TABLE 提供。补列只在列不存在时执行，幂等；coldef 需能直接
-// 用于两种方言的 ADD COLUMN。
+// extraCols 列出「初始 schema 之后才加入」的列：本项目的老库升级后合理缺失这些列，
+// 需要回填。补列只在列不存在时执行，幂等。列定义从 schema.go 的规范定义渲染，
+// 三种方言各自合法 —— 不用再手写要同时兼容两种方言的 coldef 字符串。
 //
 // 初始 schema 就有的列（如 ext_keys.label）明确不在这里兜底：CREATE TABLE IF NOT
 // EXISTS 对已存在的同名表是空操作，若那张表不是本项目按当前形态建的，缺列会在查询
-// 时以 42703 暴露——此时应人工修库，而不是静默补一个语义不明的空壳列把库搞乱。
+// 时才以 42703 暴露——此时应人工修库，而不是静默补一个语义不明的空壳列把库搞乱。
 var extraCols = []struct {
-	table, column, coldef string
+	table, column string
 }{
-	{"upstreams", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
-	{"upstreams", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
-	{"upstreams", "is_active", "INTEGER NOT NULL DEFAULT 1"},
-	{"upstreams", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+	{"upstreams", "daily_token_limit"},
+	{"upstreams", "monthly_token_limit"},
+	{"upstreams", "is_active"},
+	{"upstreams", "enabled"},
 	// 每上游并发上限（默认 100，0 = 不限）
-	{"upstreams", "max_concurrent", "INTEGER NOT NULL DEFAULT 100"},
+	{"upstreams", "max_concurrent"},
 	// 有效期截止时刻；可空，NULL = 永久有效。到点后网关侧等同禁用（见
 	// model.Upstream.Expired）。与 ext_keys.last_used_at 一致不做 NOT NULL 回填。
-	// 这里必须写 TIMESTAMP 而不是 SQLite DDL 里那个 DATETIME：coldef 要同时
-	// 对两种方言合法，而 PG 没有 datetime 这个类型名（ALTER TABLE ADD COLUMN
-	// 会 42704）。SQLite 对 DATE/DATETIME/TIMESTAMP 的亲和性与驱动解析完全
-	// 一致（modernc/sqlite 三者都转 time.Time），换拼写无行为差异。
-	{"upstreams", "expires_at", "TIMESTAMP"},
-	{"ext_keys", "enabled", "INTEGER NOT NULL DEFAULT 1"},
-	{"ext_keys", "daily_token_limit", "INTEGER NOT NULL DEFAULT 0"},
-	{"ext_keys", "monthly_token_limit", "INTEGER NOT NULL DEFAULT 0"},
-	{"ext_keys", "is_active", "INTEGER NOT NULL DEFAULT 1"},
+	{"upstreams", "expires_at"},
+	{"ext_keys", "enabled"},
+	{"ext_keys", "daily_token_limit"},
+	{"ext_keys", "monthly_token_limit"},
+	{"ext_keys", "is_active"},
 	// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
-	{"ext_keys", "allowed_models", "TEXT NOT NULL DEFAULT ''"},
+	{"ext_keys", "allowed_models"},
 	// 备注（初始 schema 之后才加入，老库回填）
-	{"ext_keys", "remark", "TEXT NOT NULL DEFAULT ''"},
-	{"upstream_models", "is_active", "INTEGER NOT NULL DEFAULT 1"},
-	{"upstream_models", "context_length", "INTEGER NOT NULL DEFAULT 1000000"},
-	{"upstream_models", "max_output_length", "INTEGER NOT NULL DEFAULT 200000"},
-	{"usage_records", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"},
-	{"usage_records", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"},
-	{"usage_records", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"},
-	{"usage_records", "duration_ms", "INTEGER NOT NULL DEFAULT 0"},
+	{"ext_keys", "remark"},
+	{"upstream_models", "is_active"},
+	{"upstream_models", "context_length"},
+	{"upstream_models", "max_output_length"},
+	{"usage_records", "cache_read_tokens"},
+	{"usage_records", "cache_creation_tokens"},
+	{"usage_records", "reasoning_tokens"},
+	{"usage_records", "duration_ms"},
 }
 
 // migrateExtraCols ensures columns added after the initial schema exist on
@@ -285,7 +58,18 @@ func migrateExtraCols(d *sql.DB) error {
 		if exists {
 			continue
 		}
-		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, ec.table, ec.column, ec.coldef)
+		tbl, ok := schemaTableByName(ec.table)
+		if !ok {
+			return fmt.Errorf("add column %s.%s: unknown table %s", ec.table, ec.column, ec.table)
+		}
+		col, ok := tbl.column(ec.column)
+		if !ok {
+			return fmt.Errorf("add column %s.%s: unknown column", ec.table, ec.column)
+		}
+		stmt, err := tbl.AddColumnDDL(dialect, col, DDLConfig{})
+		if err != nil {
+			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
+		}
 		if _, err := d.Exec(stmt); err != nil {
 			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
 		}
@@ -301,6 +85,12 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 		// 同名表不算数，否则它们的列会让本 schema 的补列被误判跳过。
 		err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
 			WHERE table_name = $1 AND column_name = $2 AND table_schema = current_schema()`, table, col).Scan(&n)
+		return n > 0, err
+	case DialectMySQL:
+		var n int
+		// MySQL 的 database 就是 schema；DATABASE() 返回连接当前默认库。
+		err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, col).Scan(&n)
 		return n > 0, err
 	default:
 		rows, err := d.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
@@ -327,17 +117,24 @@ func columnExists(d *sql.DB, dialect Dialect, table, col string) (bool, error) {
 // migrateSoftDelete 把旧库升级到「无外键 + 软删除」模式：
 //   - PG：补 is_active 列、DROP 旧的 REFERENCES/内联 UNIQUE 约束、建部分唯一索引；
 //   - SQLite：对 schema 不达标的表整体重建（SQLite 无法就地删约束），
-//     同时顺带移除旧库 upstreams 上的 format CHECK。
+//     同时顺带移除旧库 upstreams 上的 format CHECK；
+//   - MySQL：no-op。MySQL 支持是后来加的，不存在需要升级的存量 MySQL 库——
+//     按本项目的原则（不为不可能存在的库做防御性兜底），这里直接跳过，
+//     而不是留一段永远不会执行的迁移代码。
 //
 // 必须在 PRAGMA foreign_keys=ON 之前调用（OpenSQLite 已保证）。SQLite
 // 3.25+ 的 ALTER TABLE RENAME 默认会改写其他表的 REFERENCES 子句（仅当
 // PRAGMA legacy_alter_table=ON 时才不改写），重建期间需临时打开
 // legacy_alter_table，否则未重建表的 REFERENCES 会被改成指向 _bak 表。
 func migrateSoftDelete(d *sql.DB) error {
-	if DialectOf(d) == DialectPostgres {
+	switch DialectOf(d) {
+	case DialectPostgres:
 		return migrateSoftDeletePG(d)
+	case DialectMySQL:
+		return nil
+	default:
+		return migrateSoftDeleteSQLite(d)
 	}
-	return migrateSoftDeleteSQLite(d)
 }
 
 func migrateSoftDeletePG(d *sql.DB) error {
@@ -366,11 +163,6 @@ func migrateSoftDeletePG(d *sql.DB) error {
 			return fmt.Errorf("soft-delete migrate: %q: %w", s, err)
 		}
 	}
-	for _, s := range uniqueIndexDDL() {
-		if _, err := d.Exec(s); err != nil {
-			return fmt.Errorf("soft-delete migrate: %q: %w", s, err)
-		}
-	}
 	return nil
 }
 
@@ -378,103 +170,35 @@ func migrateSoftDeletePG(d *sql.DB) error {
 type sqliteTableSpec struct {
 	table     string // 表名
 	rebuildIf func(sqlText string) bool
-	// create 为新表 DDL（无外键、无内联 UNIQUE、含 is_active——usage_records
-	// 无软删除列，仅去 REFERENCES）。cols 为列清单，INSERT 与 SELECT 两侧同名
-	// 同序搬运，共用一份以避免两侧清单漂移。
-	create string
-	cols   []string
 }
 
-// sqliteSoftDeleteSpecs 列出需要重建的表。注意：重建 DDL 与 migrationSQLite
-// 中的 CREATE TABLE 是重复的，后续新增列时两处必须同步。
+// sqliteSoftDeleteSpecs 列出需要重建的表。重建 DDL 与列清单都由 schema.go 的
+// 规范定义渲染（见 migrateSoftDeleteSQLite），历史上那份手抄的 CREATE TABLE 与
+// 「两处必须同步」的警告已经删除。
 var sqliteSoftDeleteSpecs = []sqliteTableSpec{
 	{
 		table: "upstreams",
 		rebuildIf: func(s string) bool {
 			return strings.Contains(s, "CHECK(") || strings.Contains(s, "UNIQUE")
 		},
-		create: `CREATE TABLE upstreams (
-		    id INTEGER PRIMARY KEY AUTOINCREMENT,
-		    name TEXT NOT NULL,
-		    base_url TEXT NOT NULL,
-		    api_key TEXT NOT NULL,
-		    format TEXT NOT NULL,
-		    enabled INTEGER NOT NULL DEFAULT 1,
-		    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-		    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-		    max_concurrent INTEGER NOT NULL DEFAULT 100,
-		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		    expires_at DATETIME,
-		    is_active INTEGER NOT NULL DEFAULT 1
-		)`,
-		// extraCols 先于重建执行（OpenSQLite 的调用顺序保证），老表此时已补
-		// max_concurrent / expires_at 列，按名搬运不丢值。
-		cols: []string{"id", "name", "base_url", "api_key", "format", "enabled", "daily_token_limit", "monthly_token_limit", "max_concurrent", "created_at", "updated_at", "expires_at", "is_active"},
 	},
 	{
 		table: "upstream_models",
 		rebuildIf: func(s string) bool {
 			return strings.Contains(s, "REFERENCES") || strings.Contains(s, "UNIQUE")
 		},
-		create: `CREATE TABLE upstream_models (
-		    id INTEGER PRIMARY KEY AUTOINCREMENT,
-		    upstream_id INTEGER NOT NULL,
-		    model_name TEXT NOT NULL,
-		    manual INTEGER NOT NULL DEFAULT 0,
-		    context_length INTEGER NOT NULL DEFAULT 1000000,
-		    max_output_length INTEGER NOT NULL DEFAULT 200000,
-		    is_active INTEGER NOT NULL DEFAULT 1
-		)`,
-		cols: []string{"id", "upstream_id", "model_name", "manual", "context_length", "max_output_length", "is_active"},
 	},
 	{
 		table: "ext_keys",
 		rebuildIf: func(s string) bool {
 			return strings.Contains(s, "UNIQUE")
 		},
-		create: `CREATE TABLE ext_keys (
-		    id INTEGER PRIMARY KEY AUTOINCREMENT,
-		    key TEXT NOT NULL,
-		    label TEXT NOT NULL DEFAULT '',
-		    remark TEXT NOT NULL DEFAULT '',
-		    enabled INTEGER NOT NULL DEFAULT 1,
-		    daily_token_limit INTEGER NOT NULL DEFAULT 0,
-		    monthly_token_limit INTEGER NOT NULL DEFAULT 0,
-		    allowed_models TEXT NOT NULL DEFAULT '',
-		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		    last_used_at DATETIME,
-		    is_active INTEGER NOT NULL DEFAULT 1
-		)`,
-		// 走重建的都是「旧库」（schema 仍带内联 UNIQUE）。remark 等后期加入的
-		// 列由 extraCols 在重建前补齐（OpenSQLite 的调用顺序保证），按名搬运。
-		cols: []string{"id", "key", "label", "remark", "enabled", "daily_token_limit", "monthly_token_limit", "allowed_models", "created_at", "last_used_at", "is_active"},
 	},
 	{
 		table: "usage_records",
 		rebuildIf: func(s string) bool {
 			return strings.Contains(s, "REFERENCES")
 		},
-		create: `CREATE TABLE usage_records (
-		    id INTEGER PRIMARY KEY AUTOINCREMENT,
-		    ext_key_id INTEGER,
-		    upstream_id INTEGER,
-		    upstream_name TEXT NOT NULL,
-		    model TEXT NOT NULL,
-		    in_format TEXT NOT NULL,
-		    up_format TEXT NOT NULL,
-		    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-		    completion_tokens INTEGER NOT NULL DEFAULT 0,
-		    total_tokens INTEGER NOT NULL DEFAULT 0,
-		    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-		    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-		    duration_ms INTEGER NOT NULL DEFAULT 0,
-		    stream INTEGER NOT NULL DEFAULT 0,
-		    status TEXT NOT NULL DEFAULT 'ok',
-		    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		)`,
-		cols: []string{"id", "ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format", "prompt_tokens", "completion_tokens", "total_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "duration_ms", "stream", "status", "created_at"},
 	},
 }
 
@@ -499,11 +223,35 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 		if !spec.rebuildIf(sqlText) {
 			continue
 		}
+		tbl, ok := schemaTableByName(spec.table)
+		if !ok {
+			return fmt.Errorf("rebuild %s: not in schema", spec.table)
+		}
+		// 重建前先核对老表是否具备规范定义里的全部列。缺列时按名搬运会静默丢掉
+		// 它（要等下次重启才由 extraCols 补回来），所以这里响亮失败并列出缺失列。
+		var missing []string
+		for _, c := range tbl.Cols {
+			var n int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, spec.table, c.Name).Scan(&n); err != nil {
+				return fmt.Errorf("check %s columns: %w", spec.table, err)
+			}
+			if n == 0 {
+				missing = append(missing, c.Name)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("rebuild %s: legacy table is missing columns %s; "+
+				"this database was not created by this project — fix it by hand", spec.table, strings.Join(missing, ", "))
+		}
+		create, err := tbl.CreateTableDDL(DialectSQLite, DDLConfig{})
+		if err != nil {
+			return fmt.Errorf("rebuild %s: %w", spec.table, err)
+		}
 		bak := spec.table + "_bak"
-		cols := strings.Join(spec.cols, ", ")
+		cols := strings.Join(tbl.ColumnNames(), ", ")
 		steps := []string{
 			fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, spec.table, bak),
-			spec.create,
+			create,
 			fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s`, spec.table, cols, cols, bak),
 			fmt.Sprintf(`DROP TABLE %s`, bak),
 		}
@@ -520,38 +268,68 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 		return fmt.Errorf("commit soft-delete migrate: %w", err)
 	}
 	// 重建会连带删除旧表上的索引（含 sqlite_autoindex），这里统一重建。
-	// 部分唯一索引必须在 is_active 列就位后创建，因此不放在 migrationSQLite 里。
-	for _, s := range append(uniqueIndexDDL(), usageIndexDDL()...) {
-		if _, err := d.Exec(s); err != nil {
-			return fmt.Errorf("soft-delete migrate: %q: %w", s, err)
+	// 部分唯一索引必须在 is_active 列就位后创建，因此不放在主迁移里。
+	if err := migratePartialUniqueIndexes(d); err != nil {
+		return err
+	}
+	return migrateUsageIndexes(d)
+}
+
+// migratePartialUniqueIndexes 建「仅活跃行」的部分唯一索引（PG/SQLite 原生支持）。
+// 必须在 is_active 列就位后调用；MySQL 的等价约束已内联在 CREATE TABLE，是 no-op。
+func migratePartialUniqueIndexes(d *sql.DB) error {
+	if DialectOf(d) == DialectMySQL {
+		return nil
+	}
+	dialect := DialectOf(d)
+	cfg := DDLConfig{IfNotExists: true}
+	for _, t := range tablesFor(dialect) {
+		for _, ix := range t.Idx {
+			if !ix.Unique || ix.Tolerant {
+				continue
+			}
+			stmt, err := t.indexDef(dialect, ix, cfg)
+			if err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+			if _, err := d.Exec(stmt); err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
 		}
 	}
 	return nil
 }
 
-// uniqueIndexDDL 返回「仅活跃行」的部分唯一索引 DDL（两种方言通用）。
-// 软删除的行不占唯一名额，同名资源删除后可重建。
-func uniqueIndexDDL() []string {
-	return []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstreams_name ON upstreams(name) WHERE is_active = 1`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_models_uid_name ON upstream_models(upstream_id, model_name) WHERE is_active = 1`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_key ON ext_keys(key) WHERE is_active = 1`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_aliases_name ON model_aliases(name) WHERE is_active = 1`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_bindings_order ON model_alias_bindings(alias_id, priority) WHERE is_active = 1`,
+// migrateUsageIndexes 建 usage_records 的三个普通索引。与部分唯一索引分开：它们
+// 不依赖 is_active，且 SQLite 表重建后同样要重建。
+func migrateUsageIndexes(d *sql.DB) error {
+	if DialectOf(d) == DialectMySQL {
+		return nil
 	}
-}
-
-func usageIndexDDL() []string {
-	return []string{
-		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_records(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_ext_key ON usage_records(ext_key_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_upstream ON usage_records(upstream_id)`,
+	dialect := DialectOf(d)
+	cfg := DDLConfig{IfNotExists: true}
+	tbl, ok := schemaTableByName("usage_records")
+	if !ok {
+		return fmt.Errorf("usage_records not in schema")
 	}
+	for _, ix := range tbl.Idx {
+		if ix.Unique {
+			continue
+		}
+		stmt, err := tbl.indexDef(dialect, ix, cfg)
+		if err != nil {
+			return fmt.Errorf("create index %s: %w", ix.Name, err)
+		}
+		if _, err := d.Exec(stmt); err != nil {
+			return fmt.Errorf("create index %s: %w", ix.Name, err)
+		}
+	}
+	return nil
 }
 
 // extKeyLabelIndexDDL 是 ext_keys.label 唯一性的 DB 兜底：活跃且非空的名称不可
 // 重复，口径与应用层 ExtKeyLabelTaken 一致（空名不参与、软删行不占名额）。
-// 不放进 uniqueIndexDDL：历史库可能存在唯一性约束加入前留下的重名活跃 key，
+// 不放进 schema.go 的索引清单：历史库可能存在唯一性约束加入前留下的重名活跃 key，
 // 建索引会失败，需要容错处理（见 ensureExtKeyLabelIndex）。
 const extKeyLabelIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_label ON ext_keys(label) WHERE is_active = 1 AND label <> ''`
 
@@ -559,6 +337,16 @@ const extKeyLabelIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_labe
 // key 时建索引必然失败：不自动改名去重（不动别人的数据），也不阻断启动（单进程
 // 下应用层检查仍生效）——打出冲突明细，人工去重后下次启动这里会自动补上。
 func ensureExtKeyLabelIndex(d *sql.DB) {
+	if DialectOf(d) == DialectMySQL {
+		// MySQL 的等价约束是生成列唯一键，已内联在 CREATE TABLE 里；这里只做存在性
+		// 检查，缺失时告警（被人为 DROP 掉时 PG/SQLite 会自愈，MySQL 不会）。
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'ext_keys' AND index_name = 'idx_ext_keys_label'`).Scan(&n); err == nil && n == 0 {
+			logger.Warn("db: ext_keys label 唯一键缺失（MySQL）；应用层检查仍生效，需人工补建")
+		}
+		return
+	}
 	_, err := d.Exec(extKeyLabelIndexDDL)
 	if err == nil {
 		return
@@ -583,15 +371,9 @@ func ensureExtKeyLabelIndex(d *sql.DB) {
 		"err", err, "duplicates", dupes)
 }
 
-// MigratePGForTest 对已连接的 PG 执行与 OpenPG 相同的完整迁移管线。导出供
-// 其他包（如 gateway）的 PG e2e 测试在独立 schema 里建表；生产代码用
-// OpenPG，不经过此函数。
-func MigratePGForTest(d *sql.DB) error {
-	if _, err := d.Exec(migrationPG); err != nil {
-		return err
-	}
-	if err := migrateExtraCols(d); err != nil {
-		return err
-	}
-	return migrateSoftDelete(d)
+// MigrateForTest 对已连接的库执行与 Open* 相同的完整迁移管线。导出供其他包
+// （如 gateway）的 e2e 测试在独立 schema 里建表；生产代码用 OpenSQLite /
+// OpenPG / OpenMySQL，不经过此函数。
+func MigrateForTest(d *sql.DB) error {
+	return migrateAll(d)
 }

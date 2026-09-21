@@ -28,13 +28,14 @@ func InsertBalanceSnapshot(d *sql.DB, s *BalanceSnapshot) error {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	err := d.QueryRow(db.Rebind(d, `INSERT INTO balance_snapshots
+	id, err := db.InsertReturningID(d, `INSERT INTO balance_snapshots
 		(upstream_id, upstream_name, vendor, payload, created_at)
-		VALUES (?,?,?,?,?) RETURNING id`),
-		s.UpstreamID, s.UpstreamName, s.Vendor, string(s.Payload), ts).Scan(&s.ID)
+		VALUES (?,?,?,?,?) RETURNING id`,
+		s.UpstreamID, s.UpstreamName, s.Vendor, string(s.Payload), ts)
 	if err != nil {
 		return fmt.Errorf("insert balance snapshot: %w", err)
 	}
+	s.ID = id
 	s.CreatedAt = ts
 	return nil
 }
