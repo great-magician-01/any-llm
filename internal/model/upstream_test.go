@@ -113,7 +113,7 @@ func TestListUpstreamsByEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 给禁用行挂一个模型：验证过滤后 model_count 子查询仍然正确
-	if err := AddModel(d, offID, "gpt-4o", true, 0, 0); err != nil {
+	if err := AddModel(d, offID, "gpt-4o", true, 0, 0, false); err != nil {
 		t.Fatal(err)
 	}
 
