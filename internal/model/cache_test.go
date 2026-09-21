@@ -1,7 +1,9 @@
 package model
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -363,6 +365,11 @@ func TestConfigCacheTTLKeepsEntryOnDBError(t *testing.T) {
 
 // 并发读 + 写路径刷新：-race 下必须干净（锁纪律与副本的正确性在此）。
 func TestConfigCacheConcurrentReadWrite(t *testing.T) {
+	// TTL 改小，让这一轮同时覆盖「过期重查 + singleflight + 写路径逐出」三条路
+	old := configCacheTTL
+	configCacheTTL = 30 * time.Millisecond
+	t.Cleanup(func() { configCacheTTL = old })
+
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "https://a", APIKey: "k", Format: "openai"})
 	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
@@ -408,4 +415,205 @@ func TestConfigCacheConcurrentReadWrite(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// singleflight 与回填守卫：直接测 loadThrough 骨架，用可控的 resolve 精确制造交错
+// ---------------------------------------------------------------------------
+
+// 同一 key 同时未命中：只有一个 goroutine 真去查库，其余等 leader 回填后重取。
+// 没有 singleflight 的话，这里会是 N 次查询（TTL 到期/冷启动瞬间的 herd）。
+func TestLoadThroughSingleFlight(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = time.Hour // 只用「未命中」路径，不掺 TTL
+	t.Cleanup(func() { configCacheTTL = old })
+
+	n := newNS[*ExtKey]()
+	// 放一个已过期的条目，逼所有 goroutine 走未命中分支
+	n.entries["k"] = cacheEntry[*ExtKey]{
+		val:      &ExtKey{Key: "k", Label: "stale"},
+		loadedAt: time.Now().Add(-2 * configCacheTTL),
+	}
+
+	var calls int64
+	release := make(chan struct{})
+	resolve := func() (*ExtKey, error) {
+		atomic.AddInt64(&calls, 1)
+		<-release // 卡住：保证 8 个 goroutine 都已排到队里再放行
+		return &ExtKey{Key: "k", Label: "fresh"}, nil
+	}
+
+	const goroutines = 8
+	got := make([]*ExtKey, goroutines)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			k, err := loadThrough(&n, "k", resolve, cloneExtKey)
+			if err != nil {
+				t.Errorf("loadThrough: %v", err)
+				return
+			}
+			got[i] = k
+		}(i)
+	}
+	time.Sleep(80 * time.Millisecond) // 等所有 goroutine 就位
+	close(release)
+	wg.Wait()
+
+	if n := atomic.LoadInt64(&calls); n != 1 {
+		t.Fatalf("resolve called %d times, want 1 (herd not collapsed)", n)
+	}
+	for i, k := range got {
+		if k == nil || k.Label != "fresh" {
+			t.Fatalf("goroutine %d got %+v, want the refreshed row", i, k)
+		}
+	}
+	// in-flight 必须已清空：否则这个 key 的后续请求会永远堵在 <-ch 上
+	if !inflightEmpty(&n) {
+		t.Fatal("in-flight entry left behind after the leader finished")
+	}
+}
+
+// leader 查库失败时，waiter 顺延成新 leader 自己重试——不会拿到假成功，也不会
+// 永久堵住。
+func TestLoadThroughLeaderFailureReleasesWaiters(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = time.Hour
+	t.Cleanup(func() { configCacheTTL = old })
+
+	n := newNS[*ExtKey]()
+	n.entries["k"] = cacheEntry[*ExtKey]{
+		val:      &ExtKey{Key: "k", Label: "stale"},
+		loadedAt: time.Now().Add(-2 * configCacheTTL),
+	}
+
+	var calls int64
+	release := make(chan struct{})
+	resolve := func() (*ExtKey, error) {
+		if atomic.AddInt64(&calls, 1) == 1 {
+			<-release // 第一个（leader）先卡住，让 waiter 排上队
+			return nil, errors.New("db down")
+		}
+		return &ExtKey{Key: "k", Label: "fresh"}, nil
+	}
+
+	const goroutines = 4
+	got := make([]*ExtKey, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], errs[i] = loadThrough(&n, "k", resolve, cloneExtKey)
+		}(i)
+	}
+	time.Sleep(80 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	// leader 自己必须把错误报回去（不能伪造成功）；waiter 顺延成新 leader 重试，
+	// 拿到重查后的行——没有一个 goroutine 被永久堵住。
+	var failed, ok int
+	for i := range errs {
+		switch {
+		case errs[i] != nil:
+			failed++
+		case got[i] != nil && got[i].Label == "fresh":
+			ok++
+		default:
+			t.Fatalf("goroutine %d got %+v err=%v, want either the error or the retried row", i, got[i], errs[i])
+		}
+	}
+	if failed == 0 || ok == 0 {
+		t.Fatalf("failed=%d ok=%d, want the leader to fail and the waiters to retry", failed, ok)
+	}
+	if n := atomic.LoadInt64(&calls); n < 2 {
+		t.Fatalf("resolve called %d times, want the leader plus at least one retry", n)
+	}
+	if !inflightEmpty(&n) {
+		t.Fatal("in-flight entry left behind after the leader failed")
+	}
+}
+
+// CAS 守卫：查库期间条目被写路径改过，leader 读到的旧值不能盖回去。少了这道守卫，
+// 「查库读到旧行 → 管理端写库 → 旧行才落缓存」会让一次改动沉寂整整一个 TTL。
+func TestLoadThroughSkipsStaleStore(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = time.Hour
+	t.Cleanup(func() { configCacheTTL = old })
+
+	for _, tc := range []struct {
+		name    string
+		preSeed bool // 事先有没有条目
+		mutate  func(n *ns[*ExtKey])
+	}{
+		{
+			name:    "写路径逐出后重建",
+			preSeed: true,
+			mutate: func(n *ns[*ExtKey]) {
+				delete(n.entries, "k") // 逐出
+				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
+			},
+		},
+		{
+			name:    "写路径原地刷新",
+			preSeed: true,
+			mutate: func(n *ns[*ExtKey]) {
+				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
+			},
+		},
+		{
+			name:    "本来没有条目，查询期间被写出来",
+			preSeed: false,
+			mutate: func(n *ns[*ExtKey]) {
+				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNS[*ExtKey]()
+			if tc.preSeed {
+				n.entries["k"] = cacheEntry[*ExtKey]{
+					val:      &ExtKey{Key: "k", Label: "stale"},
+					loadedAt: time.Now().Add(-2 * configCacheTTL),
+				}
+			}
+			queried := make(chan struct{})
+			release := make(chan struct{})
+			resolve := func() (*ExtKey, error) {
+				close(queried)
+				<-release // 让测试在这段时间里改缓存
+				return &ExtKey{Key: "k", Label: "leader-read"}, nil
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := loadThrough(&n, "k", resolve, cloneExtKey)
+				done <- err
+			}()
+			<-queried
+			tc.mutate(&n)
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			// 缓存里必须是写路径留下的值，而不是 leader 读到的旧值
+			cfgCache.RLock()
+			e, ok := n.entries["k"]
+			cfgCache.RUnlock()
+			if !ok || e.val.Label != "written" {
+				t.Fatalf("stale store was not guarded: entry=%+v ok=%v", e, ok)
+			}
+		})
+	}
+}
+
+// inflightEmpty 报告 ns 的 in-flight 表已清空。leader 无论正常返回还是 panic 都要
+// 收尾，否则后续请求会永远堵在 <-ch 上。
+func inflightEmpty[T any](n *ns[T]) bool {
+	cfgCache.Lock()
+	defer cfgCache.Unlock()
+	return len(n.inflight) == 0
 }
