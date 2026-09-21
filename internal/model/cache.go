@@ -30,10 +30,41 @@ import (
 //     做，时间推进不需要失效任何条目。
 //   - token 限额不走这里：checkKeyLimits / checkUpstreamLimits 仍每请求聚合
 //     usage_records——那是用量数据，不是配置。
+//   - 每条条目另有 1 小时 TTL（configCacheTTL）：到期后按未命中处理——重新查库、
+//     重新入库、重置计时。写路径的刷新/逐出同样重置计时。TTL 是第二道保险：万一
+//     某条写路径漏了失效（或库被库外改动），最多陈旧 1 小时就会自愈，而不是永久
+//     错下去。查库失败时保留旧条目不动，下一个请求自然重试。
 type aliasEntry struct {
 	id         int64         // 别名行 ID：改名时旧名只有按 ID 扫才找得到
 	found      bool          // 别名行存在且活跃（candidates 为空 = 存在但无可用绑定）
 	candidates []AliasTarget // JOIN 出的原始候选，含已过有效期者；顺序即优先级
+}
+
+// configCacheTTL 缓存条目寿命。固定 1 小时，不做成可配置项——它只是写时失效之外
+// 的第二道保险，调它只会让「陈旧窗口」变长变短，没有别的语义。测试把它临时改小
+// （见 cache_test.go），故这里是 var 而非 const。
+var configCacheTTL = time.Hour
+
+// cacheEntry 缓存条目：值 + 入库时间。loadedAt 用 time.Now() 取（带单调时钟读数），
+// 过期判断走 time.Since，墙钟被改也不会让条目提前/永不过期。
+type cacheEntry[T any] struct {
+	val      T
+	loadedAt time.Time
+}
+
+// entryExpired 条目是否已过 TTL。
+func entryExpired(loadedAt time.Time) bool {
+	return time.Since(loadedAt) >= configCacheTTL
+}
+
+// lookupFresh 取未过期的条目；过期或不存在都算未命中（调用方回库重填）。
+func lookupFresh[T any](m map[string]cacheEntry[T], key string) (T, bool) {
+	e, ok := m[key]
+	if !ok || entryExpired(e.loadedAt) {
+		var zero T
+		return zero, false
+	}
+	return e.val, true
 }
 
 // cfgCache 包级读缓存（与 convShardCache 同一模式）。三个 map 的规模分别不超过
@@ -41,20 +72,20 @@ type aliasEntry struct {
 // 所以内存有界、无需淘汰策略。
 var cfgCache = struct {
 	sync.RWMutex
-	keys    map[string]*ExtKey
-	ups     map[string]*Upstream
-	aliases map[string]*aliasEntry
+	keys    map[string]cacheEntry[*ExtKey]
+	ups     map[string]cacheEntry[*Upstream]
+	aliases map[string]cacheEntry[*aliasEntry]
 }{
-	keys:    make(map[string]*ExtKey),
-	ups:     make(map[string]*Upstream),
-	aliases: make(map[string]*aliasEntry),
+	keys:    make(map[string]cacheEntry[*ExtKey]),
+	ups:     make(map[string]cacheEntry[*Upstream]),
+	aliases: make(map[string]cacheEntry[*aliasEntry]),
 }
 
-// CachedExtKey 按 key 字符串读 ext key（网关鉴权热路径）。未命中回库并缓存；
-// 行不存在时原样返回 DB 错误（调用方判 401），且不写缓存。
+// CachedExtKey 按 key 字符串读 ext key（网关鉴权热路径）。未命中或已过 TTL 就回库
+// 重填；行不存在时原样返回 DB 错误（调用方判 401），且不写缓存。
 func CachedExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	cfgCache.RLock()
-	k, ok := cfgCache.keys[key]
+	k, ok := lookupFresh(cfgCache.keys, key)
 	cfgCache.RUnlock()
 	if ok {
 		return cloneExtKey(k), nil
@@ -64,16 +95,16 @@ func CachedExtKey(d *sql.DB, key string) (*ExtKey, error) {
 		return nil, err
 	}
 	cfgCache.Lock()
-	cfgCache.keys[key] = cloneExtKey(k)
+	cfgCache.keys[key] = cacheEntry[*ExtKey]{val: cloneExtKey(k), loadedAt: time.Now()}
 	cfgCache.Unlock()
 	return k, nil
 }
 
 // CachedUpstreamByName 按名称读上游行（网关直连路由 name/model）。语义同
-// CachedExtKey：未命中回库并缓存，不存在则返回 DB 错误且不缓存。
+// CachedExtKey：未命中或过期回库重填，不存在则返回 DB 错误且不缓存。
 func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	cfgCache.RLock()
-	u, ok := cfgCache.ups[name]
+	u, ok := lookupFresh(cfgCache.ups, name)
 	cfgCache.RUnlock()
 	if ok {
 		return cloneUpstream(u), nil
@@ -83,7 +114,7 @@ func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 		return nil, err
 	}
 	cfgCache.Lock()
-	cfgCache.ups[name] = cloneUpstream(u)
+	cfgCache.ups[name] = cacheEntry[*Upstream]{val: cloneUpstream(u), loadedAt: time.Now()}
 	cfgCache.Unlock()
 	return u, nil
 }
@@ -92,11 +123,12 @@ func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 // ResolveAliasTargets 一致：found=false 表示没有这个别名（调用方回落直连拆分），
 // found=true 但 targets 为空表示别名存在却无可用绑定。
 //
-// 缓存的是未过滤有效期的原始候选；过期判定在这里按 now 做，所以一个已缓存的
-// 别名不需要因为「时间走过 expires_at」而被失效。
+// 缓存的是未过滤有效期的原始候选；过期判定（Upstream.Expired）在这里按 now 做，
+// 所以一个已缓存的别名不需要因为「时间走过 expires_at」而被失效——那与条目自身
+// 的 TTL 是两回事，后者到期会连候选一起重查。
 func CachedAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targets []AliasTarget, err error) {
 	cfgCache.RLock()
-	e, ok := cfgCache.aliases[name]
+	e, ok := lookupFresh(cfgCache.aliases, name)
 	cfgCache.RUnlock()
 	if ok {
 		return e.found, liveTargets(e.candidates, now), nil
@@ -105,8 +137,9 @@ func CachedAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targ
 	if err != nil || !found {
 		return found, nil, err
 	}
+	entry := &aliasEntry{id: id, found: true, candidates: cloneTargets(candidates)}
 	cfgCache.Lock()
-	cfgCache.aliases[name] = &aliasEntry{id: id, found: true, candidates: cloneTargets(candidates)}
+	cfgCache.aliases[name] = cacheEntry[*aliasEntry]{val: entry, loadedAt: time.Now()}
 	cfgCache.Unlock()
 	return true, liveTargets(candidates, now), nil
 }
@@ -132,7 +165,7 @@ func liveTargets(candidates []AliasTarget, now time.Time) []AliasTarget {
 // putExtKey 把整行放入缓存。用于新建——行已在手，无需再查一次。
 func putExtKey(k *ExtKey) {
 	cfgCache.Lock()
-	cfgCache.keys[k.Key] = cloneExtKey(k)
+	cfgCache.keys[k.Key] = cacheEntry[*ExtKey]{val: cloneExtKey(k), loadedAt: time.Now()}
 	cfgCache.Unlock()
 }
 
@@ -147,7 +180,7 @@ func refreshExtKey(d *sql.DB, id int64) {
 	if err != nil {
 		return
 	}
-	cfgCache.keys[k.Key] = cloneExtKey(k)
+	cfgCache.keys[k.Key] = cacheEntry[*ExtKey]{val: cloneExtKey(k), loadedAt: time.Now()}
 }
 
 // evictExtKeyByID 逐出该 ID 的缓存条目。缓存以 key 字符串为索引，而删除场景
@@ -160,8 +193,8 @@ func evictExtKeyByID(id int64) {
 }
 
 func evictExtKeyIDLocked(id int64) {
-	for key, k := range cfgCache.keys {
-		if k.ID == id {
+	for key, e := range cfgCache.keys {
+		if e.val.ID == id {
 			delete(cfgCache.keys, key)
 		}
 	}
@@ -179,12 +212,12 @@ func evictUpstream(id int64, name string) {
 	if name != "" {
 		delete(cfgCache.ups, name)
 	}
-	for n, u := range cfgCache.ups {
-		if u.ID == id {
+	for n, e := range cfgCache.ups {
+		if e.val.ID == id {
 			delete(cfgCache.ups, n)
 		}
 	}
-	cfgCache.aliases = make(map[string]*aliasEntry)
+	cfgCache.aliases = make(map[string]cacheEntry[*aliasEntry])
 }
 
 // evictAliasByID 逐出该别名的缓存条目（按行 ID，覆盖改名前的旧名）。
@@ -192,7 +225,7 @@ func evictAliasByID(id int64) {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
 	for name, e := range cfgCache.aliases {
-		if e.id == id {
+		if e.val.id == id {
 			delete(cfgCache.aliases, name)
 		}
 	}
@@ -261,7 +294,7 @@ func ResetConfigCache() {
 func resetConfigCache() {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
-	cfgCache.keys = make(map[string]*ExtKey)
-	cfgCache.ups = make(map[string]*Upstream)
-	cfgCache.aliases = make(map[string]*aliasEntry)
+	cfgCache.keys = make(map[string]cacheEntry[*ExtKey])
+	cfgCache.ups = make(map[string]cacheEntry[*Upstream])
+	cfgCache.aliases = make(map[string]cacheEntry[*aliasEntry])
 }

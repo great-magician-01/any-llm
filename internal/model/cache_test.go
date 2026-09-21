@@ -260,6 +260,107 @@ func TestCachedAliasTargets(t *testing.T) {
 	}
 }
 
+// TTL 到期后按未命中处理：重新查库、重新入库、重置计时。这是写时失效之外的第二
+// 道保险——万一某条写路径漏了失效（或库被库外改动），最多陈旧一个 TTL 就自愈。
+func TestConfigCacheTTLRefresh(t *testing.T) {
+	// 把 TTL 临时改小，跑完还原（configCacheTTL 是包级 var，测试共用进程）。
+	old := configCacheTTL
+	configCacheTTL = 50 * time.Millisecond
+	t.Cleanup(func() { configCacheTTL = old })
+
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "https://a", APIKey: "k", Format: "openai"})
+	k, _ := CreateExtKey(d, "l", "", 0, 0, nil)
+	aliasID, _ := CreateAlias(d, &ModelAlias{Name: "fixed", Bindings: []AliasBinding{{UpstreamID: uid, ModelName: "m1"}}})
+
+	// 预热三类缓存
+	if _, err := CachedExtKey(d, k.Key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CachedUpstreamByName(d, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CachedAliasTargets(d, "fixed", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// 库外改动：TTL 内看不到（与 TestCachedExtKey 的断言一致）
+	if _, err := d.Exec(`UPDATE ext_keys SET label='oob' WHERE id=?`, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE upstreams SET api_key='oob' WHERE id=?`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if kk, _ := CachedExtKey(d, k.Key); kk.Label != "l" {
+		t.Fatalf("within TTL the out-of-band change must stay invisible: %q", kk.Label)
+	}
+	if u, _ := CachedUpstreamByName(d, "u1"); u.APIKey != "k" {
+		t.Fatalf("within TTL the out-of-band change must stay invisible: %q", u.APIKey)
+	}
+
+	// 过了 TTL：key 与上游都重新读库，看到新值
+	time.Sleep(120 * time.Millisecond)
+	kk, _ := CachedExtKey(d, k.Key)
+	if kk.Label != "oob" {
+		t.Fatalf("ext key not refreshed after TTL: %q", kk.Label)
+	}
+	u, err := CachedUpstreamByName(d, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.APIKey != "oob" {
+		t.Fatalf("upstream not refreshed after TTL: %q", u.APIKey)
+	}
+
+	// 重查会重置计时：紧接着的库外改动在新的 TTL 窗口内依旧不可见
+	if _, err := d.Exec(`UPDATE upstreams SET api_key='again' WHERE id=?`, uid); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := CachedUpstreamByName(d, "u1"); u.APIKey != "oob" {
+		t.Fatalf("TTL timer was not reset by the refresh: %q", u.APIKey)
+	}
+	// 再过一个 TTL 才看得到
+	time.Sleep(120 * time.Millisecond)
+	if u, _ := CachedUpstreamByName(d, "u1"); u.APIKey != "again" {
+		t.Fatalf("second TTL window did not refresh: %q", u.APIKey)
+	}
+
+	// 别名也整条重查：把绑定就地置为不活跃（模拟上游删除时的级联软删），
+	// 过期后应看到空链——这正是 TTL 作为安全网要兜住的场景。
+	if _, err := d.Exec(`UPDATE model_alias_bindings SET is_active=0 WHERE alias_id=?`, aliasID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	found, targets, err := CachedAliasTargets(d, "fixed", time.Now())
+	if err != nil || !found || len(targets) != 0 {
+		t.Fatalf("alias not refreshed after TTL: found=%v targets=%+v err=%v", found, targets, err)
+	}
+}
+
+// TTL 到期但查库失败：保留旧条目，不把缓存打成空的（下一个请求自然重试）。
+func TestConfigCacheTTLKeepsEntryOnDBError(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = 50 * time.Millisecond
+	t.Cleanup(func() { configCacheTTL = old })
+
+	d := testDB(t)
+	if _, err := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "https://a", APIKey: "k", Format: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CachedUpstreamByName(d, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	// 关库 → 过期后的重查必然失败；之后再开会话也读不到（这里只关不开，
+	// 用「读返回错误」证明没有悄悄返回空值或旧值）。
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if u, err := CachedUpstreamByName(d, "u1"); err == nil {
+		t.Fatalf("expected a DB error after TTL with a closed db, got %+v", u)
+	}
+}
+
 // 并发读 + 写路径刷新：-race 下必须干净（锁纪律与副本的正确性在此）。
 func TestConfigCacheConcurrentReadWrite(t *testing.T) {
 	d := testDB(t)
