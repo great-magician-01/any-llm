@@ -29,12 +29,16 @@ func nullTime(t *time.Time) sql.NullTime {
 }
 
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
+	// 成功后要按名称逐出缓存条目：上游名在活跃行里唯一，但「删掉再建同名」是常见
+	// 操作，旧条目不逐出就会把新行整个遮蔽掉（缓存以名称为键，与 ID 无关）。
+	// 新 ID 不可能被现有绑定引用，故顺带刷新别名缓存只是防御，本可省。
 	now := time.Now()
 	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 		u.Name, u.BaseURL, u.APIKey, u.Format, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt))
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
+	evictUpstream(id, u.Name)
 	return id, nil
 }
 
@@ -103,6 +107,9 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}
+	// 别名候选里内嵌的就是这一行，上游任何字段变了绑定链都得重解析，故逐出上游
+	// 缓存 + 整份刷新别名缓存。
+	evictUpstream(u.ID, u.Name)
 	return nil
 }
 
@@ -130,6 +137,9 @@ func DeleteUpstream(d *sql.DB, id int64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete upstream %d: %w", id, err)
 	}
+	// 删除会级联软删模型与别名绑定，已解析的候选链同样作废：整份刷新别名缓存。
+	// 这里只有 ID（上游名未知），按 ID 扫即可定位缓存条目。
+	evictUpstream(id, "")
 	return nil
 }
 

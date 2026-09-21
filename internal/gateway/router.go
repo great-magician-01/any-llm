@@ -53,7 +53,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 401, "openai", "invalid API key format", "authentication_error")
 		return
 	}
-	k, err := model.GetExtKey(g.db, extKey)
+	k, err := model.CachedExtKey(g.db, extKey)
 	if err != nil || !k.Enabled {
 		WriteError(w, 401, "openai", "invalid API key", "authentication_error")
 		return
@@ -142,7 +142,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		WriteError(w, 401, inFormat, "invalid API key format", "authentication_error")
 		return
 	}
-	k, err := model.GetExtKey(g.db, extKey)
+	k, err := model.CachedExtKey(g.db, extKey)
 	if err != nil || !k.Enabled {
 		WriteError(w, 401, inFormat, "invalid API key", "authentication_error")
 		return
@@ -184,7 +184,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	// 'name/model' 直连拆分（管理员显式配置即可遮蔽直连路由）。
 	// now 一次取定：同一请求内别名解析与直连路由的到期口径一致。
 	now := time.Now()
-	found, targets, err := model.ResolveAliasTargets(g.db, probe.Model, now)
+	found, targets, err := model.CachedAliasTargets(g.db, probe.Model, now)
 	if err != nil {
 		logger.Error("gateway: resolve model alias DB error", "model", probe.Model, "err", err)
 		WriteError(w, 500, inFormat, "failed to resolve model alias: "+err.Error(), "internal_error")
@@ -236,7 +236,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
-	u, err := model.GetUpstreamByName(g.db, name)
+	u, err := model.CachedUpstreamByName(g.db, name)
 	if err != nil {
 		WriteError(w, 404, inFormat, "upstream '"+name+"' not found", "not_found_error")
 		return

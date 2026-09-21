@@ -10,6 +10,10 @@ import (
 
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
+	// 配置读缓存是包级、进程内的，而每个用例都是一个临时库：不清就会把上一个
+	// 用例的条目带到本用例（同名即遮蔽）。
+	ResetConfigCache()
+	t.Cleanup(ResetConfigCache)
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)

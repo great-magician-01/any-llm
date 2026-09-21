@@ -17,6 +17,10 @@ import (
 
 func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 	t.Helper()
+	// 配置读缓存是 model 包级、进程内的，而每个用例都是一个临时库：不清就会把
+	// 上一个用例的上游/别名条目带到本用例（同名即遮蔽）。
+	model.ResetConfigCache()
+	t.Cleanup(model.ResetConfigCache)
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -476,5 +480,132 @@ func TestAllowedModelsMatchPublicName(t *testing.T) {
 		if w.Code != 403 {
 			t.Fatalf("allow=%q model=%q status=%d want 403, body=%s", tc.allow, tc.model, w.Code, w.Body.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 配置读缓存：写路径失效必须一路打到网关上
+// ---------------------------------------------------------------------------
+
+// fakeUpstream 起一个返回固定 OpenAI 补全的假上游，让请求能真正走完 dispatch。
+func fakeUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// postCompletion 用给定 key 打一次补全请求，返回状态码。
+func postCompletion(g *Gateway, key, modelName string) int {
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+modelName+`","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	return w.Code
+}
+
+// 禁用 key 后同一个 key 必须立刻 401：缓存里那份已过期的行不能继续放行。
+// 失效失效漏了的话，这里读到的是内存里的旧 enabled=true。
+func TestKeyDisableInvalidatesAuthCache(t *testing.T) {
+	g, d := setupGateway(t)
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	listModels := func() int {
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := listModels(); code != 200 {
+		t.Fatalf("first request status=%d want 200", code)
+	}
+	cur, _ := model.GetExtKeyByID(d, k.ID)
+	if err := model.UpdateExtKey(d, k.ID, cur.Label, cur.Remark, false, cur.DailyTokenLimit, cur.MonthlyTokenLimit, cur.AllowedModels); err != nil {
+		t.Fatal(err)
+	}
+	if code := listModels(); code != 401 {
+		t.Fatalf("disabled key status=%d want 401 (auth cache not invalidated?)", code)
+	}
+}
+
+// 别名绑定的上游被禁用后，候选必须从链中消失 → 404 has no available bindings。
+func TestUpstreamDisableInvalidatesAliasCache(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("alias request status=%d want 200, body missing fake upstream?", code)
+	}
+	u, _ := model.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"fast","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "no available bindings") {
+		t.Fatalf("status=%d want 404 has no available bindings, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 直连路由同理：上游禁用后走内存那份行也要能看出已禁用。
+func TestUpstreamDisableInvalidatesDirectRouteCache(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	if code := postCompletion(g, k.Key, "oai/gpt-4o"); code != 200 {
+		t.Fatalf("direct request status=%d want 200", code)
+	}
+	u, _ := model.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := model.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "is disabled") {
+		t.Fatalf("status=%d want 404 is disabled, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 缓存命中不打库：把数据库关掉之后，别名请求仍然能成功走完——鉴权、别名解析、
+// 上游行全在内存里。
+//
+// 只测别名路由：直连路由（name/model）每次都先用模型字符串探一次别名表，未命中
+// 不缓存（否则任意随机字符串都能把缓存撑大），所以它关了库必然失败，这是有意
+// 为之，不是回归。
+func TestCachedReadsDoNotHitDatabase(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	// 预热：key、别名、内嵌的上游行各读一次进缓存（token 限额均为 0，不查库）
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("warmup status=%d want 200", code)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("after db close status=%d want 200 (a cached read still hit the db?)", code)
 	}
 }
