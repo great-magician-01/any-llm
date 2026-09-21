@@ -66,6 +66,54 @@ func TestListUpstreams(t *testing.T) {
 	}
 }
 
+func TestListUpstreamsStatusFilter(t *testing.T) {
+	a, d := setupAPI(t)
+	model.CreateUpstream(d, &model.Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.CreateUpstream(d, &model.Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
+	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
+	offID, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	off, _ := model.GetUpstreamByID(d, offID)
+	off.Enabled = false
+	if err := model.UpdateUpstream(d, off); err != nil {
+		t.Fatal(err)
+	}
+
+	count := func(url string) int {
+		t.Helper()
+		req := httptest.NewRequest("GET", url, nil)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("%s: status=%d body=%s", url, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data []map[string]any `json:"data"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return len(resp.Data)
+	}
+	// 缺省与显式 all 都是全量（其它页面依赖这个口径）
+	if n := count("/api/admin/upstreams"); n != 3 {
+		t.Fatalf("no status: len=%d want 3", n)
+	}
+	if n := count("/api/admin/upstreams?status=all"); n != 3 {
+		t.Fatalf("status=all: len=%d want 3", n)
+	}
+	if n := count("/api/admin/upstreams?status=enabled"); n != 2 {
+		t.Fatalf("status=enabled: len=%d want 2", n)
+	}
+	if n := count("/api/admin/upstreams?status=disabled"); n != 1 {
+		t.Fatalf("status=disabled: len=%d want 1", n)
+	}
+
+	req := httptest.NewRequest("GET", "/api/admin/upstreams?status=bogus", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Fatalf("status=bogus: code=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeleteUpstream(t *testing.T) {
 	a, d := setupAPI(t)
 	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})

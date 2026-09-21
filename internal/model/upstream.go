@@ -72,10 +72,34 @@ func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	return u, nil
 }
 
+// ListUpstreams 返回全部未软删上游（含已禁用）。网关 /v1/models、余额轮询、
+// 配置导出等调用方需要全量行再自行过滤（禁用跳过、到期隐藏），不要给它加
+// 启用状态过滤。
 func ListUpstreams(d *sql.DB) ([]Upstream, error) {
-	rows, err := d.Query(`SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at,
+	return listUpstreams(d, nil)
+}
+
+// ListUpstreamsByEnabled 按启用状态过滤的上游列表：true 仅启用中，false 仅
+// 已禁用。仅供管理端列表接口按查询参数过滤；全量口径请用 ListUpstreams。
+func ListUpstreamsByEnabled(d *sql.DB, enabled bool) ([]Upstream, error) {
+	return listUpstreams(d, &enabled)
+}
+
+func listUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
+	q := `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
-		FROM upstreams u WHERE u.is_active = 1 ORDER BY u.id`)
+		FROM upstreams u WHERE u.is_active = 1`
+	var args []any
+	if enabled != nil {
+		en := 0
+		if *enabled {
+			en = 1
+		}
+		q += ` AND u.enabled = ?`
+		args = append(args, en)
+	}
+	q += ` ORDER BY u.id`
+	rows, err := d.Query(db.Rebind(d, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list upstreams: %w", err)
 	}
