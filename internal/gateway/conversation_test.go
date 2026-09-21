@@ -59,7 +59,7 @@ func TestNonStreamFlowUnaffectedOnSQLite(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -95,7 +95,7 @@ func TestStreamFlowUnaffectedOnSQLite(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 

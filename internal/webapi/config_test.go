@@ -47,7 +47,7 @@ func getConfig(t *testing.T, a *API, path string) *httptest.ResponseRecorder {
 func TestExportConfig(t *testing.T) {
 	a, d := setupAPI(t)
 	id1, _ := model.CreateUpstream(d, &model.Upstream{Name: "openai", BaseURL: "https://api.openai.com", APIKey: "sk-real-secret-key-123", Format: "openai", DailyTokenLimit: 1000, MonthlyTokenLimit: 20000})
-	model.AddModel(d, id1, "gpt-4o", false, 128000, 16384)
+	model.AddModel(d, id1, "gpt-4o", false, 128000, 16384, true)
 	id2, _ := model.CreateUpstream(d, &model.Upstream{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKey: "sk-another-key", Format: "anthropic"})
 	u2, _ := model.GetUpstreamByID(d, id2)
 	u2.Enabled = false
@@ -89,7 +89,7 @@ func TestExportConfig(t *testing.T) {
 		t.Fatalf("u1 models=%v", u1["models"])
 	}
 	m := models1[0].(map[string]any)
-	if m["model_name"] != "gpt-4o" || m["context_length"] != float64(128000) || m["max_output_length"] != float64(16384) {
+	if m["model_name"] != "gpt-4o" || m["context_length"] != float64(128000) || m["max_output_length"] != float64(16384) || m["multimodal"] != true {
 		t.Fatalf("u1 model=%v", m)
 	}
 	u2out := out.Upstreams[1]
@@ -141,9 +141,9 @@ func TestExportConfig_EmptyDb(t *testing.T) {
 func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 	a, d := setupAPI(t)
 	keepID, _ := model.CreateUpstream(d, &model.Upstream{Name: "keep", BaseURL: "https://keep.example.com", APIKey: "sk-keep", Format: "openai", DailyTokenLimit: 42})
-	model.AddModel(d, keepID, "keep-model", true, 11, 12)
+	model.AddModel(d, keepID, "keep-model", true, 11, 12, false)
 	dupID, _ := model.CreateUpstream(d, &model.Upstream{Name: "dup", BaseURL: "https://old.example.com", APIKey: "sk-old", Format: "openai"})
-	model.AddModel(d, dupID, "old-model", false, 1, 2)
+	model.AddModel(d, dupID, "old-model", false, 1, 2, false)
 	keepAliasID, _ := model.CreateAlias(d, &model.ModelAlias{Name: "keep-alias", Bindings: []model.AliasBinding{{UpstreamID: keepID, ModelName: "keep-model"}}})
 	dupAliasID, _ := model.CreateAlias(d, &model.ModelAlias{Name: "dup-alias", Bindings: []model.AliasBinding{{UpstreamID: dupID, ModelName: "old-model"}}})
 
@@ -153,7 +153,7 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 			{
 				"name": "dup", "base_url": "https://new.example.com", "api_key": "sk-new",
 				"format": "anthropic", "enabled": false, "daily_token_limit": 5, "monthly_token_limit": 7,
-				"models": []map[string]any{{"model_name": "new-model", "manual": true, "context_length": 111, "max_output_length": 222}},
+				"models": []map[string]any{{"model_name": "new-model", "manual": true, "context_length": 111, "max_output_length": 222, "multimodal": true}},
 			},
 			{"name": "fresh", "base_url": "https://fresh.example.com", "api_key": "sk-fresh", "format": "openai", "models": []map[string]any{}},
 		},
@@ -192,7 +192,7 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 		t.Fatalf("dup not overwritten: %+v", du)
 	}
 	dms, _ := model.ListModels(d, dupID)
-	if len(dms) != 1 || dms[0].ModelName != "new-model" || !dms[0].Manual || dms[0].ContextLength != 111 || dms[0].MaxOutputLength != 222 {
+	if len(dms) != 1 || dms[0].ModelName != "new-model" || !dms[0].Manual || dms[0].ContextLength != 111 || dms[0].MaxOutputLength != 222 || !dms[0].Multimodal {
 		t.Fatalf("dup models=%+v", dms)
 	}
 
@@ -234,7 +234,7 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 	a, d := setupAPI(t)
 	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://old", APIKey: "sk-old", Format: "openai"})
-	model.AddModel(d, id, "m1", false, 3, 4)
+	model.AddModel(d, id, "m1", false, 3, 4, false)
 	u, _ := model.GetUpstreamByID(d, id)
 	u.Enabled = false
 	model.UpdateUpstream(d, u)
@@ -264,7 +264,7 @@ func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 func TestImportConfig_RoundTrip(t *testing.T) {
 	a1, d1 := setupAPI(t)
 	id1, _ := model.CreateUpstream(d1, &model.Upstream{Name: "openai", BaseURL: "https://api.openai.com", APIKey: "sk-key-one", Format: "openai", DailyTokenLimit: 100})
-	model.AddModel(d1, id1, "gpt-4o", false, 128000, 16384)
+	model.AddModel(d1, id1, "gpt-4o", false, 128000, 16384, false)
 	id2, _ := model.CreateUpstream(d1, &model.Upstream{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKey: "sk-key-two", Format: "anthropic"})
 	u2, _ := model.GetUpstreamByID(d1, id2)
 	u2.Enabled = false

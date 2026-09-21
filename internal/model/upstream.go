@@ -151,7 +151,7 @@ const DefaultModelMaxOutputLength = 200000
 const DefaultMaxConcurrent = 100
 
 func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
-	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual, context_length, max_output_length FROM upstream_models WHERE upstream_id=? AND is_active = 1 ORDER BY model_name`), upstreamID)
+	rows, err := d.Query(db.Rebind(d, `SELECT id, upstream_id, model_name, manual, context_length, max_output_length, multimodal FROM upstream_models WHERE upstream_id=? AND is_active = 1 ORDER BY model_name`), upstreamID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
@@ -159,20 +159,24 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 	out := make([]UpstreamModel, 0)
 	for rows.Next() {
 		var m UpstreamModel
-		var manual int
-		if err := rows.Scan(&m.ID, &m.UpstreamID, &m.ModelName, &manual, &m.ContextLength, &m.MaxOutputLength); err != nil {
+		var manual, multimodal int
+		if err := rows.Scan(&m.ID, &m.UpstreamID, &m.ModelName, &manual, &m.ContextLength, &m.MaxOutputLength, &multimodal); err != nil {
 			return nil, err
 		}
 		m.Manual = manual != 0
+		m.Multimodal = multimodal != 0
 		out = append(out, m)
 	}
 	return out, nil
 }
 
-func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contextLength, maxOutputLength int) error {
-	m := 0
+func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contextLength, maxOutputLength int, multimodal bool) error {
+	m, mm := 0, 0
 	if manual {
 		m = 1
+	}
+	if multimodal {
+		mm = 1
 	}
 	if contextLength <= 0 {
 		contextLength = DefaultModelContextLength
@@ -194,8 +198,8 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	// 防止历史库里极端情况下存在多条同名死行。
 	// 子查询用派生表包一层：MySQL 不允许在 UPDATE 的子查询里引用正在更新的表
 	// （错误 1093）。SQLite/PG 接受这种写法，故三种方言共用、无需分支。
-	res, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
-		m, contextLength, maxOutputLength, upstreamID, modelName)
+	res, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=?, multimodal=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
+		m, contextLength, maxOutputLength, mm, upstreamID, modelName)
 	if err != nil {
 		return fmt.Errorf("revive model: %w", err)
 	}
@@ -203,23 +207,27 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 		return nil
 	}
 	// 唯一性由「仅活跃行」的部分唯一索引保证；冲突时忽略。
-	_, err = d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?)`+db.ConflictIgnoreSuffix(d, "upstream_id, model_name")),
-		upstreamID, modelName, m, contextLength, maxOutputLength)
+	_, err = d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length, multimodal) VALUES (?,?,?,?,?,?)`+db.ConflictIgnoreSuffix(d, "upstream_id, model_name")),
+		upstreamID, modelName, m, contextLength, maxOutputLength, mm)
 	if err != nil {
 		return fmt.Errorf("add model: %w", err)
 	}
 	return nil
 }
 
-func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int) error {
+func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int, multimodal bool) error {
 	if contextLength <= 0 {
 		contextLength = DefaultModelContextLength
 	}
 	if maxOutputLength <= 0 {
 		maxOutputLength = DefaultModelMaxOutputLength
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=? WHERE id=? AND is_active = 1`),
-		contextLength, maxOutputLength, id)
+	mm := 0
+	if multimodal {
+		mm = 1
+	}
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=?, multimodal=? WHERE id=? AND is_active = 1`),
+		contextLength, maxOutputLength, mm, id)
 	if err != nil {
 		return fmt.Errorf("update model: %w", err)
 	}
@@ -254,6 +262,10 @@ func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) err
 		if m.Manual {
 			manual = 1
 		}
+		mm := 0
+		if m.Multimodal {
+			mm = 1
+		}
 		cl, ml := m.ContextLength, m.MaxOutputLength
 		if cl <= 0 {
 			cl = DefaultModelContextLength
@@ -263,16 +275,16 @@ func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) err
 		}
 		// 优先复活同名软删行，防历史库同名死行累积（与 AddModel 同策略）。
 		// 派生表包一层绕开 MySQL 错误 1093（不能引用正在更新的表）。
-		res, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
-			manual, cl, ml, upstreamID, m.ModelName)
+		res, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=?, multimodal=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
+			manual, cl, ml, mm, upstreamID, m.ModelName)
 		if err != nil {
 			return fmt.Errorf("revive model %s: %w", m.ModelName, err)
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			continue
 		}
-		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,?,?,?)`),
-			upstreamID, m.ModelName, manual, cl, ml); err != nil {
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length, multimodal) VALUES (?,?,?,?,?,?)`),
+			upstreamID, m.ModelName, manual, cl, ml, mm); err != nil {
 			return fmt.Errorf("insert model %s: %w", m.ModelName, err)
 		}
 	}
@@ -289,23 +301,25 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 	// rows before soft-deleting them. manual 一并记录：软删除只动 manual=0，
 	// 所以复活时还活跃的同名行只可能是手动模型——此时不能复活旧的自动行，
 	// 否则两行同活跃在部分唯一索引上冲突（整个同步事务失败）。
+	// multimodal 同样是管理端手配字段，重新拉取时与长度一并保留。
 	type snapshot struct {
-		cl, ml int
-		manual bool
+		cl, ml     int
+		manual     bool
+		multimodal bool
 	}
 	prev := make(map[string]snapshot)
-	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length, manual FROM upstream_models WHERE upstream_id=? AND is_active = 1`), upstreamID)
+	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length, manual, multimodal FROM upstream_models WHERE upstream_id=? AND is_active = 1`), upstreamID)
 	if err != nil {
 		return fmt.Errorf("snapshot models: %w", err)
 	}
 	for rows.Next() {
 		var name string
-		var cl, ml, manual int
-		if err := rows.Scan(&name, &cl, &ml, &manual); err != nil {
+		var cl, ml, manual, mm int
+		if err := rows.Scan(&name, &cl, &ml, &manual, &mm); err != nil {
 			rows.Close()
 			return fmt.Errorf("snapshot models: %w", err)
 		}
-		prev[name] = snapshot{cl, ml, manual != 0}
+		prev[name] = snapshot{cl, ml, manual != 0, mm != 0}
 	}
 	rows.Close()
 	// 同步删除改为软删除：行保留，若模型随后重新出现在上游列表里可复活，
@@ -316,18 +330,22 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 	for _, n := range names {
 		p, ok := prev[n]
 		cl, ml := DefaultModelContextLength, DefaultModelMaxOutputLength
+		mm := 0
 		if ok {
 			cl, ml = p.cl, p.ml
+			if p.multimodal {
+				mm = 1
+			}
 		}
 		if ok && p.manual {
 			// 同名手动模型仍活跃：跳过复活与插入，保留手动行。
 			continue
 		}
 		// 复活已软删除的同名自动模型（保留历史 id），再按需插入新行。
-		if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, context_length=?, max_output_length=? WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), cl, ml, upstreamID, n); err != nil {
+		if _, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, context_length=?, max_output_length=?, multimodal=? WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), cl, ml, mm, upstreamID, n); err != nil {
 			return fmt.Errorf("revive model %s: %w", n, err)
 		}
-		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length) VALUES (?,?,0,?,?)`+db.ConflictIgnoreSuffix(d, "upstream_id, model_name")), upstreamID, n, cl, ml); err != nil {
+		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length, multimodal) VALUES (?,?,0,?,?,?)`+db.ConflictIgnoreSuffix(d, "upstream_id, model_name")), upstreamID, n, cl, ml, mm); err != nil {
 			return fmt.Errorf("insert model %s: %w", n, err)
 		}
 	}

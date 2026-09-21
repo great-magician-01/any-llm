@@ -32,6 +32,8 @@ type configUpstreamModel struct {
 	Manual          bool   `json:"manual"`
 	ContextLength   int    `json:"context_length"`
 	MaxOutputLength int    `json:"max_output_length"`
+	// 旧版导出文件没有该字段：导入侧按 bool 零值落到「否」，与新建默认一致。
+	Multimodal bool `json:"multimodal"`
 }
 
 type configUpstream struct {
@@ -104,7 +106,7 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		cu.Models = make([]configUpstreamModel, 0, len(models))
 		for _, m := range models {
 			cu.Models = append(cu.Models, configUpstreamModel{ModelName: m.ModelName, Manual: m.Manual,
-				ContextLength: m.ContextLength, MaxOutputLength: m.MaxOutputLength})
+				ContextLength: m.ContextLength, MaxOutputLength: m.MaxOutputLength, Multimodal: m.Multimodal})
 		}
 		out.Upstreams = append(out.Upstreams, cu)
 	}
@@ -160,7 +162,7 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 				models := make([]model.UpstreamModel, 0, len(u.Models))
 				for _, m := range u.Models {
 					models = append(models, model.UpstreamModel{ModelName: m.ModelName, Manual: m.Manual,
-						ContextLength: m.ContextLength, MaxOutputLength: m.MaxOutputLength})
+						ContextLength: m.ContextLength, MaxOutputLength: m.MaxOutputLength, Multimodal: m.Multimodal})
 				}
 				if err := model.ReplaceModelsExact(d, id, models); err != nil {
 					return fmt.Errorf("upstream %q models: %w", u.Name, err)

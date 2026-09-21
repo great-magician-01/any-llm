@@ -37,8 +37,8 @@ func TestGetAliasByName(t *testing.T) {
 func TestReplaceModelsExact(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 100, 200)
-	AddModel(d, uid, "m2", true, 1, 2)
+	AddModel(d, uid, "m1", false, 100, 200, false)
+	AddModel(d, uid, "m2", true, 1, 2, false)
 
 	mustList := func() map[string]UpstreamModel {
 		t.Helper()
@@ -55,7 +55,7 @@ func TestReplaceModelsExact(t *testing.T) {
 
 	// m1 下线、m2 换长度、m3 新增
 	err := ReplaceModelsExact(d, uid, []UpstreamModel{
-		{ModelName: "m2", Manual: true, ContextLength: 5, MaxOutputLength: 6},
+		{ModelName: "m2", Manual: true, ContextLength: 5, MaxOutputLength: 6, Multimodal: true},
 		{ModelName: "m3", Manual: false, ContextLength: 7, MaxOutputLength: 8},
 	})
 	if err != nil {
@@ -65,10 +65,10 @@ func TestReplaceModelsExact(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("after replace=%+v", got)
 	}
-	if m, ok := got["m2"]; !ok || m.Manual != true || m.ContextLength != 5 || m.MaxOutputLength != 6 {
+	if m, ok := got["m2"]; !ok || m.Manual != true || m.ContextLength != 5 || m.MaxOutputLength != 6 || !m.Multimodal {
 		t.Fatalf("m2=%+v ok=%v", m, ok)
 	}
-	if m, ok := got["m3"]; !ok || m.Manual != false || m.ContextLength != 7 || m.MaxOutputLength != 8 {
+	if m, ok := got["m3"]; !ok || m.Manual != false || m.ContextLength != 7 || m.MaxOutputLength != 8 || m.Multimodal {
 		t.Fatalf("m3=%+v ok=%v", m, ok)
 	}
 	if _, ok := got["m1"]; ok {

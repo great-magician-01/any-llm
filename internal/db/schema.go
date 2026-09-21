@@ -115,6 +115,9 @@ var schemaTables = []Table{
 			{Name: "manual", Type: TypeInt, Default: "0"},
 			{Name: "context_length", Type: TypeInt, Default: "1000000"},
 			{Name: "max_output_length", Type: TypeInt, Default: "200000"},
+			// 是否多模态（可接受图片等非文本输入）：0/1，默认否。管理端配置与
+			// 展示用，网关转发路径不读它。
+			{Name: "multimodal", Type: TypeInt, Default: "0"},
 			{Name: "is_active", Type: TypeInt, Default: "1"},
 		},
 		Idx: []Index{

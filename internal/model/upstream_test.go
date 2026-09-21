@@ -104,10 +104,10 @@ func TestListUpdateDeleteUpstream(t *testing.T) {
 func TestModelsCRUD(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	if err := AddModel(d, uid, "gpt-4o", true, 0, 0); err != nil {
+	if err := AddModel(d, uid, "gpt-4o", true, 0, 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "gpt-4o-mini", false, 0, 0); err != nil {
+	if err := AddModel(d, uid, "gpt-4o-mini", false, 0, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	models, err := ListModels(d, uid)
@@ -146,7 +146,7 @@ func TestModelsCRUD(t *testing.T) {
 func TestDeleteUpstreamCascadesModels(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0)
+	AddModel(d, uid, "m1", false, 0, 0, false)
 	if err := DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestDeleteUpstreamCascadesModels(t *testing.T) {
 func TestSoftDeleteUpstream(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0)
+	AddModel(d, uid, "m1", false, 0, 0, false)
 
 	if err := DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
@@ -206,8 +206,8 @@ func TestSoftDeleteUpstream(t *testing.T) {
 func TestSoftDeleteModelAndRevive(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0)
-	AddModel(d, uid, "m2", false, 0, 0)
+	AddModel(d, uid, "m1", false, 0, 0, false)
+	AddModel(d, uid, "m2", false, 0, 0, false)
 
 	// 同步只保留 m1：m2 软删除
 	if err := ReplaceModels(d, uid, []string{"m1"}); err != nil {
@@ -244,7 +244,7 @@ func TestSoftDeleteModelAndRevive(t *testing.T) {
 			}
 		}
 	}
-	if err := AddModel(d, uid, "m1", true, 0, 0); err != nil {
+	if err := AddModel(d, uid, "m1", true, 0, 0, false); err != nil {
 		t.Fatalf("re-add same model name after soft delete: %v", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestReplaceModelsSkipsManualConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 3. 管理员手动添加同名模型 m
-	if err := AddModel(d, uid, "m", true, 0, 0); err != nil {
+	if err := AddModel(d, uid, "m", true, 0, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	// 4. 再次同步不得失败，手动行保持活跃且不累积重复行
@@ -287,13 +287,13 @@ func TestReplaceModelsSkipsManualConflict(t *testing.T) {
 func TestAddModelRevivesSoftDeleted(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m", false, 0, 0)
+	AddModel(d, uid, "m", false, 0, 0, false)
 	models, _ := ListModels(d, uid)
 	origID := models[0].ID
 	if err := DeleteModel(d, origID); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "m", true, 1000, 2000); err != nil {
+	if err := AddModel(d, uid, "m", true, 1000, 2000, true); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -303,9 +303,67 @@ func TestAddModelRevivesSoftDeleted(t *testing.T) {
 	if models[0].ContextLength != 1000 || models[0].MaxOutputLength != 2000 {
 		t.Fatalf("lengths not applied: %+v", models[0])
 	}
+	if !models[0].Multimodal {
+		t.Fatalf("multimodal not applied on revive: %+v", models[0])
+	}
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE model_name='m'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("duplicate rows: n=%d err=%v", n, err)
+	}
+}
+
+// TestModelMultimodal 盯住 multimodal 字段的完整生命周期：默认否、UpdateModel
+// 可改写、ReplaceModels 重新拉取时保留已配置的值、新出现的模型回落默认。
+func TestModelMultimodal(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	// 新增默认非多模态
+	if err := AddModel(d, uid, "m1", false, 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	models, _ := ListModels(d, uid)
+	if len(models) != 1 || models[0].Multimodal {
+		t.Fatalf("default should be non-multimodal: %+v", models)
+	}
+
+	// UpdateModel 打开开关
+	if err := UpdateModel(d, models[0].ID, models[0].ContextLength, models[0].MaxOutputLength, true); err != nil {
+		t.Fatal(err)
+	}
+	models, _ = ListModels(d, uid)
+	if !models[0].Multimodal {
+		t.Fatalf("after update: %+v", models[0])
+	}
+
+	// 重新拉取（m1 保留、m2 新增）：m1 的标记保留，m2 默认否
+	if err := ReplaceModels(d, uid, []string{"m1", "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	models, _ = ListModels(d, uid)
+	byName := map[string]UpstreamModel{}
+	for _, m := range models {
+		byName[m.ModelName] = m
+	}
+	if !byName["m1"].Multimodal {
+		t.Fatalf("multimodal lost after re-sync: %+v", byName["m1"])
+	}
+	if byName["m2"].Multimodal {
+		t.Fatalf("new synced model should default to non-multimodal: %+v", byName["m2"])
+	}
+
+	// 软删除后复活同样以新值为准（AddModel 复活路径）
+	if err := DeleteModel(d, byName["m1"].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddModel(d, uid, "m1", true, 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	models, _ = ListModels(d, uid)
+	for _, m := range models {
+		if m.ModelName == "m1" && m.Multimodal {
+			t.Fatalf("revive via AddModel should apply the new value: %+v", m)
+		}
 	}
 }
 
@@ -333,7 +391,7 @@ func TestUpdateIgnoresSoftDeleted(t *testing.T) {
 func TestUpstreamDisableEnable(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0)
+	AddModel(d, uid, "m1", false, 0, 0, false)
 
 	// 新建默认启用
 	u, _ := GetUpstreamByID(d, uid)

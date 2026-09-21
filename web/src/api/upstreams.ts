@@ -14,6 +14,8 @@ export interface Upstream {
 export interface UpstreamModel {
   id: number; upstream_id: number; model_name: string; manual: boolean
   context_length: number; max_output_length: number
+  /** 是否多模态（接受图片等非文本输入）；默认 false。仅管理端配置/展示。 */
+  multimodal: boolean
 }
 
 export async function listUpstreams() {
@@ -48,12 +50,12 @@ export async function listModels(upstreamId: number) {
 export const DEFAULT_MODEL_CONTEXT_LENGTH = 1000000
 export const DEFAULT_MODEL_MAX_OUTPUT_LENGTH = 200000
 
-export async function addModel(upstreamId: number, model_name: string, context_length = DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length = DEFAULT_MODEL_MAX_OUTPUT_LENGTH) {
-  await client.post(`/upstreams/${upstreamId}/models`, { model_name, context_length, max_output_length })
+export async function addModel(upstreamId: number, model_name: string, context_length = DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length = DEFAULT_MODEL_MAX_OUTPUT_LENGTH, multimodal = false) {
+  await client.post(`/upstreams/${upstreamId}/models`, { model_name, context_length, max_output_length, multimodal })
 }
 
-export async function updateModel(upstreamId: number, modelId: number, context_length: number, max_output_length: number) {
-  await client.put(`/upstreams/${upstreamId}/models/${modelId}`, { context_length, max_output_length })
+export async function updateModel(upstreamId: number, modelId: number, context_length: number, max_output_length: number, multimodal = false) {
+  await client.put(`/upstreams/${upstreamId}/models/${modelId}`, { context_length, max_output_length, multimodal })
 }
 
 export async function deleteModel(upstreamId: number, modelId: number) {

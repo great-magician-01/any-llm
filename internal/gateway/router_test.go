@@ -33,8 +33,8 @@ func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 func TestModelsEndpoint(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
@@ -89,8 +89,8 @@ func TestModelsEndpointRequiresKey(t *testing.T) {
 func TestModelsEndpointFilteredByAllowedModels(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0, false)
 	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	k, _ := model.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o", "fast"})
 
@@ -192,8 +192,8 @@ func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	g, d := setupGateway(t)
 	off, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
 	on, _ := model.CreateUpstream(d, &model.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, off, "m1", false, 0, 0)
-	model.AddModel(d, on, "m2", false, 0, 0)
+	model.AddModel(d, off, "m1", false, 0, 0, false)
+	model.AddModel(d, on, "m2", false, 0, 0, false)
 	model.CreateAlias(d, &model.ModelAlias{Name: "dead-alias", Bindings: []model.AliasBinding{{UpstreamID: off, ModelName: "m1"}}})
 	model.CreateAlias(d, &model.ModelAlias{Name: "live-alias", Bindings: []model.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
 
@@ -259,8 +259,8 @@ func TestModelsEndpointExcludesExpired(t *testing.T) {
 	g, d := setupGateway(t)
 	old, _ := model.CreateUpstream(d, &model.Upstream{Name: "old", BaseURL: "b", APIKey: "k", Format: "openai"})
 	on, _ := model.CreateUpstream(d, &model.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, old, "m1", false, 0, 0)
-	model.AddModel(d, on, "m2", false, 0, 0)
+	model.AddModel(d, old, "m1", false, 0, 0, false)
+	model.AddModel(d, on, "m2", false, 0, 0, false)
 	model.CreateAlias(d, &model.ModelAlias{Name: "dead-alias", Bindings: []model.AliasBinding{{UpstreamID: old, ModelName: "m1"}}})
 	model.CreateAlias(d, &model.ModelAlias{Name: "live-alias", Bindings: []model.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
 
@@ -316,7 +316,7 @@ func TestResponsesRoute(t *testing.T) {
 func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	// key with daily limit of 100, already used 100
 	k, _ := model.CreateExtKey(d, "l", "", 100, 0, nil)
 	model.InsertUsage(d, &model.UsageRecord{
@@ -338,7 +338,7 @@ func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "l", "", 0, 50, nil)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
@@ -356,7 +356,7 @@ func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 func TestUpstreamDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai", DailyTokenLimit: 100})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
@@ -380,7 +380,7 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai", DailyTokenLimit: 1000})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "l", "", 1000, 5000, nil)
 	model.InsertUsage(d, &model.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
@@ -404,8 +404,8 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 func TestModelNotAllowedForRestrictedKey(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o"})
 
 	for _, tc := range []struct{ path, body string }{
@@ -447,7 +447,7 @@ func TestModelAllowedForRestrictedKey(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o"})
 	g.client = upstream.NewClient(http.DefaultClient)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -464,7 +464,7 @@ func TestModelAllowedForRestrictedKey(t *testing.T) {
 func TestAllowedModelsMatchPublicName(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 
 	for _, tc := range []struct{ allow, model string }{
@@ -594,7 +594,7 @@ func TestCachedReadsDoNotHitDatabase(t *testing.T) {
 	g, d := setupGateway(t)
 	g.client = upstream.NewClient(http.DefaultClient)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	k, _ := model.CreateExtKey(d, "l", "", 0, 0, nil)
 

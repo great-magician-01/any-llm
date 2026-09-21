@@ -39,6 +39,8 @@ var extraCols = []struct {
 	{"upstream_models", "is_active"},
 	{"upstream_models", "context_length"},
 	{"upstream_models", "max_output_length"},
+	// 是否多模态（初始 schema 之后才加入，老库回填，默认 0 = 否）
+	{"upstream_models", "multimodal"},
 	{"usage_records", "cache_read_tokens"},
 	{"usage_records", "cache_creation_tokens"},
 	{"usage_records", "reasoning_tokens"},
