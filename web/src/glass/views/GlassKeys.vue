@@ -9,10 +9,12 @@ import { formatInt } from '../../utils/format'
 import { buildOmpYaml } from '../../utils/ompConfig'
 import { useKeyForms } from '../../composables/useKeyForms'
 import AppIcon from '../../components/AppIcon.vue'
+import UsageDocDrawer from '../../components/UsageDocDrawer.vue'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
+const showDoc = ref(false)
 
 // 新增/编辑弹窗的表单状态与保存逻辑在 composables/useKeyForms（两套皮肤共用一份）
 const {
@@ -357,6 +359,10 @@ onMounted(load)
         <p>对外访问网关使用的 Key，请求时通过 Authorization: Bearer 携带</p>
       </div>
       <div class="page-header-side">
+        <n-button quaternary @click="showDoc = true">
+          <template #icon><AppIcon name="doc" :size="15" /></template>
+          使用文档
+        </n-button>
         <n-button quaternary circle @click="load">
           <template #icon><AppIcon name="refresh" :size="16" /></template>
         </n-button>
@@ -485,6 +491,8 @@ onMounted(load)
         </n-form>
       </n-card>
     </n-modal>
+
+    <UsageDocDrawer v-model:show="showDoc" />
   </div>
 </template>
 
