@@ -23,7 +23,7 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -70,7 +70,7 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -109,7 +109,7 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -142,7 +142,7 @@ func TestCompletion_UpstreamError(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -181,7 +181,7 @@ func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -228,7 +228,7 @@ func TestResponsesStreamFallbackNonStreamJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
+	model.AddModel(d, uid, "m", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -306,7 +306,7 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
+	model.AddModel(d, uid, "m", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 	gw := g
@@ -389,7 +389,7 @@ func TestResponsesFailedCallDoesNotSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
+	model.AddModel(d, uid, "m", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -442,7 +442,7 @@ func TestResponsesFailedCallDoesNotSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d2, uid2, "m", false, 0, 0)
+	model.AddModel(d2, uid2, "m", false, 0, 0, false)
 	k2, _ := model.CreateExtKey(d2, "test", "", 0, 0, nil)
 	g2.client = upstream.NewClient(http.DefaultClient)
 
@@ -494,7 +494,7 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 

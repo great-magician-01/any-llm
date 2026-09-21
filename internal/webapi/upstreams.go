@@ -264,6 +264,8 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 		ModelName       string `json:"model_name"`
 		ContextLength   int    `json:"context_length"`
 		MaxOutputLength int    `json:"max_output_length"`
+		// 缺省 false：新模型默认非多模态。
+		Multimodal bool `json:"multimodal"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.ContextLength < 0 || req.MaxOutputLength < 0 {
@@ -271,7 +273,7 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 		return
 	}
 	if err := a.writeSync(func(d *sql.DB) error {
-		return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength)
+		return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength, req.Multimodal)
 	}); err != nil {
 		logger.Error("admin: add model failed", "upstream_id", upstreamID, "model", req.ModelName, "err", err)
 		writeSyncErr(w, 400, err)
@@ -295,6 +297,8 @@ func (a *API) updateModel(w http.ResponseWriter, r *http.Request, upstreamID, mi
 	var req struct {
 		ContextLength   *int `json:"context_length"`
 		MaxOutputLength *int `json:"max_output_length"`
+		// 缺省 false：PUT 全量语义下未给出即恢复默认（与长度缺省回默认值一致）。
+		Multimodal bool `json:"multimodal"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
@@ -311,7 +315,7 @@ func (a *API) updateModel(w http.ResponseWriter, r *http.Request, upstreamID, mi
 		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
 		return
 	}
-	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, mid, cl, ml) }); err != nil {
+	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, mid, cl, ml, req.Multimodal) }); err != nil {
 		writeSyncErr(w, 400, err)
 		return
 	}

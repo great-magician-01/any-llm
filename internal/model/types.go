@@ -35,6 +35,9 @@ type UpstreamModel struct {
 	Manual          bool   `json:"manual"`
 	ContextLength   int    `json:"context_length"`
 	MaxOutputLength int    `json:"max_output_length"`
+	// Multimodal 标记该模型是否支持图片等非文本输入；仅管理端配置与展示，
+	// 网关不在请求路径上校验它。
+	Multimodal bool `json:"multimodal"`
 }
 
 type ExtKey struct {

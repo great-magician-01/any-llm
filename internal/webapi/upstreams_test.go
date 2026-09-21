@@ -151,6 +151,88 @@ func TestFetchModels(t *testing.T) {
 	}
 }
 
+// TestModelMultimodalAPI 走 HTTP 层钉住多模态开关：列表返回该字段、新增默认
+// 否、显式 true 落库、PUT 能改回去。
+func TestModelMultimodalAPI(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	base := "/api/admin/upstreams/" + strconv.FormatInt(uid, 10) + "/models"
+	post := func(path string, body map[string]any) int {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, bytes.NewReader(b)))
+		return w.Code
+	}
+	put := func(path string, body map[string]any) int {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, httptest.NewRequest("PUT", path, bytes.NewReader(b)))
+		return w.Code
+	}
+
+	// 不传 multimodal → 默认否
+	if code := post(base, map[string]any{"model_name": "plain", "context_length": 1000, "max_output_length": 100}); code != 200 {
+		t.Fatalf("add plain status=%d", code)
+	}
+	// 显式 true → 落库
+	if code := post(base, map[string]any{"model_name": "vision", "context_length": 1000, "max_output_length": 100, "multimodal": true}); code != 200 {
+		t.Fatalf("add vision status=%d", code)
+	}
+	ms, err := model.ListModels(d, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]model.UpstreamModel{}
+	for _, m := range ms {
+		byName[m.ModelName] = m
+	}
+	if byName["plain"].Multimodal {
+		t.Fatalf("absent multimodal must default to false: %+v", byName["plain"])
+	}
+	if !byName["vision"].Multimodal {
+		t.Fatalf("explicit multimodal=true not stored: %+v", byName["vision"])
+	}
+
+	// 列表接口要把它吐出来（前端据此显示标记）
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, httptest.NewRequest("GET", base, nil))
+	if w.Code != 200 {
+		t.Fatalf("list status=%d", w.Code)
+	}
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, m := range resp.Data {
+		if m["model_name"] == "vision" {
+			seen = true
+			if m["multimodal"] != true {
+				t.Fatalf("list payload missing multimodal: %v", m)
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("vision model missing from list: %v", resp.Data)
+	}
+
+	// PUT 改回 false
+	vid := byName["vision"].ID
+	if code := put(base+"/"+strconv.FormatInt(vid, 10), map[string]any{"context_length": 1000, "max_output_length": 100, "multimodal": false}); code != 200 {
+		t.Fatalf("update status=%d", code)
+	}
+	got, _ := model.ListModels(d, uid)
+	for _, m := range got {
+		if m.ID == vid && m.Multimodal {
+			t.Fatalf("multimodal not cleared: %+v", m)
+		}
+	}
+}
+
 // TestUpdateUpstream_MaskedKeyNotOverwritten verifies that when the client
 // sends back the masked API key placeholder (as the admin UI does when a user
 // edits an upstream without re-entering the secret), the gateway must NOT

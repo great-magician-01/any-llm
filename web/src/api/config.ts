@@ -8,6 +8,8 @@ export interface ConfigUpstreamModel {
   manual: boolean
   context_length: number
   max_output_length: number
+  /** 旧版导出文件可能没有该字段；导入侧按「否」处理。 */
+  multimodal?: boolean
 }
 
 export interface ConfigUpstream {

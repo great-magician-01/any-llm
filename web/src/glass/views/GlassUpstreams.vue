@@ -25,7 +25,7 @@ const editing = ref<Upstream | null>(null)
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
 const newModelByUpstream = ref<Record<number, string>>({})
-const newModelOpts = ref<Record<number, { context_length: number; max_output_length: number }>>({})
+const newModelOpts = ref<Record<number, { context_length: number; max_output_length: number; multimodal: boolean }>>({})
 const showModelForm = ref(false)
 const modelFormUpstreamId = ref(0)
 const modelForm = ref<UpstreamModel | null>(null)
@@ -46,7 +46,7 @@ const importing = ref(false)
 
 function modelOptsFor(id: number) {
   if (!newModelOpts.value[id]) {
-    newModelOpts.value[id] = { context_length: DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length: DEFAULT_MODEL_MAX_OUTPUT_LENGTH }
+    newModelOpts.value[id] = { context_length: DEFAULT_MODEL_CONTEXT_LENGTH, max_output_length: DEFAULT_MODEL_MAX_OUTPUT_LENGTH, multimodal: false }
   }
   return newModelOpts.value[id]
 }
@@ -218,7 +218,7 @@ async function addM(id: number) {
   const name = (newModelByUpstream.value[id] || '').trim()
   if (!name) return
   const opts = modelOptsFor(id)
-  await addModel(id, name, opts.context_length, opts.max_output_length)
+  await addModel(id, name, opts.context_length, opts.max_output_length, opts.multimodal)
   newModelByUpstream.value[id] = ''
   await loadModels(id)
   await load()
@@ -232,7 +232,7 @@ async function saveModel() {
   const m = modelForm.value
   if (!m) return
   try {
-    await updateModel(modelFormUpstreamId.value, m.id, m.context_length, m.max_output_length)
+    await updateModel(modelFormUpstreamId.value, m.id, m.context_length, m.max_output_length, m.multimodal)
     showModelForm.value = false
     modelForm.value = null
     await loadModels(modelFormUpstreamId.value)
@@ -326,6 +326,14 @@ const columns: DataTableColumns<Upstream> = [
           placeholder: '最大输出长度',
           style: 'width: 150px',
         }),
+        h('div', { style: 'display: flex; align-items: center; gap: 6px' }, [
+          h(NSwitch, {
+            value: opts.multimodal,
+            size: 'small',
+            'onUpdate:value': (v: boolean) => { opts.multimodal = v },
+          }),
+          h('span', { style: 'font-size: 13px; color: var(--text-2)' }, '多模态'),
+        ]),
         h(NButton, { type: 'primary', size: 'small', onClick: () => addM(id) }, { default: () => '添加' }),
         h(NButton, {
           size: 'small',
@@ -349,6 +357,7 @@ const columns: DataTableColumns<Upstream> = [
               onClose: () => delM(id, m.id),
             }, { default: () => [
               m.model_name + (m.manual ? '（手动）' : ''),
+              m.multimodal ? h('span', { style: 'opacity: 0.75; font-size: 11px; margin-left: 6px' }, '多模态') : null,
               h('span', { style: 'opacity: 0.6; font-size: 11px; margin-left: 6px' }, `${fmtK(m.context_length)} / ${fmtK(m.max_output_length)}`),
             ] }))
           ),
@@ -593,6 +602,12 @@ onMounted(() => {
           </n-form-item>
           <n-form-item label="最大输出长度（tokens）">
             <n-input-number v-model:value="modelForm.max_output_length" :min="0" :step="1000" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="多模态">
+            <n-space align="center" :size="8">
+              <n-switch v-model:value="modelForm.multimodal" />
+              <span style="font-size: 12.5px; color: var(--text-3)">支持图片等非文本输入</span>
+            </n-space>
           </n-form-item>
           <n-button type="primary" block @click="saveModel">保存</n-button>
         </n-form>
