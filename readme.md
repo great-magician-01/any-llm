@@ -15,7 +15,7 @@
 - **对话记录**：自动归档每次调用的完整请求/响应（PostgreSQL / MySQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
 - **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量），保留历史趋势
 - **配置备份**：上游与别名配置一键导出/导入
-- **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0+（同为纯 Go 驱动）
+- **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0.13+（同为纯 Go 驱动）
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
 - **双主题界面**：经典深色与毛玻璃主题，界面内一键切换
 

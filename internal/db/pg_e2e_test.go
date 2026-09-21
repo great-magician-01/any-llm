@@ -344,11 +344,12 @@ type summaryRow struct {
 	errorCount    int
 }
 
+// createUpstreamE2E 等下面的助手被 PG 与 MySQL 两套 e2e 共用，所以一律走
+// db.InsertReturningID / db.ConflictIgnoreSuffix 等方言助手，不直接写
+// RETURNING 或 ON CONFLICT —— 否则 MySQL 侧一复用就语法错误。
 func createUpstreamE2E(d *sql.DB, name, baseURL, apiKey, format string) (int64, error) {
-	var id int64
-	err := d.QueryRow(Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`),
-		name, baseURL, apiKey, format).Scan(&id)
-	return id, err
+	return InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`,
+		name, baseURL, apiKey, format)
 }
 
 func getUpstreamByNameE2E(d *sql.DB, name string) (struct {
@@ -406,12 +407,21 @@ func deleteUpstreamE2E(d *sql.DB, id int64) error {
 	return err
 }
 
+// addModelE2E 复刻 model.AddModel 的两步策略：先复活同名软删行，复活不到再插入。
+// 少了复活这一步，软删后重加会新建一行而不是复用原 id —— MySQL e2e 正是靠它断言
+// 「复用同一行 id」，顺带覆盖 MySQL 错误 1093 的派生表改写。
 func addModelE2E(d *sql.DB, upstreamID int64, name string, manual bool) error {
 	m := 0
 	if manual {
 		m = 1
 	}
-	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`),
+	if _, err := d.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?
+		WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models
+			WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
+		m, upstreamID, name); err != nil {
+		return err
+	}
+	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?)`+ConflictIgnoreSuffix(d, "upstream_id, model_name")),
 		upstreamID, name, m)
 	return err
 }
@@ -461,7 +471,7 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 		if _, err := tx.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 1 WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), upstreamID, n); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`), upstreamID, n); err != nil {
+		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0)`+ConflictIgnoreSuffix(d, "upstream_id, model_name")), upstreamID, n); err != nil {
 			return err
 		}
 	}
@@ -483,8 +493,8 @@ func createExtKeyE2E(d *sql.DB, label string) (struct {
 			Enabled int
 		}{}, err
 	}
-	var id int64
-	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
+	keyCol := QuoteIdent(d, "key")
+	id, err := InsertReturningID(d, `INSERT INTO ext_keys (`+keyCol+`, label) VALUES (?,?) RETURNING id`, key, label)
 	if err != nil {
 		return struct {
 			ID      int64
@@ -517,7 +527,7 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 		CreatedAt time.Time
 		LastUsed  sql.NullTime
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+	err := d.QueryRow(Rebind(d, `SELECT id, `+QuoteIdent(d, "key")+`, label, enabled, created_at, last_used_at FROM ext_keys WHERE `+QuoteIdent(d, "key")+`=?`), key).
 		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
 	return k, err
 }
@@ -528,7 +538,7 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	Label   string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, ` + QuoteIdent(d, "key") + `, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}

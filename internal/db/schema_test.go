@@ -82,12 +82,13 @@ func TestSchemaMySQLRendersInnoDBShape(t *testing.T) {
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS `ext_keys` (",
 		"`id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY",
-		// key/label 要建索引 → VARCHAR；remark/allowed_models 不建索引 → 保持 TEXT
-		// 且丢掉字面量默认值（MySQL 的 TEXT 不能有 DEFAULT）。
+		// key/label 要建索引 → VARCHAR；remark/allowed_models 不建索引 → 保持 TEXT。
+		// TEXT 不能带裸字面量默认值（错误 1101），必须写成表达式形式（见
+		// TestSchemaMySQLExpressionDefaults）。
 		"`key` VARCHAR(191) NOT NULL",
 		"`label` VARCHAR(191) NOT NULL DEFAULT ''",
-		"`remark` TEXT NOT NULL",
-		"`allowed_models` TEXT NOT NULL",
+		"`remark` TEXT NOT NULL DEFAULT ('')",
+		"`allowed_models` TEXT NOT NULL DEFAULT ('')",
 		"`created_at` DATETIME(0) NOT NULL DEFAULT CURRENT_TIMESTAMP",
 		// 部分唯一索引降级为生成列 + 普通唯一键。
 		"`g_idx_ext_keys_key` VARCHAR(191) GENERATED ALWAYS AS (IF(is_active = 1, `key`, NULL)) STORED",
@@ -142,8 +143,8 @@ func TestSchemaMySQLLongTextForSessionMessages(t *testing.T) {
 }
 
 // TestSchemaMySQLRejectsIndexedTextWithoutLen 验证渲染器的自校验：不给 Len 的
-// TEXT 列一旦要建索引/作主键/带默认值，直接报错，而不是等到建表时才吐一句没头没尾
-// 的语法错误。
+// TEXT 列一旦要建索引或作主键，直接报错，而不是等到建表时才吐一句没头没尾的语法
+// 错误。
 func TestSchemaMySQLRejectsIndexedTextWithoutLen(t *testing.T) {
 	bad := Table{
 		Name: "broken",
@@ -159,6 +160,97 @@ func TestSchemaMySQLRejectsIndexedTextWithoutLen(t *testing.T) {
 		t.Fatal("expected an error for an indexed TEXT column without Len")
 	} else if !strings.Contains(err.Error(), "name") || !strings.Contains(err.Error(), "Len") {
 		t.Fatalf("error should name the column and the fix, got: %v", err)
+	}
+}
+
+// TestSchemaMySQLPartialUniqueSurvivesIndexSuffix 盯住一处容易漂移的地方：生成列
+// 名由「已套用月份后缀的索引名」派生，而 KEY 引用的也必须是同一个名字。两侧各自
+// 取后缀就会生成一份引用了未定义列的 DDL。现有分表没有部分唯一索引，所以这是
+// 潜伏问题 —— 用一张合成表把它钉死。
+func TestSchemaMySQLPartialUniqueSurvivesIndexSuffix(t *testing.T) {
+	tbl := Table{
+		Name: "conv_shard",
+		Cols: []Column{
+			{Name: "id", Type: TypeBigInt, PrimaryKey: true},
+			{Name: "name", Type: TypeText, Len: 255},
+			{Name: "is_active", Type: TypeInt, Default: "1"},
+		},
+		Idx: []Index{
+			{Name: "idx_conv_{}_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
+		},
+	}
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[0]
+	// 生成列与 KEY 必须用同一个名字。
+	if !strings.Contains(ddl, "`g_idx_conv_2026_09_name` VARCHAR(255) GENERATED ALWAYS AS") {
+		t.Errorf("generated column missing the suffix:\n%s", ddl)
+	}
+	if !strings.Contains(ddl, "UNIQUE KEY `idx_conv_2026_09_name` (`g_idx_conv_2026_09_name`)") {
+		t.Errorf("KEY does not reference the suffixed generated column:\n%s", ddl)
+	}
+	// 没套后缀的旧名字一个都不许出现。
+	for _, bad := range []string{"g_idx_conv{}_name", "`g_idx_conv_name`", "`idx_conv{}_name`"} {
+		if strings.Contains(ddl, bad) {
+			t.Errorf("DDL still contains un-suffixed %q:\n%s", bad, ddl)
+		}
+	}
+	// SQLite/PG 侧同样要套后缀。
+	idx := joinDDL(mustDDL(t, tbl, DialectPostgres, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[1:])
+	if !strings.Contains(idx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_2026_09_name") {
+		t.Errorf("postgres index name missing the suffix:\n%s", idx)
+	}
+}
+
+// TestSchemaMySQLExpressionDefaults 盯住 MySQL 错误 1101：BLOB/TEXT/JSON 列拒绝
+// 裸字面量默认值，必须写成带括号的表达式形式（8.0.13+）。
+// 这里不是「丢掉默认值」——空串/空对象的含义必须三种方言一致，否则同一条 INSERT
+// 在 PG/SQLite 静默默认、在 MySQL 报 1364。
+func TestSchemaMySQLExpressionDefaults(t *testing.T) {
+	cases := []struct {
+		col  Column
+		want string // MySQL 上的 DEFAULT 片段
+	}{
+		{Column{Name: "a", Type: TypeText, Default: "''"}, "DEFAULT ('')"},         // TEXT 无 Len
+		{Column{Name: "b", Type: TypeText, Len: 255, Default: "''"}, "DEFAULT ''"}, // VARCHAR 不需要括号
+		{Column{Name: "c", Type: TypeLongText, Default: "''"}, "DEFAULT ('')"},     // LONGTEXT
+		{Column{Name: "d", Type: TypeJSON, Default: "'{}'"}, "DEFAULT ('{}')"},     // JSON
+		{Column{Name: "e", Type: TypeInt, Default: "0"}, "DEFAULT 0"},              // 标量不动
+		{Column{Name: "f", Type: TypeTime, Default: "CURRENT_TIMESTAMP"}, "DEFAULT CURRENT_TIMESTAMP"},
+		{Column{Name: "g", Type: TypeText, Nullable: true}, ""}, // 无默认值：一个 DEFAULT 都不许有
+	}
+	for _, tc := range cases {
+		tbl := Table{Name: "t", Cols: []Column{{Name: "id", Type: TypeBigInt, AutoID: true}, tc.col}}
+		def, err := tbl.columnDefMySQL(tc.col, DDLConfig{})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.col.Name, err)
+		}
+		if tc.want == "" {
+			if strings.Contains(def, "DEFAULT") {
+				t.Errorf("%s: column without a default must not render DEFAULT: %q", tc.col.Name, def)
+			}
+			continue
+		}
+		if !strings.Contains(def, tc.want) {
+			t.Errorf("%s: MySQL column def missing %q: %q", tc.col.Name, tc.want, def)
+		}
+		// 整表渲染也要能看到（防止只有 columnDef 分支对）。
+		if ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{})[0]; !strings.Contains(ddl, def) {
+			t.Errorf("%s: table DDL missing column def %q:\n%s", tc.col.Name, def, ddl)
+		}
+	}
+	// PG/SQLite 保持裸字面量，不能被括号污染。
+	for _, d := range []Dialect{DialectSQLite, DialectPostgres} {
+		tbl := Table{Name: "t", Cols: []Column{{Name: "id", Type: TypeBigInt, AutoID: true},
+			{Name: "a", Type: TypeText, Default: "''"}}}
+		ddl := mustDDL(t, tbl, d, DDLConfig{})[0]
+		if !strings.Contains(ddl, "a TEXT NOT NULL DEFAULT ''") {
+			t.Errorf("%s should keep the literal default:\n%s", d, ddl)
+		}
+	}
+	// cfg.ColumnDefaults 里的表达式（PG 分表的 nextval）原样透传，不再包一层。
+	tbl := Table{Name: "t", Cols: []Column{{Name: "id", Type: TypeBigInt, PrimaryKey: true}}}
+	ddl := mustDDL(t, tbl, DialectPostgres, DDLConfig{ColumnDefaults: map[string]string{"id": "nextval('seq_x')"}})[0]
+	if !strings.Contains(ddl, "DEFAULT nextval('seq_x')") {
+		t.Errorf("ColumnDefaults must pass through unwrapped:\n%s", ddl)
 	}
 }
 

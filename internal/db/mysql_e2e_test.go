@@ -267,16 +267,19 @@ func TestMySQL_E2E_CRUDAndTimestamps(t *testing.T) {
 	if expiresAt.Valid {
 		t.Errorf("expires_at should be NULL, got %v", expiresAt.Time)
 	}
-	// 写一个到期时刻再读回，确认可空列的正反两个方向都对
-	soon := time.Now().Add(48 * time.Hour)
+	// 写一个到期时刻再读回，确认可空列的正反两个方向都对。输入取整到秒：
+	// DATETIME(0) 只有秒精度，且 MySQL 对亚秒值是四舍五入而非截断
+	// （09:29:10.600 → 09:29:11），把亚秒值混进来只会让断言去测舍入规则，
+	// 而不是测「能否往返」。
+	soon := time.Now().Add(48 * time.Hour).Truncate(time.Second)
 	if _, err := d.Exec(Rebind(d, `UPDATE upstreams SET expires_at=? WHERE id=?`), soon, uid); err != nil {
 		t.Fatalf("write expires_at: %v", err)
 	}
 	if err := d.QueryRow(Rebind(d, `SELECT expires_at FROM upstreams WHERE id=?`), uid).Scan(&expiresAt); err != nil {
 		t.Fatal(err)
 	}
-	if !expiresAt.Valid || !expiresAt.Time.Equal(soon.Truncate(time.Second)) {
-		t.Errorf("expires_at round-trip: got %v want %v", expiresAt.Time, soon.Truncate(time.Second))
+	if !expiresAt.Valid || !expiresAt.Time.Equal(soon) {
+		t.Errorf("expires_at round-trip: got %v want %v", expiresAt.Time, soon)
 	}
 
 	// 模型：AddModel 幂等 + 软删除后复活同一行 id
@@ -345,11 +348,12 @@ func TestMySQL_E2E_CRUDAndTimestamps(t *testing.T) {
 func TestMySQL_E2E_UpsertAndUsage(t *testing.T) {
 	d := mysqlTestDB(t)
 
-	// upsert：同 id 覆盖而不是报重复键
+	// upsert：同 id 覆盖而不是报重复键。VALUES(col) 是 SQL 函数引用、不占参数位，
+	// 所以与 PG/SQLite 一样只传 4 个。
 	upsert := func(msg string) error {
 		_, err := d.Exec(Rebind(d, `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
 			VALUES (?, ?, ?, ?)`+UpsertSuffix(d, "id", "messages", "last_used_at")),
-			append([]any{"resp_abc", msg, time.Now(), time.Now()}, msg, time.Now())...)
+			"resp_abc", msg, time.Now(), time.Now())
 		return err
 	}
 	if err := upsert("first"); err != nil {
@@ -509,6 +513,20 @@ func TestMySQL_E2E_ConversationSharding(t *testing.T) {
 	}
 	if !containsString(shards, "conversation_records_"+time.Now().Format("2006_01")) {
 		t.Fatalf("shard not discovered: %v", shards)
+	}
+
+	// 存量库的裸 conversation_records 是「历史分表」，也必须被捞回来。这里只关心
+	// 名字能否被发现，表结构无关紧要，故建一张最小表。前缀带尾下划线
+	// （conversation_records_%）就会漏掉它 —— 那是本分支修掉的回归。
+	if _, err := d.Exec(`CREATE TABLE conversation_records (id BIGINT NOT NULL PRIMARY KEY)`); err != nil {
+		t.Fatalf("create legacy base table: %v", err)
+	}
+	shards, err = ListTablesLike(d, "conversation_records")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(shards, "conversation_records") {
+		t.Fatalf("legacy base table not discovered: %v", shards)
 	}
 
 	// IsUndefinedTable 识别 MySQL 的 1146

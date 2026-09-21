@@ -147,6 +147,8 @@ volumes:
   mysql-data:
 ```
 
+注意：需要 **MySQL 8.0.13+** —— schema 渲染器依赖 MySQL 对 TEXT/JSON 列的「表达式默认值」支持（`DEFAULT ('')`），8.0.13 之前的版本只接受裸字面量默认值，会报错误 1101。
+
 注意：`DB_SCHEMA` 在 MySQL 下无效——MySQL 的 database 就是 schema，库名由 `DB_NAME` 给。启动时若设置了 `DB_SCHEMA`，日志会打一条 `db_schema_ignored`。表由 `OpenMySQL` 在启动时自动创建（幂等，可重复重启）。
 
 ## 7. 常见问题

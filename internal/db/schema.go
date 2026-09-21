@@ -73,8 +73,11 @@ type Table struct {
 // DDLConfig 控制一次渲染的行为。
 type DDLConfig struct {
 	IfNotExists bool
-	// IndexSuffix 替换索引名里的 "{}"，用于按月分表：索引名 schema 级唯一，
-	// idx_conv{}_created → idx_conv_2026_09_created。
+	// IndexSuffix 把索引名里的 "{}" 替换成它，用于「同一份索引定义要渲染出多个
+	// 带区分后缀的名字」（索引名 schema 级唯一）。注意：对话归档月分表**不走这条路**
+	// —— 它的索引名由 convShardIndexes(suffix) 直接拼好，故当前没有调用方设它。
+	// 保留是为了让渲染器自身保持自洽：三处取索引名的地方（SQLite/PG 索引语句、
+	// MySQL 内联 KEY、生成列名）共用 resolveIndexName，后缀要么都应用、要么都不应用。
 	IndexSuffix string
 	// ColumnDefaults 覆盖单列的默认值表达式（键为列名）。分表的 id 列在 PG 上
 	// 是 DEFAULT nextval('<共享序列>')，MySQL 上交给计数器表显式分配、无默认值。
@@ -125,8 +128,9 @@ var schemaTables = []Table{
 			{Name: "key", Type: TypeText, Len: 191},
 			{Name: "label", Type: TypeText, Len: 191, Default: "''"},
 			// remark / allowed_models 故意不给 Len：两者都不建索引，MySQL 上保持
-			// TEXT（不引入任意长度上限），代价是丢掉字面量默认值 —— 两条写入路径
-			//（CreateExtKey / UpdateExtKey）都必给值，缺值在严格模式下响亮报错。
+			// TEXT（不引入任意长度上限）。TEXT 的默认值在 MySQL 上写成表达式形式即可
+			//（DEFAULT ('')，见 effectiveDefault），所以「无长度上限」与「有默认值」
+			// 可以兼得，不需要把写入路径逼成必填。
 			{Name: "remark", Type: TypeText, Default: "''"},
 			{Name: "enabled", Type: TypeInt, Default: "1"},
 			{Name: "daily_token_limit", Type: TypeInt, Default: "0"},
@@ -258,8 +262,8 @@ var conversationRecordsCols = []Column{
 	{Name: "cache_read_tokens", Type: TypeInt, Default: "0"},
 	{Name: "cache_creation_tokens", Type: TypeInt, Default: "0"},
 	{Name: "reasoning_tokens", Type: TypeInt, Default: "0"},
-	// MySQL 的 JSON 列不能带 DEFAULT（8.0.13 前），渲染器会丢掉；写入方
-	// （insertConversationInto）恒给值。
+	// MySQL 的 JSON 列要表达式默认值（DEFAULT ('{}')，见 effectiveDefault）；
+	// 写入方（insertConversationInto）恒给值，这里是与其他方言对齐的兜底。
 	{Name: "request_ir", Type: TypeJSON, Default: "'{}'"},
 	{Name: "response_ir", Type: TypeJSON, Default: "'{}'"},
 	{Name: "request_raw", Type: TypeBytes},
@@ -384,13 +388,13 @@ func (t Table) columnDef(d Dialect, c Column, cfg DDLConfig) (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
-// effectiveDefault 取该列在本方言下真正生效的默认值。MySQL 上 TEXT/JSON 列不能
-// 带字面量默认值（8.0.13 起才允许），渲染器直接丢掉 —— 调用方恒给值，缺值会以
-// "Field 'x' doesn't have a default value" 响亮失败，符合项目「响亮失败优于静默
-// 兜底」的原则。
+// effectiveDefault 取该列在本方言下真正生效的默认值。MySQL 上 BLOB/TEXT/JSON
+// 列拒绝「裸字面量」默认值（错误 1101），但接受把同一个默认值包成表达式的写法
+// （8.0.13+）——所以这里不是丢掉默认值，而是给它包上括号，
+// 让三种方言对同一列的默认语义保持一致（空串/空对象的含义不能因方言而变）。
 //
-// 注意只丢「真的渲染成 TEXT/LONGTEXT/JSON」的列的默认值：给了 Len 的 TypeText
-// 列在 MySQL 上是 VARCHAR，完全可以带默认值（usage_records.status 就是这种）。
+// cfg.ColumnDefaults 里的表达式（如 PG 分表的 nextval）本身就是函数调用，
+// 不能再包一层，原样返回。
 func effectiveDefault(c Column, d Dialect, cfg DDLConfig) string {
 	if v, ok := cfg.ColumnDefaults[c.Name]; ok {
 		return v
@@ -398,21 +402,23 @@ func effectiveDefault(c Column, d Dialect, cfg DDLConfig) string {
 	if c.Default == "" {
 		return ""
 	}
-	if d == DialectMySQL && !c.canDefaultOnMySQL() {
-		return ""
+	if d == DialectMySQL && c.needsParenDefaultMySQL() {
+		return "(" + c.Default + ")"
 	}
 	return c.Default
 }
 
-// canDefaultOnMySQL 报告该列在 MySQL 上能否带字面量默认值。
-func (c Column) canDefaultOnMySQL() bool {
+// needsParenDefaultMySQL 报告该列在 MySQL 上是否必须把默认值写成表达式形式。
+// MySQL 错误 1101 覆盖的四类列：BLOB、TEXT（含 LONGTEXT）、GEOMETRY、JSON。
+// 给了 Len 的 TypeText 在 MySQL 上是 VARCHAR，裸字面量即可。
+func (c Column) needsParenDefaultMySQL() bool {
 	switch c.Type {
 	case TypeText:
-		return c.Len > 0 // 有长度 → VARCHAR，可以；无长度 → TEXT，不行
-	case TypeLongText, TypeJSON:
-		return false
+		return c.Len == 0 // 有长度 → VARCHAR；无长度 → TEXT，必须包括号
+	case TypeLongText, TypeJSON, TypeBytes:
+		return true
 	}
-	return true
+	return false
 }
 
 // pkSuffix 是自增主键在 SQLite / PG 上的内联主键子句。
@@ -525,10 +531,7 @@ func (t Table) indexDef(d Dialect, ix Index, cfg DDLConfig) (string, error) {
 	if ix.Where != "" {
 		where = " WHERE " + ix.Where
 	}
-	name := ix.Name
-	if cfg.IndexSuffix != "" {
-		name = strings.ReplaceAll(name, "{}", cfg.IndexSuffix)
-	}
+	name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 	return fmt.Sprintf("CREATE %sINDEX %s%s ON %s(%s)%s",
 		unique, notExists, name, t.Name, strings.Join(cols, ", "), where), nil
 }
@@ -639,22 +642,22 @@ func (t Table) indexDefMySQL(ix Index, cfg DDLConfig) (string, error) {
 	if err := ix.validate(t); err != nil {
 		return "", err
 	}
-	name := ix.Name
-	if cfg.IndexSuffix != "" {
-		name = strings.ReplaceAll(name, "{}", cfg.IndexSuffix)
-	}
+	name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 	kind := "  KEY"
 	if ix.Unique {
 		kind = "  UNIQUE KEY"
 	}
-	return fmt.Sprintf("%s `%s` (%s)", kind, name, t.indexColumnsMySQL(ix)), nil
+	// 生成列名由「已套用后缀的索引名」派生，所以要把 name 传下去 —— 两侧用同一个
+	// 名字，否则分表上一旦出现部分唯一索引，KEY 会引用一个没被定义的生成列。
+	return fmt.Sprintf("%s `%s` (%s)", kind, name, t.indexColumnsMySQL(ix, name)), nil
 }
 
 // indexColumnsMySQL 渲染 MySQL 的索引列清单：部分唯一索引的最后一列换成生成列。
-func (t Table) indexColumnsMySQL(ix Index) string {
+// name 必须是已套用 IndexSuffix 的索引名（见 indexDefMySQL）。
+func (t Table) indexColumnsMySQL(ix Index, name string) string {
 	cols := append([]string(nil), ix.Columns...)
 	if ix.Unique && ix.Where != "" {
-		cols[len(cols)-1] = generatedColName(ix.Name)
+		cols[len(cols)-1] = generatedColName(name)
 	}
 	quoted := make([]string, len(cols))
 	for i, c := range cols {
@@ -681,14 +684,21 @@ func (t Table) partialUniqueColumns(cfg DDLConfig) ([]string, error) {
 		}
 		// 谓词不成立 → NULL → 不参与唯一性比较（软删除行不占名额）。
 		// 谓词整段塞进 IF() 即可覆盖 "is_active = 1 AND label <> ''" 这类复合谓词。
-		name := ix.Name
-		if cfg.IndexSuffix != "" {
-			name = strings.ReplaceAll(name, "{}", cfg.IndexSuffix)
-		}
+		name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 		out = append(out, fmt.Sprintf("  `%s` %s GENERATED ALWAYS AS (IF(%s, `%s`, NULL)) STORED",
 			generatedColName(name), typ, ix.Where, strings.Fields(last)[0]))
 	}
 	return out, nil
+}
+
+// resolveIndexName 把索引名里的 "{}" 换成 IndexSuffix（按月分表用）。三处渲染
+// （SQLite/PG 索引语句、MySQL 内联 KEY、生成列名）必须走同一个函数，否则后缀会
+// 只应用在其中一两处。
+func resolveIndexName(name, suffix string) string {
+	if suffix == "" {
+		return name
+	}
+	return strings.ReplaceAll(name, "{}", suffix)
 }
 
 // generatedColName 是部分唯一索引降级用的生成列名。MySQL 标识符上限 64 字符，

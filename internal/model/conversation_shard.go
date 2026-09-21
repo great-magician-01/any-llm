@@ -64,7 +64,11 @@ var convShardCache struct {
 func LoadConvShards(d *sql.DB) error {
 	// 粗粒度 LIKE 捞候选，再由 Go 侧的 convShardNameRe 白名单复校验：不同 catalog
 	// 的正则语法不一样（PG 是 ~，MySQL 是 REGEXP），没必要为它分叉。
-	names, err := db.ListTablesLike(d, convShardPfx)
+	//
+	// 前缀必须用 convBaseTable（不带尾下划线）：存量库的旧 conversation_records
+	// 要作为「历史分表」被捞回来，用 convShardPfx 的 LIKE 'conversation_records_%'
+	// 会把它漏掉 —— 历史归档会从读路径整体消失。
+	names, err := db.ListTablesLike(d, convBaseTable)
 	if err != nil {
 		return fmt.Errorf("list conversation shards: %w", err)
 	}

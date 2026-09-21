@@ -67,13 +67,10 @@ func (s *SessionStore) Put(id string, msgs []translate.Message) error {
 	now := time.Now()
 	q := `INSERT INTO response_sessions (id, messages, created_at, last_used_at)
 		 VALUES (?, ?, ?, ?)` + db.UpsertSuffix(s.db, "id", "messages", "last_used_at")
-	args := []any{id, string(data), now, now}
-	// MySQL 的 ON DUPLICATE KEY UPDATE 用 VALUES(col) 引用新值，要把 SET 里出现的
-	// 列按顺序再传一遍；PG/SQLite 引用 excluded.*，不需要额外参数。
-	if db.DialectOf(s.db) == db.DialectMySQL {
-		args = append(args, string(data), now)
-	}
-	_, err = s.db.Exec(db.Rebind(s.db, q), args...)
+	// VALUES(col) 是 SQL 里的函数引用（指向同一条语句 VALUES 子句中该列的值），
+	// 由服务端解析，不占绑定参数位 —— 所以三种方言都只传 4 个参数，无需按方言
+	// 分流。PG/SQLite 的 excluded.<col> 同理。
+	_, err = s.db.Exec(db.Rebind(s.db, q), id, string(data), now, now)
 	if err != nil {
 		return fmt.Errorf("session put: %w", err)
 	}
