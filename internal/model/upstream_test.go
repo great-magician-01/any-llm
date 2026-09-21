@@ -101,6 +101,44 @@ func TestListUpdateDeleteUpstream(t *testing.T) {
 	}
 }
 
+func TestListUpstreamsByEnabled(t *testing.T) {
+	d := testDB(t)
+	CreateUpstream(d, &Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
+	CreateUpstream(d, &Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
+	offID, _ := CreateUpstream(d, &Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
+	off, _ := GetUpstreamByID(d, offID)
+	off.Enabled = false
+	if err := UpdateUpstream(d, off); err != nil {
+		t.Fatal(err)
+	}
+	// 给禁用行挂一个模型：验证过滤后 model_count 子查询仍然正确
+	if err := AddModel(d, offID, "gpt-4o", true, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := ListUpstreams(d)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("all len=%d err=%v", len(all), err)
+	}
+	enabled, err := ListUpstreamsByEnabled(d, true)
+	if err != nil || len(enabled) != 2 {
+		t.Fatalf("enabled len=%d err=%v", len(enabled), err)
+	}
+	for _, u := range enabled {
+		if !u.Enabled {
+			t.Fatalf("enabled filter returned disabled row: %+v", u)
+		}
+	}
+	disabled, err := ListUpstreamsByEnabled(d, false)
+	if err != nil || len(disabled) != 1 || disabled[0].Name != "off" {
+		t.Fatalf("disabled=%+v err=%v", disabled, err)
+	}
+	if disabled[0].ModelCount != 1 {
+		t.Fatalf("model_count=%d want 1", disabled[0].ModelCount)
+	}
+}
+
 func TestModelsCRUD(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})

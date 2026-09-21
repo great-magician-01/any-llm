@@ -2,7 +2,7 @@
 import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
+import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel, type UpstreamStatusFilter } from '../api/upstreams'
 import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '../api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
@@ -13,6 +13,9 @@ import AppIcon from '../components/AppIcon.vue'
 
 const message = useMessage()
 const upstreams = ref<Upstream[]>([])
+// 列表启用状态过滤：本页默认只看启用中；其余页面（Dashboard/Keys/Aliases）
+// 不传参仍拿全量。切换档位即重新查询。
+const statusFilter = ref<UpstreamStatusFilter>('enabled')
 const showForm = ref(false)
 const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
@@ -87,9 +90,14 @@ function isModelsEndpointUnsupported(e: any): boolean {
   return false
 }
 
+// 显式赋值再查询：不依赖 v-model 与 @update:value 的处理顺序
+function setStatusFilter(v: UpstreamStatusFilter) {
+  statusFilter.value = v
+  load()
+}
 async function load() {
   // 余额快照接口不可用时（如后端未升级）不阻塞上游列表
-  const [ups, snaps] = await Promise.all([listUpstreams(), listLatestBalances().catch(() => [] as BalanceSnapshot[])])
+  const [ups, snaps] = await Promise.all([listUpstreams(statusFilter.value), listLatestBalances().catch(() => [] as BalanceSnapshot[])])
   upstreams.value = ups
   const map: Record<number, BalanceSnapshot> = {}
   for (const s of snaps) map[s.upstream_id] = s
@@ -164,6 +172,11 @@ async function toggleEnabled(row: Upstream, v: boolean) {
   try {
     await updateUpstream(row.id as number, { enabled: v })
     row.enabled = v // 响应式行对象，直接改即可；失败时不改，开关弹回原状态
+    // 新状态与当前过滤档位不符时把该行移出列表（等同下次刷新的查询结果），
+    // 避免「筛选启用中却还显示已禁用行」的困惑
+    if ((statusFilter.value === 'enabled' && !v) || (statusFilter.value === 'disabled' && v)) {
+      upstreams.value = upstreams.value.filter(u => u.id !== row.id)
+    }
   } catch (e) {
     message.error((v ? '启用失败：' : '禁用失败：') + errMsg(e))
   }
@@ -472,7 +485,12 @@ onMounted(() => {
 
     <n-card title="上游列表" class="panel">
       <template #header-extra>
-        <n-space :size="8" :wrap="false">
+        <n-space :size="8" :wrap="false" align="center">
+          <n-radio-group :value="statusFilter" size="small" @update:value="setStatusFilter">
+            <n-radio-button value="enabled">启用中</n-radio-button>
+            <n-radio-button value="disabled">已禁用</n-radio-button>
+            <n-radio-button value="all">全部</n-radio-button>
+          </n-radio-group>
           <n-button size="small" quaternary @click="chooseImportFile">
             <template #icon><AppIcon name="upload" :size="14" /></template>
             导入配置

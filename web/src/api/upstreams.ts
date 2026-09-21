@@ -16,8 +16,12 @@ export interface UpstreamModel {
   context_length: number; max_output_length: number
 }
 
-export async function listUpstreams() {
-  const { data } = await client.get('/upstreams')
+// 上游列表的启用状态过滤；缺省（不传）后端返回全量——Dashboard/Keys/Aliases
+// 等页面依赖全量口径，只有上游管理页默认传 'enabled'。
+export type UpstreamStatusFilter = 'enabled' | 'disabled' | 'all'
+
+export async function listUpstreams(status?: UpstreamStatusFilter) {
+  const { data } = await client.get('/upstreams', { params: status ? { status } : {} })
   return data.data as Upstream[]
 }
 

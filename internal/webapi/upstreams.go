@@ -12,7 +12,21 @@ import (
 )
 
 func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
-	list, err := model.ListUpstreams(a.db)
+	// ?status=enabled|disabled|all：缺省 all（Dashboard/Keys/Aliases 等页面
+	// 依赖全量口径，不能动）；上游管理页默认显式传 enabled。
+	var list []model.Upstream
+	var err error
+	switch r.URL.Query().Get("status") {
+	case "", "all":
+		list, err = model.ListUpstreams(a.db)
+	case "enabled":
+		list, err = model.ListUpstreamsByEnabled(a.db, true)
+	case "disabled":
+		list, err = model.ListUpstreamsByEnabled(a.db, false)
+	default:
+		writeJSON(w, 400, map[string]any{"error": "status must be enabled, disabled or all"})
+		return
+	}
 	if err != nil {
 		logger.Error("admin: list upstreams failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
