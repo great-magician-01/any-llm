@@ -3,6 +3,7 @@ package webapi
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -13,19 +14,18 @@ import (
 
 func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 	// ?status=enabled|disabled|all：缺省 all（Dashboard/Keys/Aliases 等页面
-	// 依赖全量口径，不能动）；上游管理页默认显式传 enabled。
+	// 依赖全量口径，不能动）；上游管理页默认显式传 enabled。未知值同样按全量
+	// 返回：该参数引入前任何 status= 都被忽略并返回全量，硬 400 会打破存量的
+	// 书签/探针/集成调用。
 	var list []model.Upstream
 	var err error
 	switch r.URL.Query().Get("status") {
-	case "", "all":
-		list, err = model.ListUpstreams(a.db)
 	case "enabled":
 		list, err = model.ListUpstreamsByEnabled(a.db, true)
 	case "disabled":
 		list, err = model.ListUpstreamsByEnabled(a.db, false)
 	default:
-		writeJSON(w, 400, map[string]any{"error": "status must be enabled, disabled or all"})
-		return
+		list, err = model.ListUpstreams(a.db)
 	}
 	if err != nil {
 		logger.Error("admin: list upstreams failed", "err", err)
@@ -116,7 +116,15 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 			logger.Warn("admin: create upstream fetch models failed", "name", req.Name, "id", id, "err", err)
 		}
 	}
-	u, _ = model.GetUpstreamByID(a.db, id)
+	// 读回完整行返回（created_at 等字段只有库里有）。读回失败（瞬时 DB 错误，
+	// 或行被并发软删）不能吞：u 会是 nil，下一行 mask 直接 panic。行已建好，
+	// 如实报 500，前端重拉列表即可看到。
+	u, err := model.GetUpstreamByID(a.db, id)
+	if err != nil {
+		logger.Error("admin: reload created upstream failed", "id", id, "err", err)
+		writeJSON(w, 500, map[string]any{"error": "upstream created but reload failed: " + err.Error()})
+		return
+	}
 	u.APIKey = mask(u.APIKey)
 	writeJSON(w, 200, u)
 }
@@ -133,8 +141,8 @@ func (a *API) getUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
-	u, err := model.GetUpstreamByID(a.db, id)
-	if err != nil {
+	// 404 预检：行不存在直接拒。真正的合并以 writeSync 闭包里的重读为准（见下）。
+	if _, err := model.GetUpstreamByID(a.db, id); err != nil {
 		logger.Warn("admin: update upstream not found", "id", id, "err", err)
 		writeJSON(w, 404, map[string]any{"error": "not found"})
 		return
@@ -167,51 +175,64 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
 		return
 	}
-	if req.Name != "" {
-		u.Name = req.Name
-	}
-	if req.BaseURL != "" {
-		u.BaseURL = req.BaseURL
-	}
-	// Skip API key update when:
-	//   - the client sent an empty value (standard "no change" signal), or
-	//   - the client sent back the masked placeholder returned by listUpstreams
-	//     (e.g. "sk-y****T5qX"). Without this guard, editing an upstream in the
-	//     admin UI would overwrite the real key with the masked display string.
-	if req.APIKey != "" && !isMaskedKey(req.APIKey) {
-		u.APIKey = req.APIKey
-	}
 	if req.Format != "" && req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
 		logger.Warn("admin: update upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
 	}
-	if req.Format != "" {
-		u.Format = req.Format
-	}
-	if req.DailyTokenLimit != nil {
-		u.DailyTokenLimit = *req.DailyTokenLimit
-	}
-	if req.MonthlyTokenLimit != nil {
-		u.MonthlyTokenLimit = *req.MonthlyTokenLimit
-	}
-	if req.MaxConcurrent != nil {
-		u.MaxConcurrent = *req.MaxConcurrent
-	}
-	if req.Enabled != nil {
-		u.Enabled = *req.Enabled
-	}
-	// 必须在 UpdateUpstream（全量覆盖）之前合并；缺省保留现状，null 清除
-	if req.ExpiresAt.set {
-		u.ExpiresAt = req.ExpiresAt.value()
-	}
-	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateUpstream(d, u) }); err != nil {
-		logger.Error("admin: update upstream DB write failed", "id", id, "name", u.Name, "err", err)
+	// 读-改-写整个放进 writeSync 闭包：writer 串行化所有 DB 写，闭包里重读到的
+	// 是上一次写提交后的最新行，合并 PATCH 与全量覆写之间不会有别的写插入。
+	// 若在闭包外读好再写，一个并发写（完整保存/配置导入）会被这次写覆盖回旧值
+	// ——开关切换这种只带 enabled 的 PATCH 会把别人刚存的 expires_at/api_key/限额
+	// 全部抹回。
+	var merged *model.Upstream
+	if err := a.writeSync(func(d *sql.DB) error {
+		u, e := model.GetUpstreamByID(d, id)
+		if e != nil {
+			return e // 预检之后又被并发软删：报 400，列表重拉即消失
+		}
+		if req.Name != "" {
+			u.Name = req.Name
+		}
+		if req.BaseURL != "" {
+			u.BaseURL = req.BaseURL
+		}
+		// Skip API key update when:
+		//   - the client sent an empty value (standard "no change" signal), or
+		//   - the client sent back the masked placeholder returned by listUpstreams
+		//     (e.g. "sk-y****T5qX"). Without this guard, editing an upstream in the
+		//     admin UI would overwrite the real key with the masked display string.
+		if req.APIKey != "" && !isMaskedKey(req.APIKey) {
+			u.APIKey = req.APIKey
+		}
+		if req.Format != "" {
+			u.Format = req.Format
+		}
+		if req.DailyTokenLimit != nil {
+			u.DailyTokenLimit = *req.DailyTokenLimit
+		}
+		if req.MonthlyTokenLimit != nil {
+			u.MonthlyTokenLimit = *req.MonthlyTokenLimit
+		}
+		if req.MaxConcurrent != nil {
+			u.MaxConcurrent = *req.MaxConcurrent
+		}
+		if req.Enabled != nil {
+			u.Enabled = *req.Enabled
+		}
+		// 必须在 UpdateUpstream（全量覆盖）之前合并；缺省保留现状，null 清除
+		if req.ExpiresAt.set {
+			u.ExpiresAt = req.ExpiresAt.value()
+		}
+		merged = u
+		return model.UpdateUpstream(d, u)
+	}); err != nil {
+		logger.Error("admin: update upstream DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
-	u.APIKey = mask(u.APIKey)
-	writeJSON(w, 200, u)
+	merged.APIKey = mask(merged.APIKey)
+	writeJSON(w, 200, merged)
 }
 
 func (a *API) deleteUpstream(w http.ResponseWriter, r *http.Request, id int64) {
@@ -275,6 +296,12 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 	if err := a.writeSync(func(d *sql.DB) error {
 		return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength, req.Multimodal)
 	}); err != nil {
+		if errors.Is(err, model.ErrModelExists) {
+			// 已存在的模型走编辑：添加对已存在同名模型静默 200 会让管理员以为
+			// 刚配的字段生效了，其实什么都没改。
+			writeJSON(w, 409, map[string]any{"error": "model already exists; use edit to change it"})
+			return
+		}
 		logger.Error("admin: add model failed", "upstream_id", upstreamID, "model", req.ModelName, "err", err)
 		writeSyncErr(w, 400, err)
 		return
@@ -315,7 +342,12 @@ func (a *API) updateModel(w http.ResponseWriter, r *http.Request, upstreamID, mi
 		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
 		return
 	}
-	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, mid, cl, ml, req.Multimodal) }); err != nil {
+	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, upstreamID, mid, cl, ml, req.Multimodal) }); err != nil {
+		// 模型不存在、已软删或不属于路径里的上游：404 而非假成功。
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, 404, map[string]any{"error": "model not found"})
+			return
+		}
 		writeSyncErr(w, 400, err)
 		return
 	}

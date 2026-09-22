@@ -2,6 +2,7 @@ package model
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -366,7 +367,7 @@ func TestModelMultimodal(t *testing.T) {
 	}
 
 	// UpdateModel 打开开关
-	if err := UpdateModel(d, models[0].ID, models[0].ContextLength, models[0].MaxOutputLength, true); err != nil {
+	if err := UpdateModel(d, uid, models[0].ID, models[0].ContextLength, models[0].MaxOutputLength, true); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -467,5 +468,57 @@ func TestUpstreamDisableEnable(t *testing.T) {
 	again, _ := GetUpstreamByID(d, uid)
 	if !again.Enabled {
 		t.Fatal("upstream should be re-enabled")
+	}
+}
+
+// 添加已存在的活跃模型返回 ErrModelExists：静默 200 会让管理员以为新配的字段
+// （长度、多模态）生效了，实际什么都没改。软删行的同名复活不受影响（另一条
+// 测试覆盖）。
+func TestAddModelDuplicateRejected(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err := AddModel(d, uid, "m1", false, 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddModel(d, uid, "m1", true, 1000, 100, true); !errors.Is(err, ErrModelExists) {
+		t.Fatalf("duplicate add: err=%v, want ErrModelExists", err)
+	}
+	// 原行未被改动
+	models, _ := ListModels(d, uid)
+	if len(models) != 1 || models[0].ContextLength != DefaultModelContextLength || models[0].Multimodal {
+		t.Fatalf("duplicate add should not touch the existing row: %+v", models)
+	}
+}
+
+// UpdateModel 限定 upstream_id：跨上游或不存在的模型返回 ErrNoRows 而不是假
+// 成功（更新 0 行也 200 会让管理端以为保存成功）。
+func TestUpdateModelScopedByUpstream(t *testing.T) {
+	d := testDB(t)
+	u1, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u2, _ := CreateUpstream(d, &Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err := AddModel(d, u1, "m1", false, 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	models, _ := ListModels(d, u1)
+	mid := models[0].ID
+
+	if err := UpdateModel(d, u2, mid, 1000, 100, true); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cross-upstream update: err=%v, want ErrNoRows", err)
+	}
+	if err := UpdateModel(d, u1, mid+9999, 1000, 100, false); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing model: err=%v, want ErrNoRows", err)
+	}
+	// 跨上游那次不能改动原行
+	models, _ = ListModels(d, u1)
+	if models[0].ContextLength != DefaultModelContextLength || models[0].Multimodal {
+		t.Fatalf("cross-upstream update leaked: %+v", models[0])
+	}
+	// 正常更新仍然成功
+	if err := UpdateModel(d, u1, mid, 1000, 100, true); err != nil {
+		t.Fatal(err)
+	}
+	models, _ = ListModels(d, u1)
+	if models[0].ContextLength != 1000 || !models[0].Multimodal {
+		t.Fatalf("legit update did not land: %+v", models[0])
 	}
 }

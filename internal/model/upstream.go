@@ -2,6 +2,7 @@ package model
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -194,6 +195,11 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 	return out, nil
 }
 
+// ErrModelExists 表示要添加的模型在该上游已有活跃同名行。AddModel 用它拒绝
+// 假成功：管理端「添加」若对已存在模型静默 200，管理员会以为刚配的字段
+// （长度、多模态）生效了，其实什么都没改——已存在的模型请走 UpdateModel。
+var ErrModelExists = errors.New("model already exists")
+
 func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contextLength, maxOutputLength int, multimodal bool) error {
 	m, mm := 0, 0
 	if manual {
@@ -208,14 +214,14 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	if maxOutputLength <= 0 {
 		maxOutputLength = DefaultModelMaxOutputLength
 	}
-	// 已有活跃同名行则无需动作（等效于下面的 ON CONFLICT DO NOTHING，
-	// 提前判断避免误复活同名的软删除死行造成唯一索引冲突）。
+	// 已有活跃同名行：响亮拒绝而不是静默 200（见 ErrModelExists）。提前判断也
+	// 避免了误复活同名的软删除死行造成唯一索引冲突。
 	var active int
 	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 1`), upstreamID, modelName).Scan(&active); err != nil {
 		return fmt.Errorf("check model: %w", err)
 	}
 	if active > 0 {
-		return nil
+		return fmt.Errorf("add model %q: %w", modelName, ErrModelExists)
 	}
 	// 优先复活同名的软删除行（删除后重加是常见路径；直接插入会累积同名
 	// 死行，还会在 ReplaceModels 复活时撞部分唯一索引）。只复活最早一行，
@@ -239,7 +245,12 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	return nil
 }
 
-func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int, multimodal bool) error {
+// UpdateModel 更新模型的长度与多模态标记。WHERE 同时限定 upstream_id：路径里的
+// 上游 ID 与模型 ID 不匹配（或模型不存在/已软删）时更新 0 行，返回包装过的
+// sql.ErrNoRows，调用方据此回 404 而非假成功。先查后写而非看 RowsAffected：
+// MySQL 驱动默认返回「值有变化」的行数，原值重写在它那里是 0，会误报 404。
+// 全部写都经 db.Writer 串行化，查与写之间不会有别的写插入。
+func UpdateModel(d *sql.DB, upstreamID, id int64, contextLength, maxOutputLength int, multimodal bool) error {
 	if contextLength <= 0 {
 		contextLength = DefaultModelContextLength
 	}
@@ -250,8 +261,15 @@ func UpdateModel(d *sql.DB, id int64, contextLength, maxOutputLength int, multim
 	if multimodal {
 		mm = 1
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=?, multimodal=? WHERE id=? AND is_active = 1`),
-		contextLength, maxOutputLength, mm, id)
+	var exists int
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE id=? AND upstream_id=? AND is_active = 1`), id, upstreamID).Scan(&exists); err != nil {
+		return fmt.Errorf("check model %d: %w", id, err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("update model %d: %w", id, sql.ErrNoRows)
+	}
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=?, multimodal=? WHERE id=? AND upstream_id=? AND is_active = 1`),
+		contextLength, maxOutputLength, mm, id, upstreamID)
 	if err != nil {
 		return fmt.Errorf("update model: %w", err)
 	}
