@@ -73,31 +73,17 @@ func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	return u, nil
 }
 
-// ListUpstreams 返回全部未软删上游（含已禁用）。网关 /v1/models、余额轮询、
-// 配置导出等调用方需要全量行再自行过滤（禁用跳过、到期隐藏），不要给它加
-// 启用状态过滤。
-func ListUpstreams(d *sql.DB) ([]Upstream, error) {
-	return listUpstreams(d, nil)
-}
-
-// ListUpstreamsByEnabled 按启用状态过滤的上游列表：true 仅启用中，false 仅
-// 已禁用。仅供管理端列表接口按查询参数过滤；全量口径请用 ListUpstreams。
-func ListUpstreamsByEnabled(d *sql.DB, enabled bool) ([]Upstream, error) {
-	return listUpstreams(d, &enabled)
-}
-
-func listUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
+// ListUpstreams 返回全部未软删上游；enabled 非 nil 时按启用状态过滤（仅供管理端
+// 列表接口的 ?status 参数）。网关 /v1/models、余额轮询、配置导出等调用方传 nil
+// 拿全量再自行过滤（禁用跳过、到期隐藏），全量口径不能动。
+func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 	q := `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
 		FROM upstreams u WHERE u.is_active = 1`
 	var args []any
 	if enabled != nil {
-		en := 0
-		if *enabled {
-			en = 1
-		}
 		q += ` AND u.enabled = ?`
-		args = append(args, en)
+		args = append(args, b2i(*enabled))
 	}
 	q += ` ORDER BY u.id`
 	rows, err := d.Query(db.Rebind(d, q), args...)
@@ -123,12 +109,8 @@ func listUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 // UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
 // （enabled 等未赋值字段会把已有值清掉）。
 func UpdateUpstream(d *sql.DB, u *Upstream) error {
-	en := 0
-	if u.Enabled {
-		en = 1
-	}
 	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=? WHERE id=? AND is_active = 1`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, en, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), u.ID)
+		u.Name, u.BaseURL, u.APIKey, u.Format, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}
@@ -200,28 +182,26 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 // （长度、多模态）生效了，其实什么都没改——已存在的模型请走 UpdateModel。
 var ErrModelExists = errors.New("model already exists")
 
-func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contextLength, maxOutputLength int, multimodal bool) error {
-	m, mm := 0, 0
-	if manual {
-		m = 1
+// AddModel 添加一个模型。参数打包成 UpstreamModel 而非一串位置参数：manual 与
+// multimodal 两个相邻布尔在位置参数下交换了也能编译过，缺参/错序只有运行时才
+// 暴露（PR #30 修的就是漏参）。用 m.ModelName / m.Manual / m.ContextLength /
+// m.MaxOutputLength / m.Multimodal；长度为 0 时归一为默认值。
+func AddModel(d *sql.DB, upstreamID int64, m UpstreamModel) error {
+	cl, ml := m.ContextLength, m.MaxOutputLength
+	if cl <= 0 {
+		cl = DefaultModelContextLength
 	}
-	if multimodal {
-		mm = 1
-	}
-	if contextLength <= 0 {
-		contextLength = DefaultModelContextLength
-	}
-	if maxOutputLength <= 0 {
-		maxOutputLength = DefaultModelMaxOutputLength
+	if ml <= 0 {
+		ml = DefaultModelMaxOutputLength
 	}
 	// 已有活跃同名行：响亮拒绝而不是静默 200（见 ErrModelExists）。提前判断也
 	// 避免了误复活同名的软删除死行造成唯一索引冲突。
 	var active int
-	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 1`), upstreamID, modelName).Scan(&active); err != nil {
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 1`), upstreamID, m.ModelName).Scan(&active); err != nil {
 		return fmt.Errorf("check model: %w", err)
 	}
 	if active > 0 {
-		return fmt.Errorf("add model %q: %w", modelName, ErrModelExists)
+		return fmt.Errorf("add model %q: %w", m.ModelName, ErrModelExists)
 	}
 	// 优先复活同名的软删除行（删除后重加是常见路径；直接插入会累积同名
 	// 死行，还会在 ReplaceModels 复活时撞部分唯一索引）。只复活最早一行，
@@ -229,7 +209,7 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	// 子查询用派生表包一层：MySQL 不允许在 UPDATE 的子查询里引用正在更新的表
 	// （错误 1093）。SQLite/PG 接受这种写法，故三种方言共用、无需分支。
 	res, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=?, multimodal=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
-		m, contextLength, maxOutputLength, mm, upstreamID, modelName)
+		b2i(m.Manual), cl, ml, b2i(m.Multimodal), upstreamID, m.ModelName)
 	if err != nil {
 		return fmt.Errorf("revive model: %w", err)
 	}
@@ -238,38 +218,36 @@ func AddModel(d *sql.DB, upstreamID int64, modelName string, manual bool, contex
 	}
 	// 唯一性由「仅活跃行」的部分唯一索引保证；冲突时忽略。
 	_, err = d.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length, multimodal) VALUES (?,?,?,?,?,?)`+db.ConflictIgnoreSuffix(d, "upstream_id, model_name")),
-		upstreamID, modelName, m, contextLength, maxOutputLength, mm)
+		upstreamID, m.ModelName, b2i(m.Manual), cl, ml, b2i(m.Multimodal))
 	if err != nil {
 		return fmt.Errorf("add model: %w", err)
 	}
 	return nil
 }
 
-// UpdateModel 更新模型的长度与多模态标记。WHERE 同时限定 upstream_id：路径里的
-// 上游 ID 与模型 ID 不匹配（或模型不存在/已软删）时更新 0 行，返回包装过的
-// sql.ErrNoRows，调用方据此回 404 而非假成功。先查后写而非看 RowsAffected：
-// MySQL 驱动默认返回「值有变化」的行数，原值重写在它那里是 0，会误报 404。
-// 全部写都经 db.Writer 串行化，查与写之间不会有别的写插入。
-func UpdateModel(d *sql.DB, upstreamID, id int64, contextLength, maxOutputLength int, multimodal bool) error {
-	if contextLength <= 0 {
-		contextLength = DefaultModelContextLength
+// UpdateModel 更新模型的长度与多模态标记（m.ID 定位行）。WHERE 同时限定
+// upstream_id：路径里的上游 ID 与模型 ID 不匹配（或模型不存在/已软删）时
+// 更新 0 行，返回包装过的 sql.ErrNoRows，调用方据此回 404 而非假成功。
+// 先查后写而非看 RowsAffected：MySQL 驱动默认返回「值有变化」的行数，原值
+// 重写在它那里是 0，会误报 404。全部写都经 db.Writer 串行化，查与写之间
+// 不会有别的写插入。长度为 0 时归一为默认值。
+func UpdateModel(d *sql.DB, upstreamID int64, m UpstreamModel) error {
+	cl, ml := m.ContextLength, m.MaxOutputLength
+	if cl <= 0 {
+		cl = DefaultModelContextLength
 	}
-	if maxOutputLength <= 0 {
-		maxOutputLength = DefaultModelMaxOutputLength
-	}
-	mm := 0
-	if multimodal {
-		mm = 1
+	if ml <= 0 {
+		ml = DefaultModelMaxOutputLength
 	}
 	var exists int
-	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE id=? AND upstream_id=? AND is_active = 1`), id, upstreamID).Scan(&exists); err != nil {
-		return fmt.Errorf("check model %d: %w", id, err)
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstream_models WHERE id=? AND upstream_id=? AND is_active = 1`), m.ID, upstreamID).Scan(&exists); err != nil {
+		return fmt.Errorf("check model %d: %w", m.ID, err)
 	}
 	if exists == 0 {
-		return fmt.Errorf("update model %d: %w", id, sql.ErrNoRows)
+		return fmt.Errorf("update model %d: %w", m.ID, sql.ErrNoRows)
 	}
 	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET context_length=?, max_output_length=?, multimodal=? WHERE id=? AND upstream_id=? AND is_active = 1`),
-		contextLength, maxOutputLength, mm, id, upstreamID)
+		cl, ml, b2i(m.Multimodal), m.ID, upstreamID)
 	if err != nil {
 		return fmt.Errorf("update model: %w", err)
 	}
@@ -300,14 +278,6 @@ func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) err
 		return fmt.Errorf("clear models: %w", err)
 	}
 	for _, m := range models {
-		manual := 0
-		if m.Manual {
-			manual = 1
-		}
-		mm := 0
-		if m.Multimodal {
-			mm = 1
-		}
 		cl, ml := m.ContextLength, m.MaxOutputLength
 		if cl <= 0 {
 			cl = DefaultModelContextLength
@@ -318,7 +288,7 @@ func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) err
 		// 优先复活同名软删行，防历史库同名死行累积（与 AddModel 同策略）。
 		// 派生表包一层绕开 MySQL 错误 1093（不能引用正在更新的表）。
 		res, err := tx.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?, context_length=?, max_output_length=?, multimodal=? WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
-			manual, cl, ml, mm, upstreamID, m.ModelName)
+			b2i(m.Manual), cl, ml, b2i(m.Multimodal), upstreamID, m.ModelName)
 		if err != nil {
 			return fmt.Errorf("revive model %s: %w", m.ModelName, err)
 		}
@@ -326,7 +296,7 @@ func ReplaceModelsExact(d *sql.DB, upstreamID int64, models []UpstreamModel) err
 			continue
 		}
 		if _, err := tx.Exec(db.Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual, context_length, max_output_length, multimodal) VALUES (?,?,?,?,?,?)`),
-			upstreamID, m.ModelName, manual, cl, ml, mm); err != nil {
+			upstreamID, m.ModelName, b2i(m.Manual), cl, ml, b2i(m.Multimodal)); err != nil {
 			return fmt.Errorf("insert model %s: %w", m.ModelName, err)
 		}
 	}
@@ -375,9 +345,7 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 		mm := 0
 		if ok {
 			cl, ml = p.cl, p.ml
-			if p.multimodal {
-				mm = 1
-			}
+			mm = b2i(p.multimodal)
 		}
 		if ok && p.manual {
 			// 同名手动模型仍活跃：跳过复活与插入，保留手动行。

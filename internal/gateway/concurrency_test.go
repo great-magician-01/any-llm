@@ -152,7 +152,7 @@ func TestCompletionConcurrencyLimit429(t *testing.T) {
 	srv := okUpstreamServer(t, "ok-after-release")
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -236,7 +236,7 @@ func TestStreamConcurrencyLimit429(t *testing.T) {
 	srv := okUpstreamServer(t, "unused")
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -269,7 +269,7 @@ func TestCompletionConcurrencySlotReleased(t *testing.T) {
 	// 非流式：cap 1，连续两请求（第二个成功说明第一个的槽位已释放）。
 	jsonSrv := okUpstreamServer(t, "non-stream-ok")
 	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "plain", BaseURL: jsonSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid1, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid1, model.UpstreamModel{ModelName: "gpt-4o"})
 	for i := 0; i < 2; i++ {
 		w := aliasRequest(t, g, k.Key, `{"model":"plain/gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "non-stream-ok") {
@@ -287,7 +287,7 @@ func TestCompletionConcurrencySlotReleased(t *testing.T) {
 	}))
 	defer sseSrv.Close()
 	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "sse", BaseURL: sseSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid2, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid2, model.UpstreamModel{ModelName: "gpt-4o"})
 	for i := 0; i < 2; i++ {
 		w := aliasRequest(t, g, k.Key, `{"model":"sse/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 		if w.Code != 200 {

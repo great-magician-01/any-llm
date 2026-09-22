@@ -80,9 +80,7 @@ func TestListUpstreamsStatusFilter(t *testing.T) {
 
 	count := func(url string) int {
 		t.Helper()
-		req := httptest.NewRequest("GET", url, nil)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, req)
+		w := doAliasReq(t, a, "GET", url, nil)
 		if w.Code != 200 {
 			t.Fatalf("%s: status=%d body=%s", url, w.Code, w.Body.String())
 		}
@@ -122,7 +120,7 @@ func TestDeleteUpstream(t *testing.T) {
 	if w.Code != 200 && w.Code != 204 {
 		t.Fatalf("status=%d", w.Code)
 	}
-	list, _ := model.ListUpstreams(d)
+	list, _ := model.ListUpstreams(d, nil)
 	if len(list) != 0 {
 		t.Fatalf("after delete len=%d", len(list))
 	}
@@ -158,17 +156,11 @@ func TestModelMultimodalAPI(t *testing.T) {
 	base := "/api/admin/upstreams/" + strconv.FormatInt(uid, 10) + "/models"
 	post := func(path string, body map[string]any) int {
 		t.Helper()
-		b, _ := json.Marshal(body)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, bytes.NewReader(b)))
-		return w.Code
+		return doAliasReq(t, a, "POST", path, body).Code
 	}
 	put := func(path string, body map[string]any) int {
 		t.Helper()
-		b, _ := json.Marshal(body)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, httptest.NewRequest("PUT", path, bytes.NewReader(b)))
-		return w.Code
+		return doAliasReq(t, a, "PUT", path, body).Code
 	}
 
 	// 不传 multimodal → 默认否
@@ -700,10 +692,7 @@ func TestModelWriteErrorSemantics(t *testing.T) {
 	base := "/api/admin/upstreams/" + strconv.FormatInt(uid, 10) + "/models"
 	call := func(method, path string, body map[string]any) int {
 		t.Helper()
-		b, _ := json.Marshal(body)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, httptest.NewRequest(method, path, bytes.NewReader(b)))
-		return w.Code
+		return doAliasReq(t, a, method, path, body).Code
 	}
 
 	add := map[string]any{"model_name": "m1", "context_length": 1000, "max_output_length": 100}

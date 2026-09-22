@@ -49,7 +49,7 @@ func TestCreateAndGetUpstream(t *testing.T) {
 	if byName.ID != id || byName.MaxConcurrent != 42 {
 		t.Fatalf("byName=%+v want id=%d", byName, id)
 	}
-	list, err := ListUpstreams(d)
+	list, err := ListUpstreams(d, nil)
 	if err != nil || len(list) != 1 || list[0].MaxConcurrent != 42 {
 		t.Fatalf("list=%+v err=%v", list, err)
 	}
@@ -77,7 +77,7 @@ func TestListUpdateDeleteUpstream(t *testing.T) {
 	d := testDB(t)
 	id, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	CreateUpstream(d, &Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
-	list, err := ListUpstreams(d)
+	list, err := ListUpstreams(d, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,13 +96,13 @@ func TestListUpdateDeleteUpstream(t *testing.T) {
 	if err := DeleteUpstream(d, id); err != nil {
 		t.Fatal(err)
 	}
-	list, _ = ListUpstreams(d)
+	list, _ = ListUpstreams(d, nil)
 	if len(list) != 1 {
 		t.Fatalf("after delete len=%d", len(list))
 	}
 }
 
-func TestListUpstreamsByEnabled(t *testing.T) {
+func TestListUpstreamsEnabledFilter(t *testing.T) {
 	d := testDB(t)
 	CreateUpstream(d, &Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	CreateUpstream(d, &Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
@@ -114,15 +114,16 @@ func TestListUpstreamsByEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 给禁用行挂一个模型：验证过滤后 model_count 子查询仍然正确
-	if err := AddModel(d, offID, "gpt-4o", true, 0, 0, false); err != nil {
+	if err := AddModel(d, offID, UpstreamModel{ModelName: "gpt-4o", Manual: true}); err != nil {
 		t.Fatal(err)
 	}
 
-	all, err := ListUpstreams(d)
+	yes, no := true, false
+	all, err := ListUpstreams(d, nil)
 	if err != nil || len(all) != 3 {
 		t.Fatalf("all len=%d err=%v", len(all), err)
 	}
-	enabled, err := ListUpstreamsByEnabled(d, true)
+	enabled, err := ListUpstreams(d, &yes)
 	if err != nil || len(enabled) != 2 {
 		t.Fatalf("enabled len=%d err=%v", len(enabled), err)
 	}
@@ -131,7 +132,7 @@ func TestListUpstreamsByEnabled(t *testing.T) {
 			t.Fatalf("enabled filter returned disabled row: %+v", u)
 		}
 	}
-	disabled, err := ListUpstreamsByEnabled(d, false)
+	disabled, err := ListUpstreams(d, &no)
 	if err != nil || len(disabled) != 1 || disabled[0].Name != "off" {
 		t.Fatalf("disabled=%+v err=%v", disabled, err)
 	}
@@ -143,10 +144,10 @@ func TestListUpstreamsByEnabled(t *testing.T) {
 func TestModelsCRUD(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	if err := AddModel(d, uid, "gpt-4o", true, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "gpt-4o", Manual: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "gpt-4o-mini", false, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "gpt-4o-mini"}); err != nil {
 		t.Fatal(err)
 	}
 	models, err := ListModels(d, uid)
@@ -185,7 +186,7 @@ func TestModelsCRUD(t *testing.T) {
 func TestDeleteUpstreamCascadesModels(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m1"})
 	if err := DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +205,7 @@ func TestDeleteUpstreamCascadesModels(t *testing.T) {
 func TestSoftDeleteUpstream(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m1"})
 
 	if err := DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
@@ -215,7 +216,7 @@ func TestSoftDeleteUpstream(t *testing.T) {
 	if _, err := GetUpstreamByID(d, uid); err == nil {
 		t.Fatal("deleted upstream still resolvable by id")
 	}
-	list, _ := ListUpstreams(d)
+	list, _ := ListUpstreams(d, nil)
 	if len(list) != 0 {
 		t.Fatalf("list after delete len=%d", len(list))
 	}
@@ -245,8 +246,8 @@ func TestSoftDeleteUpstream(t *testing.T) {
 func TestSoftDeleteModelAndRevive(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0, false)
-	AddModel(d, uid, "m2", false, 0, 0, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m1"})
+	AddModel(d, uid, UpstreamModel{ModelName: "m2"})
 
 	// 同步只保留 m1：m2 软删除
 	if err := ReplaceModels(d, uid, []string{"m1"}); err != nil {
@@ -283,7 +284,7 @@ func TestSoftDeleteModelAndRevive(t *testing.T) {
 			}
 		}
 	}
-	if err := AddModel(d, uid, "m1", true, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1", Manual: true}); err != nil {
 		t.Fatalf("re-add same model name after soft delete: %v", err)
 	}
 }
@@ -304,7 +305,7 @@ func TestReplaceModelsSkipsManualConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 3. 管理员手动添加同名模型 m
-	if err := AddModel(d, uid, "m", true, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m", Manual: true}); err != nil {
 		t.Fatal(err)
 	}
 	// 4. 再次同步不得失败，手动行保持活跃且不累积重复行
@@ -326,13 +327,13 @@ func TestReplaceModelsSkipsManualConflict(t *testing.T) {
 func TestAddModelRevivesSoftDeleted(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m", false, 0, 0, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m"})
 	models, _ := ListModels(d, uid)
 	origID := models[0].ID
 	if err := DeleteModel(d, origID); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "m", true, 1000, 2000, true); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m", Manual: true, ContextLength: 1000, MaxOutputLength: 2000, Multimodal: true}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -358,7 +359,7 @@ func TestModelMultimodal(t *testing.T) {
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
 
 	// 新增默认非多模态
-	if err := AddModel(d, uid, "m1", false, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1"}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ := ListModels(d, uid)
@@ -367,7 +368,7 @@ func TestModelMultimodal(t *testing.T) {
 	}
 
 	// UpdateModel 打开开关
-	if err := UpdateModel(d, uid, models[0].ID, models[0].ContextLength, models[0].MaxOutputLength, true); err != nil {
+	if err := UpdateModel(d, uid, UpstreamModel{ID: models[0].ID, ContextLength: models[0].ContextLength, MaxOutputLength: models[0].MaxOutputLength, Multimodal: true}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -395,7 +396,7 @@ func TestModelMultimodal(t *testing.T) {
 	if err := DeleteModel(d, byName["m1"].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "m1", true, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1", Manual: true}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -430,7 +431,7 @@ func TestUpdateIgnoresSoftDeleted(t *testing.T) {
 func TestUpstreamDisableEnable(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 0, 0, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m1"})
 
 	// 新建默认启用
 	u, _ := GetUpstreamByID(d, uid)
@@ -451,7 +452,7 @@ func TestUpstreamDisableEnable(t *testing.T) {
 	if err != nil || byName.Enabled {
 		t.Fatalf("byName=%+v err=%v", byName, err)
 	}
-	list, _ := ListUpstreams(d)
+	list, _ := ListUpstreams(d, nil)
 	if len(list) != 1 || list[0].Enabled {
 		t.Fatalf("list=%+v", list)
 	}
@@ -477,10 +478,10 @@ func TestUpstreamDisableEnable(t *testing.T) {
 func TestAddModelDuplicateRejected(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	if err := AddModel(d, uid, "m1", false, 0, 0, false); err != nil {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := AddModel(d, uid, "m1", true, 1000, 100, true); !errors.Is(err, ErrModelExists) {
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1", Manual: true, ContextLength: 1000, MaxOutputLength: 100, Multimodal: true}); !errors.Is(err, ErrModelExists) {
 		t.Fatalf("duplicate add: err=%v, want ErrModelExists", err)
 	}
 	// 原行未被改动
@@ -496,16 +497,16 @@ func TestUpdateModelScopedByUpstream(t *testing.T) {
 	d := testDB(t)
 	u1, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	u2, _ := CreateUpstream(d, &Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "openai"})
-	if err := AddModel(d, u1, "m1", false, 0, 0, false); err != nil {
+	if err := AddModel(d, u1, UpstreamModel{ModelName: "m1"}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ := ListModels(d, u1)
 	mid := models[0].ID
 
-	if err := UpdateModel(d, u2, mid, 1000, 100, true); !errors.Is(err, sql.ErrNoRows) {
+	if err := UpdateModel(d, u2, UpstreamModel{ID: mid, ContextLength: 1000, MaxOutputLength: 100, Multimodal: true}); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("cross-upstream update: err=%v, want ErrNoRows", err)
 	}
-	if err := UpdateModel(d, u1, mid+9999, 1000, 100, false); !errors.Is(err, sql.ErrNoRows) {
+	if err := UpdateModel(d, u1, UpstreamModel{ID: mid + 9999, ContextLength: 1000, MaxOutputLength: 100}); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing model: err=%v, want ErrNoRows", err)
 	}
 	// 跨上游那次不能改动原行
@@ -514,7 +515,7 @@ func TestUpdateModelScopedByUpstream(t *testing.T) {
 		t.Fatalf("cross-upstream update leaked: %+v", models[0])
 	}
 	// 正常更新仍然成功
-	if err := UpdateModel(d, u1, mid, 1000, 100, true); err != nil {
+	if err := UpdateModel(d, u1, UpstreamModel{ID: mid, ContextLength: 1000, MaxOutputLength: 100, Multimodal: true}); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, u1)

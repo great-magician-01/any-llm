@@ -77,7 +77,7 @@ type importResult struct {
 }
 
 func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
-	ups, err := model.ListUpstreams(a.db)
+	ups, err := model.ListUpstreams(a.db, nil)
 	if err != nil {
 		logger.Error("admin: export config list upstreams failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})

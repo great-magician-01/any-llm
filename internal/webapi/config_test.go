@@ -47,7 +47,7 @@ func getConfig(t *testing.T, a *API, path string) *httptest.ResponseRecorder {
 func TestExportConfig(t *testing.T) {
 	a, d := setupAPI(t)
 	id1, _ := model.CreateUpstream(d, &model.Upstream{Name: "openai", BaseURL: "https://api.openai.com", APIKey: "sk-real-secret-key-123", Format: "openai", DailyTokenLimit: 1000, MonthlyTokenLimit: 20000})
-	model.AddModel(d, id1, "gpt-4o", false, 128000, 16384, true)
+	model.AddModel(d, id1, model.UpstreamModel{ModelName: "gpt-4o", ContextLength: 128000, MaxOutputLength: 16384, Multimodal: true})
 	id2, _ := model.CreateUpstream(d, &model.Upstream{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKey: "sk-another-key", Format: "anthropic"})
 	u2, _ := model.GetUpstreamByID(d, id2)
 	u2.Enabled = false
@@ -141,9 +141,9 @@ func TestExportConfig_EmptyDb(t *testing.T) {
 func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 	a, d := setupAPI(t)
 	keepID, _ := model.CreateUpstream(d, &model.Upstream{Name: "keep", BaseURL: "https://keep.example.com", APIKey: "sk-keep", Format: "openai", DailyTokenLimit: 42})
-	model.AddModel(d, keepID, "keep-model", true, 11, 12, false)
+	model.AddModel(d, keepID, model.UpstreamModel{ModelName: "keep-model", Manual: true, ContextLength: 11, MaxOutputLength: 12})
 	dupID, _ := model.CreateUpstream(d, &model.Upstream{Name: "dup", BaseURL: "https://old.example.com", APIKey: "sk-old", Format: "openai"})
-	model.AddModel(d, dupID, "old-model", false, 1, 2, false)
+	model.AddModel(d, dupID, model.UpstreamModel{ModelName: "old-model", ContextLength: 1, MaxOutputLength: 2})
 	keepAliasID, _ := model.CreateAlias(d, &model.ModelAlias{Name: "keep-alias", Bindings: []model.AliasBinding{{UpstreamID: keepID, ModelName: "keep-model"}}})
 	dupAliasID, _ := model.CreateAlias(d, &model.ModelAlias{Name: "dup-alias", Bindings: []model.AliasBinding{{UpstreamID: dupID, ModelName: "old-model"}}})
 
@@ -234,7 +234,7 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 	a, d := setupAPI(t)
 	id, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "https://old", APIKey: "sk-old", Format: "openai"})
-	model.AddModel(d, id, "m1", false, 3, 4, false)
+	model.AddModel(d, id, model.UpstreamModel{ModelName: "m1", ContextLength: 3, MaxOutputLength: 4})
 	u, _ := model.GetUpstreamByID(d, id)
 	u.Enabled = false
 	model.UpdateUpstream(d, u)
@@ -264,7 +264,7 @@ func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 func TestImportConfig_RoundTrip(t *testing.T) {
 	a1, d1 := setupAPI(t)
 	id1, _ := model.CreateUpstream(d1, &model.Upstream{Name: "openai", BaseURL: "https://api.openai.com", APIKey: "sk-key-one", Format: "openai", DailyTokenLimit: 100})
-	model.AddModel(d1, id1, "gpt-4o", false, 128000, 16384, false)
+	model.AddModel(d1, id1, model.UpstreamModel{ModelName: "gpt-4o", ContextLength: 128000, MaxOutputLength: 16384})
 	id2, _ := model.CreateUpstream(d1, &model.Upstream{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKey: "sk-key-two", Format: "anthropic"})
 	u2, _ := model.GetUpstreamByID(d1, id2)
 	u2.Enabled = false

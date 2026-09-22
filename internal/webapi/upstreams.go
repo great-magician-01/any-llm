@@ -17,16 +17,12 @@ func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 	// 依赖全量口径，不能动）；上游管理页默认显式传 enabled。未知值同样按全量
 	// 返回：该参数引入前任何 status= 都被忽略并返回全量，硬 400 会打破存量的
 	// 书签/探针/集成调用。
-	var list []model.Upstream
-	var err error
-	switch r.URL.Query().Get("status") {
-	case "enabled":
-		list, err = model.ListUpstreamsByEnabled(a.db, true)
-	case "disabled":
-		list, err = model.ListUpstreamsByEnabled(a.db, false)
-	default:
-		list, err = model.ListUpstreams(a.db)
+	var enabled *bool
+	if s := r.URL.Query().Get("status"); s == "enabled" || s == "disabled" {
+		v := s == "enabled"
+		enabled = &v
 	}
+	list, err := model.ListUpstreams(a.db, enabled)
 	if err != nil {
 		logger.Error("admin: list upstreams failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
@@ -294,7 +290,11 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 		return
 	}
 	if err := a.writeSync(func(d *sql.DB) error {
-		return model.AddModel(d, upstreamID, req.ModelName, true, req.ContextLength, req.MaxOutputLength, req.Multimodal)
+		return model.AddModel(d, upstreamID, model.UpstreamModel{
+			ModelName: req.ModelName, Manual: true,
+			ContextLength: req.ContextLength, MaxOutputLength: req.MaxOutputLength,
+			Multimodal: req.Multimodal,
+		})
 	}); err != nil {
 		if errors.Is(err, model.ErrModelExists) {
 			// 已存在的模型走编辑：添加对已存在同名模型静默 200 会让管理员以为
@@ -342,7 +342,11 @@ func (a *API) updateModel(w http.ResponseWriter, r *http.Request, upstreamID, mi
 		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
 		return
 	}
-	if err := a.writeSync(func(d *sql.DB) error { return model.UpdateModel(d, upstreamID, mid, cl, ml, req.Multimodal) }); err != nil {
+	if err := a.writeSync(func(d *sql.DB) error {
+		return model.UpdateModel(d, upstreamID, model.UpstreamModel{
+			ID: mid, ContextLength: cl, MaxOutputLength: ml, Multimodal: req.Multimodal,
+		})
+	}); err != nil {
 		// 模型不存在、已软删或不属于路径里的上游：404 而非假成功。
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, 404, map[string]any{"error": "model not found"})

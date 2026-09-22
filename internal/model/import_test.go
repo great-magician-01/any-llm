@@ -37,8 +37,8 @@ func TestGetAliasByName(t *testing.T) {
 func TestReplaceModelsExact(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
-	AddModel(d, uid, "m1", false, 100, 200, false)
-	AddModel(d, uid, "m2", true, 1, 2, false)
+	AddModel(d, uid, UpstreamModel{ModelName: "m1", ContextLength: 100, MaxOutputLength: 200})
+	AddModel(d, uid, UpstreamModel{ModelName: "m2", Manual: true, ContextLength: 1, MaxOutputLength: 2})
 
 	mustList := func() map[string]UpstreamModel {
 		t.Helper()

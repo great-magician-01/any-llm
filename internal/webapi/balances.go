@@ -21,7 +21,7 @@ var balanceClient = &http.Client{Timeout: 15 * time.Second}
 // enabled upstream's balance/quota right now (concurrently), archive the
 // snapshots, and return them. Used for the page-open auto-refresh.
 func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
-	upstreams, err := model.ListUpstreams(a.db)
+	upstreams, err := model.ListUpstreams(a.db, nil)
 	if err != nil {
 		logger.Error("admin: refresh all balances list upstreams failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
