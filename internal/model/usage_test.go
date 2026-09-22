@@ -419,3 +419,30 @@ func TestUsageSummaryByGroupKeyName(t *testing.T) {
 		t.Fatalf("rename not reflected: %+v", sums)
 	}
 }
+
+// 含夏令时拨快的窗口：天数必须按日历日数，不能按 end.Sub(start)/24h 截断。
+// 2026-03-08 美国东部拨快 1 小时，2026-03-01→2026-03-16 只有 359 小时，
+// 旧算法 359/24=14 会把最新一天（03-15）从结果里丢掉。
+func TestUsageDailyStatsAcrossDST(t *testing.T) {
+	// time.Local 是进程级状态：本包测试不跑 t.Parallel，临时换区安全，
+	// 但用完必须换回。
+	old := time.Local
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	time.Local = loc
+	t.Cleanup(func() { time.Local = old })
+
+	d := testDB(t)
+	out, err := UsageDailyStats(d, 0, "2026-03-01", "2026-03-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 15 {
+		t.Fatalf("days=%d want 15 calendar days across the DST transition", len(out))
+	}
+	if got := out[len(out)-1].Day.Format("2006-01-02"); got != "2026-03-15" {
+		t.Fatalf("last day=%s, want 2026-03-15 (newest day dropped)", got)
+	}
+}
