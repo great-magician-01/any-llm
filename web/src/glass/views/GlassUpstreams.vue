@@ -2,20 +2,20 @@
 import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listUpstreams, createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel, type UpstreamStatusFilter } from '../../api/upstreams'
-import { listLatestBalances, listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../../api/balances'
+import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '../../api/upstreams'
+import { listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../../api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '../../api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../../utils/configTransfer'
 import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '../../utils/balance'
 import { expiryLabel, expiryToISO, isoToExpiry } from '../../utils/upstreamStatus'
 import { formatInt, formatTime } from '../../utils/format'
+import { useUpstreamList } from '../../composables/useUpstreamList'
 import AppIcon from '../../components/AppIcon.vue'
 
 const message = useMessage()
-const upstreams = ref<Upstream[]>([])
-// 列表启用状态过滤：本页默认只看启用中；其余页面（Dashboard/Keys/Aliases）
-// 不传参仍拿全量。切换档位即重新查询。
-const statusFilter = ref<UpstreamStatusFilter>('enabled')
+// 列表 + 启用状态过滤 + 余额快照：两套皮肤共用（含请求序号守卫与切档只重查
+// 列表），见 composables/useUpstreamList.ts
+const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, toggleEnabled } = useUpstreamList()
 const showForm = ref(false)
 const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
@@ -30,7 +30,6 @@ const showModelForm = ref(false)
 const modelFormUpstreamId = ref(0)
 const modelForm = ref<UpstreamModel | null>(null)
 const fetchingId = ref<number | null>(null)
-const balancesByUpstream = ref<Record<number, BalanceSnapshot>>({})
 const refreshingId = ref<number | null>(null)
 const showHistory = ref(false)
 const historyUpstream = ref<Upstream | null>(null)
@@ -90,19 +89,6 @@ function isModelsEndpointUnsupported(e: any): boolean {
   return false
 }
 
-// 显式赋值再查询：不依赖 v-model 与 @update:value 的处理顺序
-function setStatusFilter(v: UpstreamStatusFilter) {
-  statusFilter.value = v
-  load()
-}
-async function load() {
-  // 余额快照接口不可用时（如后端未升级）不阻塞上游列表
-  const [ups, snaps] = await Promise.all([listUpstreams(statusFilter.value), listLatestBalances().catch(() => [] as BalanceSnapshot[])])
-  upstreams.value = ups
-  const map: Record<number, BalanceSnapshot> = {}
-  for (const s of snaps) map[s.upstream_id] = s
-  balancesByUpstream.value = map
-}
 async function doExport() {
   try {
     const data = await exportConfig()
@@ -136,6 +122,11 @@ async function doImport() {
     const res = await importConfig(payload)
     pendingImport.value = null
     message.success(describeImportResult(res))
+    // 文件里带禁用上游而当前只看「启用中」时它们不进列表——提醒一句，
+    // 免得以为没导进去。
+    if (payload.upstreams.some((u) => u.enabled === false) && statusFilter.value === 'enabled') {
+      message.warning('导入包含已禁用的上游；当前只看「启用中」，切到「已禁用」或「全部」可见')
+    }
     await load()
   } catch (e) {
     message.error('导入失败：' + errMsg(e))
@@ -148,8 +139,10 @@ async function save() {
     // 有效期由独立的选择器 ref 持有，提交前转成 ISO 覆写——这样清空选择器时
     // 会显式发出 null（后端据此清除有效期），而不是把字段整个省掉。
     form.value.expires_at = expiryToISO(expiryPicker.value)
-    if (editing.value?.id) {
-      await updateUpstream(editing.value.id, form.value)
+    const created = !editing.value?.id
+    const createdEnabled = form.value.enabled
+    if (!created) {
+      await updateUpstream(editing.value!.id!, form.value)
     } else {
       await createUpstream(form.value)
     }
@@ -157,6 +150,15 @@ async function save() {
     editing.value = null
     resetForm()
     await load()
+    if (!created) {
+      message.success('已保存')
+    } else if (!createdEnabled && statusFilter.value === 'enabled') {
+      // 新建为禁用而当前只看「启用中」时新行不可见——没有提示就像没建成，
+      // 重复提交会撞同名 400。
+      message.warning('已添加为禁用状态；当前只看「启用中」，切到「已禁用」或「全部」可见')
+    } else {
+      message.success('已添加')
+    }
   } catch (e) {
     message.error('保存失败：' + errMsg(e))
   }
@@ -168,19 +170,6 @@ function resetForm() { form.value = { name: '', base_url: '', api_key: '', forma
 function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); showForm.value = true }
 function add() { editing.value = null; resetForm(); showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
-async function toggleEnabled(row: Upstream, v: boolean) {
-  try {
-    await updateUpstream(row.id as number, { enabled: v })
-    row.enabled = v // 响应式行对象，直接改即可；失败时不改，开关弹回原状态
-    // 新状态与当前过滤档位不符时把该行移出列表（等同下次刷新的查询结果），
-    // 避免「筛选启用中却还显示已禁用行」的困惑
-    if ((statusFilter.value === 'enabled' && !v) || (statusFilter.value === 'disabled' && v)) {
-      upstreams.value = upstreams.value.filter(u => u.id !== row.id)
-    }
-  } catch (e) {
-    message.error((v ? '启用失败：' : '禁用失败：') + errMsg(e))
-  }
-}
 async function fetchM(id: number) {
   if (fetchingId.value !== null) return
   fetchingId.value = id
