@@ -442,6 +442,7 @@ func TestLoadThroughSingleFlight(t *testing.T) {
 	t.Cleanup(func() { configCacheTTL = old })
 
 	n := newNS[*ExtKey]()
+	var gen uint64
 	// 放一个已过期的条目，逼所有 goroutine 走未命中分支
 	n.entries["k"] = cacheEntry[*ExtKey]{
 		val:      &ExtKey{Key: "k", Label: "stale"},
@@ -463,7 +464,7 @@ func TestLoadThroughSingleFlight(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			k, err := loadThrough(&n, "k", resolve, cloneExtKey)
+			k, err := loadThrough(&n, &gen, "k", resolve, cloneExtKey)
 			if err != nil {
 				t.Errorf("loadThrough: %v", err)
 				return
@@ -497,6 +498,7 @@ func TestLoadThroughLeaderFailureReleasesWaiters(t *testing.T) {
 	t.Cleanup(func() { configCacheTTL = old })
 
 	n := newNS[*ExtKey]()
+	var gen uint64
 	n.entries["k"] = cacheEntry[*ExtKey]{
 		val:      &ExtKey{Key: "k", Label: "stale"},
 		loadedAt: time.Now().Add(-2 * configCacheTTL),
@@ -520,7 +522,7 @@ func TestLoadThroughLeaderFailureReleasesWaiters(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got[i], errs[i] = loadThrough(&n, "k", resolve, cloneExtKey)
+			got[i], errs[i] = loadThrough(&n, &gen, "k", resolve, cloneExtKey)
 		}(i)
 	}
 	time.Sleep(80 * time.Millisecond)
@@ -551,17 +553,24 @@ func TestLoadThroughLeaderFailureReleasesWaiters(t *testing.T) {
 	}
 }
 
-// CAS 守卫：查库期间条目被写路径改过，leader 读到的旧值不能盖回去。少了这道守卫，
+// 回填守卫：查库期间条目被写路径改过，leader 读到的旧值不能盖回去。少了这道守卫，
 // 「查库读到旧行 → 管理端写库 → 旧行才落缓存」会让一次改动沉寂整整一个 TTL。
+//
+// 前三个用例靠条目比对兜住（写路径忘了递增代数也拦得住）；第四个是代数存在的
+// 理由——基线时条目不存在，查询期间写路径逐出的正是这个不存在的条目，map 毫无
+// 可见变化，只有代数变了（真实写路径函数无条件递增代数，见 evictExtKeyByID）。
 func TestLoadThroughSkipsStaleStore(t *testing.T) {
 	old := configCacheTTL
 	configCacheTTL = time.Hour
 	t.Cleanup(func() { configCacheTTL = old })
 
 	for _, tc := range []struct {
-		name    string
-		preSeed bool // 事先有没有条目
-		mutate  func(n *ns[*ExtKey])
+		name      string
+		preSeed   bool // 事先有没有条目
+		bumpGen   bool // mutate 是否伴随代数递增（真实写路径都会递增）
+		mutate    func(n *ns[*ExtKey])
+		wantOK    bool   // 事后条目是否存在
+		wantLabel string // 存在时的值
 	}{
 		{
 			name:    "写路径逐出后重建",
@@ -570,6 +579,8 @@ func TestLoadThroughSkipsStaleStore(t *testing.T) {
 				delete(n.entries, "k") // 逐出
 				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
 			},
+			wantOK:    true,
+			wantLabel: "written",
 		},
 		{
 			name:    "写路径原地刷新",
@@ -577,6 +588,8 @@ func TestLoadThroughSkipsStaleStore(t *testing.T) {
 			mutate: func(n *ns[*ExtKey]) {
 				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
 			},
+			wantOK:    true,
+			wantLabel: "written",
 		},
 		{
 			name:    "本来没有条目，查询期间被写出来",
@@ -584,10 +597,22 @@ func TestLoadThroughSkipsStaleStore(t *testing.T) {
 			mutate: func(n *ns[*ExtKey]) {
 				n.entries["k"] = cacheEntry[*ExtKey]{val: &ExtKey{Key: "k", Label: "written"}, loadedAt: time.Now()}
 			},
+			wantOK:    true,
+			wantLabel: "written",
+		},
+		{
+			name:    "本来没有条目，查询期间被写路径逐出（条目无可见变化）",
+			preSeed: false,
+			bumpGen: true,
+			mutate: func(n *ns[*ExtKey]) {
+				delete(n.entries, "k") // 逐出一个不存在的条目：map 毫无变化
+			},
+			wantOK: false, // leader 读到的旧行必须被丢弃（不入库）
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := newNS[*ExtKey]()
+			var gen uint64
 			if tc.preSeed {
 				n.entries["k"] = cacheEntry[*ExtKey]{
 					val:      &ExtKey{Key: "k", Label: "stale"},
@@ -603,30 +628,189 @@ func TestLoadThroughSkipsStaleStore(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() {
-				_, err := loadThrough(&n, "k", resolve, cloneExtKey)
+				_, err := loadThrough(&n, &gen, "k", resolve, cloneExtKey)
 				done <- err
 			}()
 			<-queried
+			cfgCache.Lock()
+			if tc.bumpGen {
+				gen++
+			}
 			tc.mutate(&n)
+			cfgCache.Unlock()
 			close(release)
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-			// 缓存里必须是写路径留下的值，而不是 leader 读到的旧值
+			// 缓存里必须是写路径留下的值（或保持空缺），而不是 leader 读到的旧值
 			cfgCache.RLock()
 			e, ok := n.entries["k"]
 			cfgCache.RUnlock()
-			if !ok || e.val.Label != "written" {
-				t.Fatalf("stale store was not guarded: entry=%+v ok=%v", e, ok)
+			if ok != tc.wantOK || (ok && e.val.Label != tc.wantLabel) {
+				t.Fatalf("stale store was not guarded: entry=%+v ok=%v, want ok=%v label=%q", e, ok, tc.wantOK, tc.wantLabel)
 			}
 		})
 	}
 }
 
+// 命名空间整表重置（evictUpstream 对别名缓存做的事）后，旧 leader 的收尾不得
+// 摘掉新 leader 的 in-flight——否则后续请求会再立一架 flight，同一 key 的并发
+// 重复查询恰好在命名空间翻动时回来。同时旧 leader 的回填必须被代数守卫拦下。
+func TestLoadThroughInflightOwnershipAfterReset(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = time.Hour
+	t.Cleanup(func() { configCacheTTL = old })
+
+	n := newNS[*ExtKey]()
+	np := &n // 生产代码传的是 &cfgCache.aliases，整表重置是就地换掉这个结构体
+	var gen uint64
+
+	// L1：在查询期间经历整表重置的旧 leader
+	queried1 := make(chan struct{})
+	release1 := make(chan struct{})
+	done1 := make(chan error, 1)
+	go func() {
+		_, err := loadThrough(np, &gen, "k", func() (*ExtKey, error) {
+			close(queried1)
+			<-release1
+			return &ExtKey{Key: "k", Label: "old"}, nil
+		}, cloneExtKey)
+		done1 <- err
+	}()
+	<-queried1
+
+	// 模拟 evictUpstream/resetConfigCache：就地换掉 *np + 代数递增（持锁，与写路径一致）
+	cfgCache.Lock()
+	*np = newNS[*ExtKey]()
+	gen++
+	cfgCache.Unlock()
+
+	// L2：重置后的新 leader；W 是它的 waiter
+	queried2 := make(chan struct{})
+	release2 := make(chan struct{})
+	done2 := make(chan *ExtKey, 1)
+	go func() {
+		v, err := loadThrough(np, &gen, "k", func() (*ExtKey, error) {
+			close(queried2)
+			<-release2
+			return &ExtKey{Key: "k", Label: "new"}, nil
+		}, cloneExtKey)
+		if err != nil {
+			t.Errorf("L2: %v", err)
+		}
+		done2 <- v
+	}()
+	<-queried2
+	waiterGot := make(chan *ExtKey, 1)
+	go func() {
+		v, err := loadThrough(np, &gen, "k", func() (*ExtKey, error) {
+			t.Error("waiter 不应成为 leader")
+			return nil, nil
+		}, cloneExtKey)
+		if err != nil {
+			t.Errorf("waiter: %v", err)
+		}
+		waiterGot <- v
+	}()
+	time.Sleep(80 * time.Millisecond) // 等 W 挂上 L2 的 flight
+
+	// 放行 L1：它的收尾只能摘自己的 flight（旧 map 里），新 map 里的 f2 必须还在；
+	// 它的回填（old）必须被代数守卫拦下。
+	close(release1)
+	if err := <-done1; err != nil {
+		t.Fatal(err)
+	}
+	cfgCache.RLock()
+	left := len(np.inflight)
+	_, stored := np.entries["k"]
+	cfgCache.RUnlock()
+	if left != 1 {
+		t.Fatalf("旧 leader 摘掉了新 leader 的 flight: inflight=%d, want 1", left)
+	}
+	if stored {
+		t.Fatal("整表重置前的旧值被回填进了新命名空间")
+	}
+
+	close(release2)
+	if v := <-done2; v == nil || v.Label != "new" {
+		t.Fatalf("L2 got %+v, want new", v)
+	}
+	if v := <-waiterGot; v == nil || v.Label != "new" {
+		t.Fatalf("waiter got %+v, want L2 广播的 new", v)
+	}
+	if !inflightEmpty(np) {
+		t.Fatal("in-flight entry left behind")
+	}
+}
+
 // inflightEmpty 报告 ns 的 in-flight 表已清空。leader 无论正常返回还是 panic 都要
-// 收尾，否则后续请求会永远堵在 <-ch 上。
+// 收尾，否则后续请求会永远堵在 <-done 上。
 func inflightEmpty[T any](n *ns[T]) bool {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
 	return len(n.inflight) == 0
+}
+
+// waiter 直接取走 leader 广播的结果：同一拍未命中的 N 个 goroutine 只查一次库，
+// 否定结果（「没有这一行」）也一样——它不入库（防任意字符串撑大 map），但也没
+// 理由让同一拍的 waiter 各自再回库串行一圈（直连路由的别名探测就是这种 miss）。
+func TestLoadThroughWaitersReuseLeaderResult(t *testing.T) {
+	old := configCacheTTL
+	configCacheTTL = time.Hour
+	t.Cleanup(func() { configCacheTTL = old })
+
+	for _, tc := range []struct {
+		name string
+		val  *ExtKey // leader 的查询结果；nil = 否定结果
+	}{
+		{name: "查到行", val: &ExtKey{Key: "k", Label: "fresh"}},
+		{name: "没有这一行", val: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNS[*ExtKey]()
+			var gen uint64
+
+			var calls int64
+			release := make(chan struct{})
+			resolve := func() (*ExtKey, error) {
+				atomic.AddInt64(&calls, 1)
+				<-release // 卡住，让 waiter 全部挂上 flight 再放行
+				return tc.val, nil
+			}
+
+			const goroutines = 8
+			got := make([]*ExtKey, goroutines)
+			errs := make([]error, goroutines)
+			var wg sync.WaitGroup
+			for i := 0; i < goroutines; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					got[i], errs[i] = loadThrough(&n, &gen, "k", resolve, cloneExtKey)
+				}(i)
+			}
+			time.Sleep(80 * time.Millisecond) // 等所有 goroutine 就位
+			close(release)
+			wg.Wait()
+
+			if n := atomic.LoadInt64(&calls); n != 1 {
+				t.Fatalf("resolve called %d times, want 1 (waiters must reuse the leader's result)", n)
+			}
+			for i := range got {
+				if errs[i] != nil {
+					t.Fatalf("goroutine %d: %v", i, errs[i])
+				}
+				if tc.val == nil && got[i] != nil {
+					t.Fatalf("goroutine %d got %+v, want the negative result", i, got[i])
+				}
+				if tc.val != nil && (got[i] == nil || got[i].Label != "fresh") {
+					t.Fatalf("goroutine %d got %+v, want the leader's row", i, got[i])
+				}
+			}
+			// 否定结果不留条目；肯定结果正常入库
+			if _, ok := cacheEntryOf(&n, "k"); ok != (tc.val != nil) {
+				t.Fatalf("entry present=%v, want %v", ok, tc.val != nil)
+			}
+		})
+	}
 }
