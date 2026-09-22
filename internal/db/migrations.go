@@ -9,71 +9,33 @@ import (
 	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
-// extraCols 列出「初始 schema 之后才加入」的列：本项目的老库升级后合理缺失这些列，
-// 需要回填。补列只在列不存在时执行，幂等。列定义从 schema.go 的规范定义渲染，
-// 三种方言各自合法 —— 不用再手写要同时兼容两种方言的 coldef 字符串。
-//
-// 初始 schema 就有的列（如 ext_keys.label）明确不在这里兜底：CREATE TABLE IF NOT
-// EXISTS 对已存在的同名表是空操作，若那张表不是本项目按当前形态建的，缺列会在查询
-// 时才以 42703 暴露——此时应人工修库，而不是静默补一个语义不明的空壳列把库搞乱。
-var extraCols = []struct {
-	table, column string
-}{
-	{"upstreams", "daily_token_limit"},
-	{"upstreams", "monthly_token_limit"},
-	{"upstreams", "is_active"},
-	{"upstreams", "enabled"},
-	// 每上游并发上限（默认 100，0 = 不限）
-	{"upstreams", "max_concurrent"},
-	// 有效期截止时刻；可空，NULL = 永久有效。到点后网关侧等同禁用（见
-	// model.Upstream.Expired）。与 ext_keys.last_used_at 一致不做 NOT NULL 回填。
-	{"upstreams", "expires_at"},
-	{"ext_keys", "enabled"},
-	{"ext_keys", "daily_token_limit"},
-	{"ext_keys", "monthly_token_limit"},
-	{"ext_keys", "is_active"},
-	// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
-	{"ext_keys", "allowed_models"},
-	// 备注（初始 schema 之后才加入，老库回填）
-	{"ext_keys", "remark"},
-	{"upstream_models", "is_active"},
-	{"upstream_models", "context_length"},
-	{"upstream_models", "max_output_length"},
-	// 是否多模态（初始 schema 之后才加入，老库回填，默认 0 = 否）
-	{"upstream_models", "multimodal"},
-	{"usage_records", "cache_read_tokens"},
-	{"usage_records", "cache_creation_tokens"},
-	{"usage_records", "reasoning_tokens"},
-	{"usage_records", "duration_ms"},
-}
-
 // migrateExtraCols ensures columns added after the initial schema exist on
 // older databases. It is idempotent: columns present are skipped. Must be
 // called after the main migration script has run so the tables exist.
+//
+// 哪些列算「初始 schema 之后才加入」由 Column.LateAdd 标记（schema.go），
+// 补列 DDL 也从同一份定义渲染——加列只改一处定义，没有第二份清单可以漂移。
 func migrateExtraCols(d *sql.DB) error {
 	dialect := DialectOf(d)
-	for _, ec := range extraCols {
-		exists, err := columnExists(d, dialect, ec.table, ec.column)
-		if err != nil {
-			return fmt.Errorf("check column %s.%s: %w", ec.table, ec.column, err)
-		}
-		if exists {
-			continue
-		}
-		tbl, ok := schemaTableByName(ec.table)
-		if !ok {
-			return fmt.Errorf("add column %s.%s: unknown table %s", ec.table, ec.column, ec.table)
-		}
-		col, ok := tbl.column(ec.column)
-		if !ok {
-			return fmt.Errorf("add column %s.%s: unknown column", ec.table, ec.column)
-		}
-		stmt, err := tbl.AddColumnDDL(dialect, col, DDLConfig{})
-		if err != nil {
-			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
-		}
-		if _, err := d.Exec(stmt); err != nil {
-			return fmt.Errorf("add column %s.%s: %w", ec.table, ec.column, err)
+	for _, tbl := range tablesFor(dialect) {
+		for _, col := range tbl.Cols {
+			if !col.LateAdd {
+				continue
+			}
+			exists, err := columnExists(d, dialect, tbl.Name, col.Name)
+			if err != nil {
+				return fmt.Errorf("check column %s.%s: %w", tbl.Name, col.Name, err)
+			}
+			if exists {
+				continue
+			}
+			stmt, err := tbl.AddColumnDDL(dialect, col, DDLConfig{})
+			if err != nil {
+				return fmt.Errorf("add column %s.%s: %w", tbl.Name, col.Name, err)
+			}
+			if _, err := d.Exec(stmt); err != nil {
+				return fmt.Errorf("add column %s.%s: %w", tbl.Name, col.Name, err)
+			}
 		}
 	}
 	return nil
@@ -274,7 +236,7 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 	if err := migratePartialUniqueIndexes(d); err != nil {
 		return err
 	}
-	return migrateUsageIndexes(d)
+	return migratePlainIndexes(d)
 }
 
 // migratePartialUniqueIndexes 建「仅活跃行」的部分唯一索引（PG/SQLite 原生支持）。
@@ -302,38 +264,52 @@ func migratePartialUniqueIndexes(d *sql.DB) error {
 	return nil
 }
 
-// migrateUsageIndexes 建 usage_records 的三个普通索引。与部分唯一索引分开：它们
-// 不依赖 is_active，且 SQLite 表重建后同样要重建。
-func migrateUsageIndexes(d *sql.DB) error {
+// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的三个、
+// response_sessions 与 balance_snapshots 各一个。与部分唯一索引分开：它们不依赖
+// is_active，且 SQLite 表重建后同样要重建。MySQL 的索引内联在 CREATE TABLE，
+// 对它是 no-op。
+func migratePlainIndexes(d *sql.DB) error {
 	if DialectOf(d) == DialectMySQL {
 		return nil
 	}
 	dialect := DialectOf(d)
 	cfg := DDLConfig{IfNotExists: true}
-	tbl, ok := schemaTableByName("usage_records")
-	if !ok {
-		return fmt.Errorf("usage_records not in schema")
-	}
-	for _, ix := range tbl.Idx {
-		if ix.Unique {
-			continue
-		}
-		stmt, err := tbl.indexDef(dialect, ix, cfg)
-		if err != nil {
-			return fmt.Errorf("create index %s: %w", ix.Name, err)
-		}
-		if _, err := d.Exec(stmt); err != nil {
-			return fmt.Errorf("create index %s: %w", ix.Name, err)
+	for _, tbl := range tablesFor(dialect) {
+		for _, ix := range tbl.Idx {
+			if ix.Unique {
+				continue
+			}
+			stmt, err := tbl.indexDef(dialect, ix, cfg)
+			if err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+			if _, err := d.Exec(stmt); err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
 		}
 	}
 	return nil
 }
 
-// extKeyLabelIndexDDL 是 ext_keys.label 唯一性的 DB 兜底：活跃且非空的名称不可
-// 重复，口径与应用层 ExtKeyLabelTaken 一致（空名不参与、软删行不占名额）。
-// 不放进 schema.go 的索引清单：历史库可能存在唯一性约束加入前留下的重名活跃 key，
-// 建索引会失败，需要容错处理（见 ensureExtKeyLabelIndex）。
-const extKeyLabelIndexDDL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_keys_label ON ext_keys(label) WHERE is_active = 1 AND label <> ''`
+// extKeyLabelIndexDDL 从 schema.go 的规范定义渲染 label 唯一索引（PG/SQLite）。
+// 它是 ext_keys.label 唯一性的 DB 兜底，口径与应用层 ExtKeyLabelTaken 一致（空名
+// 不参与、软删行不占名额）。它在 schema 里标了 Tolerant：历史库可能存在唯一性
+// 约束加入前留下的重名活跃 key，建索引会失败，由 ensureExtKeyLabelIndex 单独
+// 容错执行（打出重名明细、不阻断启动），而不是随 migratePartialUniqueIndexes 建。
+// DDL 必须渲染而非手写：MySQL 上的等价约束（生成列 + 唯一键）就从同一份声明
+// 渲染，手写一份 PG/SQLite 版会让两侧悄悄分叉。
+func extKeyLabelIndexDDL(d Dialect) (string, error) {
+	tbl, ok := schemaTableByName("ext_keys")
+	if !ok {
+		return "", fmt.Errorf("ext_keys not in schema")
+	}
+	for _, ix := range tbl.Idx {
+		if ix.Name == "idx_ext_keys_label" {
+			return tbl.indexDef(d, ix, DDLConfig{IfNotExists: true})
+		}
+	}
+	return "", fmt.Errorf("idx_ext_keys_label not declared in schema")
+}
 
 // ensureExtKeyLabelIndex 在每次启动时尝试建立 label 唯一索引。历史库有重名活跃
 // key 时建索引必然失败：不自动改名去重（不动别人的数据），也不阻断启动（单进程
@@ -349,7 +325,12 @@ func ensureExtKeyLabelIndex(d *sql.DB) {
 		}
 		return
 	}
-	_, err := d.Exec(extKeyLabelIndexDDL)
+	stmt, err := extKeyLabelIndexDDL(DialectOf(d))
+	if err != nil {
+		logger.Warn("db: 渲染 ext_keys label 唯一索引 DDL 失败；应用层检查仍生效", "err", err)
+		return
+	}
+	_, err = d.Exec(stmt)
 	if err == nil {
 		return
 	}
