@@ -156,14 +156,17 @@ cd web && npm run test
 ```
 cmd/any-llm/          # 入口，嵌入前端 dist
 internal/
+  adminapi/           # 管理后台 API
   auth/               # 会话认证（HMAC-SHA256，滑动续期）
   config/             # 环境变量加载
   db/                 # 数据库初始化与迁移（SQLite / PostgreSQL / MySQL，单一定义按方言渲染）
   gateway/            # 公开 API 网关路由
   logger/             # slog 日志封装
-  model/              # 数据模型与 CRUD
+  store/              # 数据模型与 CRUD（含配置读缓存）
   translate/          # OpenAI / Anthropic / Responses 格式翻译（IR 层）
   upstream/           # 上游 HTTP 客户端与余额快照轮询
-  webapi/             # 管理后台 API
-web/                  # Vue 3 前端（Naive UI + Vite，经典 + 毛玻璃双主题）
+web/                  # Vue 3 前端（Naive UI + Vite）
+  src/themes/classic/ # 经典主题套件（视图 + Layout + theme.ts）
+  src/themes/glass/   # 毛玻璃主题套件（/glass 路由前缀，结构对称）
+  src/components/     # 两套主题共享的组件
 ```

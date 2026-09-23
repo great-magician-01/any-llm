@@ -11,7 +11,7 @@
 
 ## 2. 现状（读代码结论）
 
-全表只有 4 条 SQL，都在 `internal/model/conversation.go`：
+全表只有 4 条 SQL，都在 `internal/store/conversation.go`：
 
 | 操作 | SQL 形态 | 备注 |
 |---|---|---|
@@ -27,7 +27,7 @@
 - **按月分表**：`conversation_records_YYYY_MM`（如 `conversation_records_2026_09`），每月一张普通物理表。
 - **存量表原地不动**：现有 `conversation_records` 保留全部历史数据，作为"历史分表"参与读取；**零迁移、零数据搬迁、零改名**。上线即生效，旧数据无感。
 - **写入按 `created_at` 月份路由**到对应月分表；表不存在时自动创建（应用层负责建表）。
-- **分表注册缓存**：进程内全局变量（`internal/model` 包级，RWMutex 保护）。启动时从 catalog 一次性加载；每次建表后立即注册进缓存；读写路径只查缓存，不再每次打 `pg_tables`。
+- **分表注册缓存**：进程内全局变量（`internal/store` 包级，RWMutex 保护）。启动时从 catalog 一次性加载；每次建表后立即注册进缓存；读写路径只查缓存，不再每次打 `pg_tables`。
 - **读取由应用层合并**：列表按分表块新→旧翻页拼接；详情跨分表按 id 查。
 - **id 全局唯一**：所有分表共用一个序列（`conversation_records_id_seq`，存量库沿用旧表 BIGSERIAL 自带序列），`WHERE id = ?` 语义不变。
 
@@ -91,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_2026_09_harness  ON conversation_records_202
 
 ### 4.4 分表注册缓存
 
-进程内全局变量（`internal/model` 包级），结构：
+进程内全局变量（`internal/store` 包级），结构：
 
 ```go
 // months 按新→旧排列；byMonth 以 "2006-01" 月份键索引表名；
@@ -144,7 +144,7 @@ SELECT <cols>, request_ir, response_ir FROM conversation_records       WHERE id 
 ### 4.7 SQLite 与测试路径
 
 - 分表机制在 PG 与 MySQL 上启用（`db.DialectOf(d).SupportsConversationArchive()` 门控）。SQLite 下 `InsertConversation` / 列表 / 详情保持**旧的单表逻辑**（该路径只被单测使用；生产上 handler 层已门控，SQLite 永不进这些函数）。
-- 现有 `internal/model/conversation_test.go`（SQLite 内存库、手工建单表）继续有效，覆盖非分表逻辑；分表逻辑由 PG e2e 与纯函数单测覆盖。
+- 现有 `internal/store/conversation_test.go`（SQLite 内存库、手工建单表）继续有效，覆盖非分表逻辑；分表逻辑由 PG e2e 与纯函数单测覆盖。
 
 ### 4.9 MySQL 差异
 
@@ -167,7 +167,7 @@ UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conv
 
 新 id 从 `UPDATE` 的 OK 包里读回（`res.LastInsertId()`），与连接无关。两条语句不是原子的，中途崩溃只会烧掉一个 id —— id 只要求唯一、不要求连续，可接受。PG 侧不变：`id` 列仍是 `DEFAULT nextval('<共享序列>')`，不显式传值。
 
-其余 MySQL 差异，都由 `internal/db` 的 schema 渲染器处理，`internal/model` 不感知：
+其余 MySQL 差异，都由 `internal/db` 的 schema 渲染器处理，`internal/store` 不感知：
 
 | 差异 | MySQL 处理 |
 |---|---|
@@ -183,9 +183,9 @@ UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conv
 
 | 文件 | 改动 |
 |---|---|
-| `internal/model/conversation_shard.go`（新） | 分表命名/建表（`EnsureConversationShard`）/注册缓存（`LoadConvShards` + 包级变量）/`convPageWindows` 纯函数 |
-| `internal/model/conversation_shard_test.go`（新） | 命名、正则、排序、分页窗口计算、DDL 生成、注册缓存行为的单测 |
-| `internal/model/conversation.go` | `InsertConversation` 缓存查表+建表重试；`ConversationRecordsList` 分块分页；`GetConversation` 跨分表 UNION ALL；三者加 PG/SQLite 分支 |
+| `internal/store/conversation_shard.go`（新） | 分表命名/建表（`EnsureConversationShard`）/注册缓存（`LoadConvShards` + 包级变量）/`convPageWindows` 纯函数 |
+| `internal/store/conversation_shard_test.go`（新） | 命名、正则、排序、分页窗口计算、DDL 生成、注册缓存行为的单测 |
+| `internal/store/conversation.go` | `InsertConversation` 缓存查表+建表重试；`ConversationRecordsList` 分块分页；`GetConversation` 跨分表 UNION ALL；三者加 PG/SQLite 分支 |
 | `internal/db/migrations.go` | 移除 base 表建表 SQL（`migrateSoftDeletePG` 的 FK 兜底保留，对存量库仍生效）；分表 DDL 改由 `db.ConversationShardDDL` 按方言渲染 |
 | `cmd/any-llm/main.go` | PG 时启动 `LoadConvShards` + `EnsureConversationShard`（失败记 warn，不阻断——插入路径会兜底重试） |
 | `internal/gateway/pg_conv_e2e_test.go` | e2e 断言改查月分表/经 model 层（原断言直查 base 表） |
@@ -225,4 +225,4 @@ UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conv
 
 与分表无关，根因：`n-data-table` 缺少 `remote` 属性，naive-ui 忽略传入的 `itemCount: total`，按当前页 20 行计算页数并把页码钳回第 1 页（已核对 `naive-ui/es/data-table/src/use-table-data.mjs`）。后端 `page`/`size`/`total` 链路正常。
 
-修复：4 处表格各加 `remote` 属性——`Conversations.vue`、`glass/GlassConversations.vue`、`Usage.vue`（请求明细，同款 bug）、`glass/GlassUsage.vue`。
+修复：4 处表格各加 `remote` 属性——`themes/classic/views/Conversations.vue`、`themes/glass/views/GlassConversations.vue`、`themes/classic/views/Usage.vue`（请求明细，同款 bug）、`themes/glass/views/GlassUsage.vue`。
