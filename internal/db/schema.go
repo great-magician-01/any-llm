@@ -667,6 +667,9 @@ func (t Table) indexDefMySQL(ix Index, cfg DDLConfig) (string, error) {
 
 // indexColumnsMySQL 渲染 MySQL 的索引列清单：部分唯一索引的最后一列换成生成列。
 // name 必须是已套用 IndexSuffix 的索引名（见 indexDefMySQL）。
+// "id DESC" 这类声明里的排序方向要保留（渲染成 `id` DESC）——validate 只取列名
+// 部分是校验需要，渲染若也丢掉方向，MySQL 内联索引就与 PG/SQLite 的 CREATE INDEX
+// 静默分叉了（MySQL 8.0.13+ 原生支持 DESC 索引）。
 func (t Table) indexColumnsMySQL(ix Index, name string) string {
 	cols := append([]string(nil), ix.Columns...)
 	if ix.Unique && ix.Where != "" {
@@ -674,7 +677,11 @@ func (t Table) indexColumnsMySQL(ix Index, name string) string {
 	}
 	quoted := make([]string, len(cols))
 	for i, c := range cols {
-		quoted[i] = "`" + strings.Fields(c)[0] + "`"
+		fields := strings.Fields(c)
+		quoted[i] = "`" + fields[0] + "`"
+		if len(fields) > 1 {
+			quoted[i] += " " + strings.Join(fields[1:], " ")
+		}
 	}
 	return strings.Join(quoted, ", ")
 }
