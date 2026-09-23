@@ -206,7 +206,7 @@ func TestUpstreamExpiryRoundTrip(t *testing.T) {
 		t.Fatalf("byName ExpiresAt=%v, want %v", byName.ExpiresAt, at)
 	}
 	// 列表路径
-	list, _ := ListUpstreams(d)
+	list, _ := ListUpstreams(d, nil)
 	for _, u := range list {
 		switch u.Name {
 		case "perm":

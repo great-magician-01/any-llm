@@ -78,10 +78,7 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 // 列清单与占位符都由 db.ConversationShardCols() 驱动，避免两份清单漂移。MySQL
 // 没有序列，id 要显式传（计数器表）；PG 交 DEFAULT nextval 自动分配，不传 id。
 func insertConversationInto(d *sql.DB, table string, r *ConversationRecord, ts time.Time) error {
-	stream := 0
-	if r.Stream {
-		stream = 1
-	}
+	stream := b2i(r.Stream)
 	names := db.ConversationShardCols()
 	cols := make([]string, 0, len(names)+1)
 	ph := make([]string, 0, len(names)+1)

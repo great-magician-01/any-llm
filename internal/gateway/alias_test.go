@@ -277,7 +277,7 @@ func TestAliasAllCandidatesDisabled(t *testing.T) {
 func TestModelsEndpointIncludesAliases(t *testing.T) {
 	g, d := setupGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	model.CreateAlias(d, &model.ModelAlias{Name: "fixed-gpt", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	// 无可用绑定的别名不出现
 	model.CreateAlias(d, &model.ModelAlias{Name: "empty-alias", Bindings: nil})
@@ -316,7 +316,7 @@ func TestAliasPrecedenceOverDirectFormat(t *testing.T) {
 	d := g.db
 	uidA, _ := model.CreateUpstream(d, &model.Upstream{Name: "a", BaseURL: aliasSrv.URL, APIKey: "sk", Format: "openai"})
 	uidB, _ := model.CreateUpstream(d, &model.Upstream{Name: "b", BaseURL: directSrv.URL, APIKey: "sk", Format: "openai"})
-	model.AddModel(d, uidB, "m", false, 0, 0, false)
+	model.AddModel(d, uidB, model.UpstreamModel{ModelName: "m"})
 	// 别名名称带 /，遮蔽直连路由 "b/m"
 	model.CreateAlias(d, &model.ModelAlias{Name: "b/m", Bindings: []model.AliasBinding{{UpstreamID: uidA, ModelName: "x"}}})
 

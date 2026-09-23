@@ -2,6 +2,15 @@ package model
 
 import "time"
 
+// b2i 把布尔列落成 0/1。三种方言的布尔列都是整数存储；这个转换此前在每个写入
+// 站点手写一遍「x := 0; if b { x = 1 }」，漏写一处就静默把旧值存进去。
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 type Upstream struct {
 	ID                int64  `json:"id"`
 	Name              string `json:"name"`

@@ -82,7 +82,7 @@ func (p *BalancePoller) Stop() {
 // Failures (vendor unreachable, disabled, unsupported) only log and skip that
 // upstream. Also used for the manual refresh and the one-shot poll at boot.
 func (p *BalancePoller) PollOnce(ctx context.Context) {
-	upstreams, err := model.ListUpstreams(p.d)
+	upstreams, err := model.ListUpstreams(p.d, nil)
 	if err != nil {
 		logger.Error("balance poller: list upstreams failed", "err", err)
 		return

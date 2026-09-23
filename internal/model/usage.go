@@ -148,10 +148,6 @@ func SumTokens(d *sql.DB, extKeyID, upstreamID *int64, from, to time.Time) (int,
 }
 
 func InsertUsage(d *sql.DB, r *UsageRecord) error {
-	stream := 0
-	if r.Stream {
-		stream = 1
-	}
 	ts := r.CreatedAt
 	if ts.IsZero() {
 		ts = time.Now()
@@ -165,7 +161,7 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
 		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
-		r.DurationMs, stream, r.Status, ts)
+		r.DurationMs, b2i(r.Stream), r.Status, ts)
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}

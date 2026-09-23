@@ -80,9 +80,7 @@ func TestListUpstreamsStatusFilter(t *testing.T) {
 
 	count := func(url string) int {
 		t.Helper()
-		req := httptest.NewRequest("GET", url, nil)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, req)
+		w := doAliasReq(t, a, "GET", url, nil)
 		if w.Code != 200 {
 			t.Fatalf("%s: status=%d body=%s", url, w.Code, w.Body.String())
 		}
@@ -106,11 +104,10 @@ func TestListUpstreamsStatusFilter(t *testing.T) {
 		t.Fatalf("status=disabled: len=%d want 1", n)
 	}
 
-	req := httptest.NewRequest("GET", "/api/admin/upstreams?status=bogus", nil)
-	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, req)
-	if w.Code != 400 {
-		t.Fatalf("status=bogus: code=%d want 400, body=%s", w.Code, w.Body.String())
+	// 未知 status 按全量返回而非 400：该参数引入前任何 status= 都被忽略并返回
+	// 全量，硬报错会打破存量的书签/探针/集成调用。
+	if n := count("/api/admin/upstreams?status=bogus"); n != 3 {
+		t.Fatalf("status=bogus: len=%d want 3 (unknown status falls back to all)", n)
 	}
 }
 
@@ -123,7 +120,7 @@ func TestDeleteUpstream(t *testing.T) {
 	if w.Code != 200 && w.Code != 204 {
 		t.Fatalf("status=%d", w.Code)
 	}
-	list, _ := model.ListUpstreams(d)
+	list, _ := model.ListUpstreams(d, nil)
 	if len(list) != 0 {
 		t.Fatalf("after delete len=%d", len(list))
 	}
@@ -159,17 +156,11 @@ func TestModelMultimodalAPI(t *testing.T) {
 	base := "/api/admin/upstreams/" + strconv.FormatInt(uid, 10) + "/models"
 	post := func(path string, body map[string]any) int {
 		t.Helper()
-		b, _ := json.Marshal(body)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, bytes.NewReader(b)))
-		return w.Code
+		return doAliasReq(t, a, "POST", path, body).Code
 	}
 	put := func(path string, body map[string]any) int {
 		t.Helper()
-		b, _ := json.Marshal(body)
-		w := httptest.NewRecorder()
-		a.Handler().ServeHTTP(w, httptest.NewRequest("PUT", path, bytes.NewReader(b)))
-		return w.Code
+		return doAliasReq(t, a, "PUT", path, body).Code
 	}
 
 	// 不传 multimodal → 默认否
@@ -689,5 +680,51 @@ func TestUpstreamExpiry_TimezoneHandling(t *testing.T) {
 	// 亚秒被截断（与 PG TIMESTAMP(0) 口径一致，前端选择器按秒级回填）
 	if got.ExpiresAt.Nanosecond() != 0 {
 		t.Fatalf("expires_at has sub-second precision: %v", got.ExpiresAt)
+	}
+}
+
+// 模型写操作的错误语义：添加已存在的活跃模型返回 409（静默 200 会让管理员以为
+// 新配置生效了）；编辑不存在/已软删/跨上游的模型返回 404（更新 0 行不能假成功）。
+func TestModelWriteErrorSemantics(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "openai"})
+	base := "/api/admin/upstreams/" + strconv.FormatInt(uid, 10) + "/models"
+	call := func(method, path string, body map[string]any) int {
+		t.Helper()
+		return doAliasReq(t, a, method, path, body).Code
+	}
+
+	add := map[string]any{"model_name": "m1", "context_length": 1000, "max_output_length": 100}
+	if code := call("POST", base, add); code != 200 {
+		t.Fatalf("first add status=%d", code)
+	}
+	if code := call("POST", base, add); code != 409 {
+		t.Fatalf("duplicate add status=%d, want 409", code)
+	}
+
+	ms, _ := model.ListModels(d, uid)
+	mid := ms[0].ID
+	edit := map[string]any{"context_length": 2000, "max_output_length": 200}
+	// 跨上游：模型属于 u，路径却指 u2
+	cross := "/api/admin/upstreams/" + strconv.FormatInt(uid2, 10) + "/models/" + strconv.FormatInt(mid, 10)
+	if code := call("PUT", cross, edit); code != 404 {
+		t.Fatalf("cross-upstream edit status=%d, want 404", code)
+	}
+	// 不存在的模型 id
+	if code := call("PUT", base+"/999999", edit); code != 404 {
+		t.Fatalf("missing model edit status=%d, want 404", code)
+	}
+	// 跨上游与不存在这两次失败都不能改动原行
+	ms, _ = model.ListModels(d, uid)
+	if len(ms) != 1 || ms[0].ContextLength != 1000 {
+		t.Fatalf("failed edits should not have touched the row: %+v", ms)
+	}
+	// 软删后同样 404
+	if err := model.DeleteModel(d, mid); err != nil {
+		t.Fatal(err)
+	}
+	if code := call("PUT", base+"/"+strconv.FormatInt(mid, 10), edit); code != 404 {
+		t.Fatalf("soft-deleted model edit status=%d, want 404", code)
 	}
 }

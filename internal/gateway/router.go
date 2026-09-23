@@ -66,7 +66,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	upstreams, err := model.ListUpstreams(g.db)
+	upstreams, err := model.ListUpstreams(g.db, nil)
 	if err != nil {
 		WriteError(w, 500, "openai", "failed to list upstreams", "internal_error")
 		return

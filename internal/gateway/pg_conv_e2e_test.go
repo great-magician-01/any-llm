@@ -90,7 +90,7 @@ func TestPGConvNonStream(t *testing.T) {
 
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -179,7 +179,7 @@ func TestPGConvStream(t *testing.T) {
 
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
-	model.AddModel(d, uid, "claude-3-5", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "claude-3-5"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -238,7 +238,7 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
@@ -337,7 +337,7 @@ func TestPGConvUpstreamError(t *testing.T) {
 
 	g, d, w := setupPGGateway(t)
 	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0, false)
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 

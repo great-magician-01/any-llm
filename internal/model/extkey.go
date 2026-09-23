@@ -169,12 +169,8 @@ func UpdateExtKey(d *sql.DB, id int64, label, remark string, enabled bool, daily
 			return ErrExtKeyLabelTaken
 		}
 	}
-	en := 0
-	if enabled {
-		en = 1
-	}
 	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
-		label, remark, en, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
+		label, remark, b2i(enabled), dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
