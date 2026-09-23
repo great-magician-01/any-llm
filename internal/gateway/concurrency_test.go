@@ -9,13 +9,13 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
 func TestConcManagerTryAcquireLimit(t *testing.T) {
 	m := newConcManager()
-	u := &model.Upstream{ID: 1, MaxConcurrent: 2}
+	u := &store.Upstream{ID: 1, MaxConcurrent: 2}
 	r1, ok := m.tryAcquire(u)
 	if !ok {
 		t.Fatal("first acquire should succeed")
@@ -39,7 +39,7 @@ func TestConcManagerTryAcquireLimit(t *testing.T) {
 func TestConcManagerUnlimitedWhenZeroOrNegative(t *testing.T) {
 	m := newConcManager()
 	for _, limit := range []int{0, -1} {
-		u := &model.Upstream{ID: 2, MaxConcurrent: limit}
+		u := &store.Upstream{ID: 2, MaxConcurrent: limit}
 		for i := 0; i < 1000; i++ {
 			if _, ok := m.tryAcquire(u); !ok {
 				t.Fatalf("limit %d should be unlimited, failed at %d", limit, i)
@@ -51,7 +51,7 @@ func TestConcManagerUnlimitedWhenZeroOrNegative(t *testing.T) {
 // 上限修改后重建信号量：新容量立即生效，旧通道上的在途请求不受影响。
 func TestConcManagerLimitChangeRebuilds(t *testing.T) {
 	m := newConcManager()
-	u := &model.Upstream{ID: 3, MaxConcurrent: 1}
+	u := &store.Upstream{ID: 3, MaxConcurrent: 1}
 	rel, ok := m.tryAcquire(u)
 	if !ok {
 		t.Fatal("acquire should succeed")
@@ -60,7 +60,7 @@ func TestConcManagerLimitChangeRebuilds(t *testing.T) {
 		t.Fatal("limit 1 should block second acquire")
 	}
 	// 管理端调大上限：下一次请求解析到新的 MaxConcurrent，信号量重建。
-	u2 := &model.Upstream{ID: 3, MaxConcurrent: 3}
+	u2 := &store.Upstream{ID: 3, MaxConcurrent: 3}
 	for i := 0; i < 3; i++ {
 		if _, ok := m.tryAcquire(u2); !ok {
 			t.Fatalf("after limit raise, acquire %d should succeed", i)
@@ -77,8 +77,8 @@ func TestConcManagerLimitChangeRebuilds(t *testing.T) {
 
 func TestConcManagerIndependentPerUpstream(t *testing.T) {
 	m := newConcManager()
-	a := &model.Upstream{ID: 10, MaxConcurrent: 1}
-	b := &model.Upstream{ID: 11, MaxConcurrent: 1}
+	a := &store.Upstream{ID: 10, MaxConcurrent: 1}
+	b := &store.Upstream{ID: 11, MaxConcurrent: 1}
 	if _, ok := m.tryAcquire(a); !ok {
 		t.Fatal("acquire on a should succeed")
 	}
@@ -90,7 +90,7 @@ func TestConcManagerIndependentPerUpstream(t *testing.T) {
 // 重复释放是空操作：不会凭空多出槽位，也不会在空通道上阻塞。
 func TestConcManagerReleaseIdempotent(t *testing.T) {
 	m := newConcManager()
-	u := &model.Upstream{ID: 20, MaxConcurrent: 1}
+	u := &store.Upstream{ID: 20, MaxConcurrent: 1}
 	rel, ok := m.tryAcquire(u)
 	if !ok {
 		t.Fatal("acquire should succeed")
@@ -111,7 +111,7 @@ func TestConcManagerReleaseIdempotent(t *testing.T) {
 // （无 -race 环境也能验证计数正确性。）
 func TestConcManagerConcurrentStress(t *testing.T) {
 	m := newConcManager()
-	u := &model.Upstream{ID: 30, MaxConcurrent: 10}
+	u := &store.Upstream{ID: 30, MaxConcurrent: 10}
 	var inFlight, maxSeen atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 200; i++ {
@@ -151,13 +151,13 @@ func TestConcManagerConcurrentStress(t *testing.T) {
 func TestCompletionConcurrencyLimit429(t *testing.T) {
 	srv := okUpstreamServer(t, "ok-after-release")
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	// 测试直接占住唯一的并发槽，模拟上游满载。
-	u, _ := model.GetUpstreamByID(d, uid)
+	u, _ := store.GetUpstreamByID(d, uid)
 	rel, ok := g.conc.tryAcquire(u)
 	if !ok {
 		t.Fatal("test should acquire the only slot")
@@ -179,7 +179,7 @@ func TestCompletionConcurrencyLimit429(t *testing.T) {
 		t.Fatalf("error body=%s err=%v", w.Body.String(), err)
 	}
 	// 未发起上游调用，不记 usage。
-	if _, total, _ := model.UsageRecordsList(d, 1, 10); total != 0 {
+	if _, total, _ := store.UsageRecordsList(d, 1, 10); total != 0 {
 		t.Fatalf("usage records=%d want 0 (no upstream call made)", total)
 	}
 
@@ -202,14 +202,14 @@ func TestCompletionConcurrencyFailover(t *testing.T) {
 	second := okUpstreamServer(t, "from-second")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "busy", BaseURL: first.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "free", BaseURL: second.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 5})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "busy", BaseURL: first.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "free", BaseURL: second.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 5})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
 
-	u1, _ := model.GetUpstreamByID(d, uid1)
+	u1, _ := store.GetUpstreamByID(d, uid1)
 	rel, ok := g.conc.tryAcquire(u1)
 	if !ok {
 		t.Fatal("test should acquire busy upstream's only slot")
@@ -224,7 +224,7 @@ func TestCompletionConcurrencyFailover(t *testing.T) {
 		t.Fatalf("expected failover to second candidate, body=%s", w.Body.String())
 	}
 	// 只有真正调用的候选记 usage。
-	records, total, _ := model.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 1 || records[0].UpstreamName != "free" {
 		t.Fatalf("records=%+v total=%d", records, total)
 	}
@@ -235,12 +235,12 @@ func TestCompletionConcurrencyFailover(t *testing.T) {
 func TestStreamConcurrencyLimit429(t *testing.T) {
 	srv := okUpstreamServer(t, "unused")
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
-	u, _ := model.GetUpstreamByID(d, uid)
+	u, _ := store.GetUpstreamByID(d, uid)
 	rel, ok := g.conc.tryAcquire(u)
 	if !ok {
 		t.Fatal("test should acquire the only slot")
@@ -263,13 +263,13 @@ func TestStreamConcurrencyLimit429(t *testing.T) {
 // 覆盖非流式与流式两条释放路径。
 func TestCompletionConcurrencySlotReleased(t *testing.T) {
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	// 非流式：cap 1，连续两请求（第二个成功说明第一个的槽位已释放）。
 	jsonSrv := okUpstreamServer(t, "non-stream-ok")
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "plain", BaseURL: jsonSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid1, model.UpstreamModel{ModelName: "gpt-4o"})
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "plain", BaseURL: jsonSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
+	store.AddModel(d, uid1, store.UpstreamModel{ModelName: "gpt-4o"})
 	for i := 0; i < 2; i++ {
 		w := aliasRequest(t, g, k.Key, `{"model":"plain/gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), "non-stream-ok") {
@@ -286,8 +286,8 @@ func TestCompletionConcurrencySlotReleased(t *testing.T) {
 		w.(http.Flusher).Flush()
 	}))
 	defer sseSrv.Close()
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "sse", BaseURL: sseSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
-	model.AddModel(d, uid2, model.UpstreamModel{ModelName: "gpt-4o"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "sse", BaseURL: sseSrv.URL, APIKey: "sk", Format: "openai", MaxConcurrent: 1})
+	store.AddModel(d, uid2, store.UpstreamModel{ModelName: "gpt-4o"})
 	for i := 0; i < 2; i++ {
 		w := aliasRequest(t, g, k.Key, `{"model":"sse/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 		if w.Code != 200 {

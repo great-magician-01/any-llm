@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { darkTheme, lightTheme, zhCN, dateZhCN } from 'naive-ui'
 import { useTheme } from './composables/useTheme'
-import { darkThemeOverrides, lightThemeOverrides } from './theme'
+import { darkThemeOverrides, lightThemeOverrides } from '@/themes/classic/theme'
 
 const { isDark } = useTheme()
 const naiveTheme = computed(() => (isDark.value ? darkTheme : lightTheme))

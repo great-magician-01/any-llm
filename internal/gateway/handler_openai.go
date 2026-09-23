@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
@@ -19,7 +19,7 @@ import (
 // dispatch 按候选链依次尝试调用上游。直连路由是单候选的特例；别名路由可含
 // 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
 // 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
-func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, body []byte) {
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, body []byte) {
 	first := targets[0]
 	logger.Info("completion request",
 		"key_id", key.ID,
@@ -133,7 +133,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *store.ExtKey, u *store.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -177,7 +177,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 // callWithKeepalive 在流式头部已 flush 后执行一次上游调用；等待期间按
 // keepalive ticker 向客户端发 ping。clientGone=true 表示客户端上下文先结束
 // （上游调用随 r.Context() 取消，带缓冲的 callCh 保证 goroutine 不泄漏）。
-func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, writePing func(), u *model.Upstream, irReq *translate.Request, streamStart time.Time) (result *upstream.Result, err error, clientGone bool) {
+func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, writePing func(), u *store.Upstream, irReq *translate.Request, streamStart time.Time) (result *upstream.Result, err error, clientGone bool) {
 	type callRet struct {
 		result *upstream.Result
 		err    error
@@ -205,7 +205,7 @@ func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, wri
 	}
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
@@ -276,7 +276,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	// 透明。一旦进入事件转发阶段（有内容帧流出）就不再转移。并发已满的候选
 	// 直接跳过（预占时已过滤一遍；循环内再试占是为了覆盖故障转移到的候选）。
 	var result *upstream.Result
-	var win *model.AliasTarget
+	var win *store.AliasTarget
 	var winStart time.Time // 命中候选的调用开始时刻，作为该次调用的计时起点
 	var rec *convCtx
 	var lastErr error
@@ -551,9 +551,9 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	}
 }
 
-func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
+func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
 	total := usage.InputTokens + usage.OutputTokens
-	rec := &model.UsageRecord{
+	rec := &store.UsageRecord{
 		UpstreamName:        u.Name,
 		Model:               realModel,
 		InFormat:            inFormat,
@@ -577,9 +577,9 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 		rec.UpstreamID = &uid
 	}
 	if g.writer != nil {
-		g.writer.DoAsync(func(d *sql.DB) error { return model.InsertUsage(d, rec) })
+		g.writer.DoAsync(func(d *sql.DB) error { return store.InsertUsage(d, rec) })
 	} else {
-		if err := model.InsertUsage(g.db, rec); err != nil {
+		if err := store.InsertUsage(g.db, rec); err != nil {
 			logger.Error("record usage sync write failed", "key_id", rec.ExtKeyID, "upstream", rec.UpstreamName, "model", rec.Model, "total_tokens", rec.TotalTokens, "err", err)
 		}
 	}

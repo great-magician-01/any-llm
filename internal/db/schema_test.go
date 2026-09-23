@@ -375,7 +375,7 @@ func TestConversationShardDDLDialects(t *testing.T) {
 }
 
 // TestConversationShardColsMatchSchema 盯住插入列清单与 schema 定义一致：
-// model.insertConversationInto 直接用它拼装 INSERT。
+// store.insertConversationInto 直接用它拼装 INSERT。
 func TestConversationShardColsMatchSchema(t *testing.T) {
 	cols := ConversationShardCols()
 	if len(cols) != len(conversationRecordsCols)-1 {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 func TestBalanceVendor(t *testing.T) {
@@ -26,7 +26,7 @@ func TestBalanceVendor(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		got := BalanceVendor(&model.Upstream{BaseURL: c.baseURL})
+		got := BalanceVendor(&store.Upstream{BaseURL: c.baseURL})
 		if got != c.want {
 			t.Errorf("BalanceVendor(%q)=%q want %q", c.baseURL, got, c.want)
 		}
@@ -59,7 +59,7 @@ func TestFetchBalance_DeepSeek(t *testing.T) {
 	defer srv.Close()
 	registerTestHost(t, srv.URL, VendorDeepSeek)
 
-	u := &model.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "sk-test"}
+	u := &store.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "sk-test"}
 	vendor, payload, err := FetchBalance(context.Background(), http.DefaultClient, u)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestFetchBalance_KimiCoding(t *testing.T) {
 	defer srv.Close()
 	registerTestHost(t, srv.URL, VendorKimiCoding)
 
-	u := &model.Upstream{Name: "kimi", BaseURL: srv.URL, APIKey: "sk-kimi-test"}
+	u := &store.Upstream{Name: "kimi", BaseURL: srv.URL, APIKey: "sk-kimi-test"}
 	vendor, payload, err := FetchBalance(context.Background(), http.DefaultClient, u)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestNormalizeKimiCodingUsage_FaultTolerance(t *testing.T) {
 }
 
 func TestFetchBalance_Unsupported(t *testing.T) {
-	u := &model.Upstream{Name: "oai", BaseURL: "https://api.openai.com/v1", APIKey: "k"}
+	u := &store.Upstream{Name: "oai", BaseURL: "https://api.openai.com/v1", APIKey: "k"}
 	if _, _, err := FetchBalance(context.Background(), http.DefaultClient, u); err == nil {
 		t.Fatal("expected error for unsupported upstream")
 	}
@@ -184,7 +184,7 @@ func TestFetchBalance_UpstreamError(t *testing.T) {
 	defer srv.Close()
 	registerTestHost(t, srv.URL, VendorDeepSeek)
 
-	u := &model.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "bad"}
+	u := &store.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "bad"}
 	if _, _, err := FetchBalance(context.Background(), http.DefaultClient, u); err == nil {
 		t.Fatal("expected error for 401")
 	}
@@ -201,7 +201,7 @@ func TestFetchBalance_ErrorBodyTruncated(t *testing.T) {
 	defer srv.Close()
 	registerTestHost(t, srv.URL, VendorDeepSeek)
 
-	u := &model.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "k"}
+	u := &store.Upstream{Name: "ds", BaseURL: srv.URL, APIKey: "k"}
 	_, _, err := FetchBalance(context.Background(), http.DefaultClient, u)
 	if err == nil {
 		t.Fatal("expected error for 500")

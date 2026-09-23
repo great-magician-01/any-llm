@@ -3,7 +3,7 @@ package gateway
 import (
 	"sync"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 // concManager 跟踪各上游的在途请求数：按上游 ID 一个信号量（带缓冲 channel
@@ -30,7 +30,7 @@ func newConcManager() *concManager {
 // 表示不限，直接成功。成功时返回释放函数；释放幂等，重复调用是空操作。
 // 流式请求的槽位持有到上游流结束（连接存活期间都占并发数），非流式持有到
 // Call 返回（响应体已完整读取）。
-func (m *concManager) tryAcquire(u *model.Upstream) (release func(), ok bool) {
+func (m *concManager) tryAcquire(u *store.Upstream) (release func(), ok bool) {
 	if u.MaxConcurrent <= 0 {
 		return func() {}, true
 	}

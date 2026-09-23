@@ -1,0 +1,306 @@
+package store
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/great-magician-01/any-llm/internal/db"
+)
+
+type UsageSummary struct {
+	GroupKey string `json:"group_key"`
+	// ExtKeyID 仅 group_by=key 时填充：group_key 只是展示名（同名不合并），
+	// 客户端需要 id 才能区分同名行/回链到密钥。其它维度为 null/缺省。
+	ExtKeyID         *int64 `json:"ext_key_id,omitempty"`
+	RequestCount     int    `json:"request_count"`
+	TotalTokens      int    `json:"total_tokens"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	OkCount          int    `json:"ok_count"`
+	ErrorCount       int    `json:"error_count"`
+	// 平均输出速度（token/s）：按组内成功记录的 completion_tokens 总耗时加权，
+	// 无有效计时记录时为 0。
+	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
+}
+
+// UsageDayStat holds one local-day bucket of usage aggregates. Day is the
+// bucket start (local midnight).
+type UsageDayStat struct {
+	Day                 time.Time `json:"day"`
+	RequestCount        int       `json:"request_count"`
+	TotalTokens         int       `json:"total_tokens"`
+	PromptTokens        int       `json:"prompt_tokens"`
+	CompletionTokens    int       `json:"completion_tokens"`
+	CacheReadTokens     int       `json:"cache_read_tokens"`
+	CacheCreationTokens int       `json:"cache_creation_tokens"`
+	ReasoningTokens     int       `json:"reasoning_tokens"`
+	OkCount             int       `json:"ok_count"`
+	ErrorCount          int       `json:"error_count"`
+}
+
+// UsageDailyStats returns per-local-day aggregates for a window of whole
+// days. With no from/to it covers [today-days+1, today]; with both set it
+// covers [from's day, to's day] (capped at 90 days). Days without records are
+// zero-filled. Days are bucketed in the server's local timezone, matching the
+// day windows used by the token-limit checks.
+func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, error) {
+	if days < 1 {
+		days = 14
+	}
+	if days > 90 {
+		days = 90
+	}
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -(days - 1))
+	end := start.AddDate(0, 0, days) // exclusive
+	if from != "" && to != "" {
+		ft, err := parseTimeParam(from)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: invalid from: %w", err)
+		}
+		tt, err := parseTimeParam(to)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: invalid to: %w", err)
+		}
+		start = time.Date(ft.Year(), ft.Month(), ft.Day(), 0, 0, 0, 0, time.Local)
+		end = time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, 1)
+		if end.Before(start) {
+			start, end = end.AddDate(0, 0, -1), start.AddDate(0, 0, 1)
+		}
+		if end.Sub(start) > 90*24*time.Hour {
+			end = start.AddDate(0, 0, 90)
+		}
+	}
+	// 天数按日历日逐日数（AddDate 每次落在当地午夜），不能用 end.Sub(start)/24h：
+	// 含夏令时拨快的窗口实际不足 N×24 小时，截断会把最新一天的桶丢掉。
+	days = 0
+	for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
+		days++
+	}
+	if days < 1 {
+		days = 1
+	}
+	// 三种方言各有一个「截到本地日」的表达式，统一产出 "YYYY-MM-DD" 文本：
+	// PG 用 date_trunc，MySQL 用 DATE_FORMAT，SQLite 取前 10 个字符
+	// （modernc/sqlite 把 time.Time 存成驱动格式，SQLite 的日期函数解析不了）。
+	bucketExpr := db.DayBucketExpr(d, "created_at")
+	rows, err := d.Query(db.Rebind(d, `SELECT `+bucketExpr+` AS bucket,
+		COUNT(*),
+		COALESCE(SUM(total_tokens), 0), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
+		COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END), 0)
+		FROM usage_records WHERE created_at >= ? AND created_at < ? GROUP BY bucket ORDER BY bucket`), start, end)
+	if err != nil {
+		return nil, fmt.Errorf("usage daily stats: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UsageDayStat, 0, days)
+	for i := 0; i < days; i++ {
+		out = append(out, UsageDayStat{Day: start.AddDate(0, 0, i)})
+	}
+	for rows.Next() {
+		var bucket string
+		var s UsageDayStat
+		if err := rows.Scan(&bucket, &s.RequestCount, &s.TotalTokens, &s.PromptTokens, &s.CompletionTokens,
+			&s.CacheReadTokens, &s.CacheCreationTokens, &s.ReasoningTokens, &s.OkCount, &s.ErrorCount); err != nil {
+			return nil, fmt.Errorf("usage daily stats: %w", err)
+		}
+		day, err := time.ParseInLocation("2006-01-02", bucket, time.Local)
+		if err != nil {
+			return nil, fmt.Errorf("usage daily stats: parse bucket %q: %w", bucket, err)
+		}
+		for i := range out {
+			if out[i].Day.Equal(day) {
+				out[i] = s
+				out[i].Day = day
+				break
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// SumTokens returns the total tokens consumed in the half-open time window
+// [from, to) for the given ext key or upstream. Pass a non-nil extKeyID to
+// aggregate by ext key, or a non-nil upstreamID to aggregate by upstream.
+// If both are nil the function returns 0.
+func SumTokens(d *sql.DB, extKeyID, upstreamID *int64, from, to time.Time) (int, error) {
+	if extKeyID == nil && upstreamID == nil {
+		return 0, nil
+	}
+	q := `SELECT COALESCE(SUM(total_tokens), 0) FROM usage_records WHERE created_at >= ? AND created_at < ?`
+	args := []any{from, to}
+	if extKeyID != nil {
+		q += ` AND ext_key_id = ?`
+		args = append(args, *extKeyID)
+	} else {
+		q += ` AND upstream_id = ?`
+		args = append(args, *upstreamID)
+	}
+	var sum int
+	if err := d.QueryRow(db.Rebind(d, q), args...).Scan(&sum); err != nil {
+		return 0, fmt.Errorf("sum tokens: %w", err)
+	}
+	return sum, nil
+}
+
+func InsertUsage(d *sql.DB, r *UsageRecord) error {
+	ts := r.CreatedAt
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	_, err := d.Exec(db.Rebind(d, `INSERT INTO usage_records
+		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
+		 prompt_tokens, completion_tokens, total_tokens,
+		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		 duration_ms, stream, status, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
+		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
+		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
+		r.DurationMs, b2i(r.Stream), r.Status, ts)
+	if err != nil {
+		return fmt.Errorf("insert usage: %w", err)
+	}
+	return nil
+}
+
+func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, error) {
+	// 每个维度给出三元组：展示表达式（即 group_key）、FROM 子句、GROUP BY 表达式。
+	fromClause := "usage_records u"
+	selectCol, groupCol := "u.model", "u.model"
+	// idCol 仅 key 维度追加 u.ext_key_id（客户端用它区分同名行），其它维度为空。
+	idCol := ""
+	switch groupBy {
+	case "key":
+		// 展示密钥名称而非 id。仍按 ext_key_id 分组（同名 key 不合并成一行），
+		// 名称从 ext_keys 关联读出——软删除的行保留，历史用量照样显示名称。
+		// 名称为空或 key 已不存在的记录回退 #id，连 id 都没有的旧记录显示 —。
+		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
+		// '#' || CAST(u.ext_key_id AS TEXT)；MySQL 的 || 是逻辑或，改用 CONCAT。
+		hashID := db.ConcatExpr(d, "'#'", db.CastTextExpr(d, "u.ext_key_id"))
+		selectCol = "COALESCE(NULLIF(k.label, ''), " + hashID + ", '—')"
+		// 分组带上 k.label：k.label 由主键 k.id 函数决定，加上它语义完全不变，
+		// 但三种方言都不会再撞 ONLY_FULL_GROUP_BY（PG 靠函数依赖识别，MySQL 8
+		// 默认开启 ONLY_FULL_GROUP_BY 且识别更严格）。
+		groupCol = "k.id, k.label, u.ext_key_id"
+		idCol = ", u.ext_key_id"
+	case "upstream":
+		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
+	}
+	q := fmt.Sprintf(`SELECT %s AS gk%s, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
+		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),
+		COALESCE(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN completion_tokens ELSE 0 END) * 1000.0
+			/ NULLIF(SUM(CASE WHEN status='ok' AND duration_ms > 0 THEN duration_ms ELSE 0 END), 0), 0)
+		FROM %s`, selectCol, idCol, fromClause)
+	var conditions []string
+	var args []any
+	if from != "" {
+		t, err := parseTimeParam(from)
+		if err != nil {
+			return nil, fmt.Errorf("usage summary: invalid from: %w", err)
+		}
+		conditions = append(conditions, "u.created_at >= ?")
+		args = append(args, t)
+	}
+	if to != "" {
+		t, err := parseTimeParam(to)
+		if err != nil {
+			return nil, fmt.Errorf("usage summary: invalid to: %w", err)
+		}
+		conditions = append(conditions, "u.created_at <= ?")
+		args = append(args, t)
+	}
+	if len(conditions) > 0 {
+		q += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	q += fmt.Sprintf(" GROUP BY %s ORDER BY gk", groupCol)
+	rows, err := d.Query(db.Rebind(d, q), args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage summary: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UsageSummary, 0)
+	for rows.Next() {
+		var s UsageSummary
+		dest := []any{&s.GroupKey}
+		if idCol != "" {
+			dest = append(dest, &s.ExtKeyID)
+		}
+		dest = append(dest, &s.RequestCount, &s.TotalTokens, &s.PromptTokens,
+			&s.CompletionTokens, &s.OkCount, &s.ErrorCount, &s.AvgTokensPerSec)
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// parseTimeParam parses a from/to query parameter into a time.Time. It
+// accepts RFC3339 (with timezone offset) as well as naive local formats
+// (interpreted in the server's local timezone, matching how created_at is
+// written by InsertUsage). The result must be passed to queries as a
+// time.Time — plain strings compare incorrectly against created_at under
+// modernc.org/sqlite (DATETIME column affinity).
+func parseTimeParam(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported time format %q", s)
+}
+
+func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 200 {
+		size = 50
+	}
+	var total int
+	if err := d.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count usage: %w", err)
+	}
+	offset := (page - 1) * size
+	rows, err := d.Query(db.Rebind(d, `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
+		prompt_tokens, completion_tokens, total_tokens,
+		cache_read_tokens, cache_creation_tokens, reasoning_tokens,
+		duration_ms, stream, status, created_at
+		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list usage: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UsageRecord, 0)
+	for rows.Next() {
+		var r UsageRecord
+		var stream int
+		var extKeyID sql.NullInt64
+		var upstreamID sql.NullInt64
+		if err := rows.Scan(&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
+			&r.InFormat, &r.UpFormat, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
+			&r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens,
+			&r.DurationMs, &stream, &r.Status, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		if extKeyID.Valid {
+			id := extKeyID.Int64
+			r.ExtKeyID = &id
+		}
+		if upstreamID.Valid {
+			id := upstreamID.Int64
+			r.UpstreamID = &id
+		}
+		r.Stream = stream != 0
+		out = append(out, r)
+	}
+	return out, total, nil
+}

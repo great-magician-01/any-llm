@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/great-magician-01/any-llm/internal/db"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -51,7 +51,7 @@ func pgConvTestDB(t *testing.T) *sql.DB {
 	}
 	// 分表注册缓存是进程级全局变量：每个测试用自己的 schema，需按当前
 	// schema 重载，避免串到其他测试的缓存状态。
-	if err := model.LoadConvShards(d); err != nil {
+	if err := store.LoadConvShards(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 		d.Close()
 		t.Fatalf("load conversation shards: %v", err)
@@ -89,9 +89,9 @@ func TestPGConvNonStream(t *testing.T) {
 	defer srv.Close()
 
 	g, d, w := setupPGGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	reqBody := `{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`
@@ -116,7 +116,7 @@ func TestPGConvNonStream(t *testing.T) {
 	// 归档按月分表：新记录落在当月分表。
 	err := d.QueryRow(`SELECT harness, user_agent, status, in_format, stream,
 		prompt_tokens, completion_tokens, total_tokens, request_ir, response_ir,
-		request_raw, response_raw, ext_key_id FROM `+model.ConvShardName(time.Now())).Scan(
+		request_raw, response_raw, ext_key_id FROM `+store.ConvShardName(time.Now())).Scan(
 		&harness, &userAgent, &status, &inFmt, &stream,
 		&pt, &ct, &tt, &reqIR, &respIR, &reqRaw, &respRaw, &extKeyID)
 	if err != nil {
@@ -178,9 +178,9 @@ func TestPGConvStream(t *testing.T) {
 	defer srv.Close()
 
 	g, d, w := setupPGGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "claude-3-5"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "claude-3-5"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"ant/claude-3-5","messages":[{"role":"user","content":"hi"}],"stream":true}`))
@@ -198,7 +198,7 @@ func TestPGConvStream(t *testing.T) {
 		stream                  int
 		respRaw                 []byte
 	)
-	err := d.QueryRow(`SELECT harness, status, stream, response_ir, response_raw FROM `+model.ConvShardName(time.Now())).Scan(
+	err := d.QueryRow(`SELECT harness, status, stream, response_ir, response_raw FROM `+store.ConvShardName(time.Now())).Scan(
 		&harness, &status, &stream, &respIR, &respRaw)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -237,9 +237,9 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	defer srv.Close()
 
 	g, d, w := setupPGGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	// 模拟存量库：历史分表（沿用旧 schema 的 BIGSERIAL，自带共享序列）+ 一条旧数据。
@@ -278,7 +278,7 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 		t.Fatalf("insert legacy row: %v", err)
 	}
 	// 历史分表是启动后（外部）出现的：重载注册缓存让其生效。
-	if err := model.LoadConvShards(d); err != nil {
+	if err := store.LoadConvShards(d); err != nil {
 		t.Fatalf("reload shards: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	flushConv(w)
 
 	// 列表：total=2，新→旧（分表块序：月分表在前，历史分表在后）。
-	records, total, err := model.ConversationRecordsList(d, 1, 10)
+	records, total, err := store.ConversationRecordsList(d, 1, 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -306,20 +306,20 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	newID := records[0].ID
 
 	// 翻页跨表拼接：size=1 时第 1 页是月分表的新记录，第 2 页是历史分表的旧记录。
-	p1, _, err := model.ConversationRecordsList(d, 1, 1)
+	p1, _, err := store.ConversationRecordsList(d, 1, 1)
 	if err != nil || len(p1) != 1 || p1[0].Model != "gpt-4o" {
 		t.Fatalf("page1=%+v err=%v", p1, err)
 	}
-	p2, _, err := model.ConversationRecordsList(d, 2, 1)
+	p2, _, err := store.ConversationRecordsList(d, 2, 1)
 	if err != nil || len(p2) != 1 || p2[0].Model != "legacy-model" {
 		t.Fatalf("page2=%+v err=%v", p2, err)
 	}
 
 	// 详情：两条记录跨分表都能按 id 取到（id 由共享序列保证全局唯一）。
-	if _, err := model.GetConversation(d, p2[0].ID); err != nil {
+	if _, err := store.GetConversation(d, p2[0].ID); err != nil {
 		t.Fatalf("get legacy id=%d: %v", p2[0].ID, err)
 	}
-	got, err := model.GetConversation(d, newID)
+	got, err := store.GetConversation(d, newID)
 	if err != nil {
 		t.Fatalf("get new id=%d: %v", newID, err)
 	}
@@ -336,9 +336,9 @@ func TestPGConvUpstreamError(t *testing.T) {
 	defer srv.Close()
 
 	g, d, w := setupPGGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
@@ -349,7 +349,7 @@ func TestPGConvUpstreamError(t *testing.T) {
 
 	var status string
 	var tt int
-	err := d.QueryRow(`SELECT status, total_tokens FROM `+model.ConvShardName(time.Now())).Scan(&status, &tt)
+	err := d.QueryRow(`SELECT status, total_tokens FROM `+store.ConvShardName(time.Now())).Scan(&status, &tt)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

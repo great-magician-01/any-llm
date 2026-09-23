@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
@@ -58,9 +58,9 @@ func TestNonStreamFlowUnaffectedOnSQLite(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -94,9 +94,9 @@ func TestStreamFlowUnaffectedOnSQLite(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
-	k, _ := model.CreateExtKey(d, "test", "", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`))
