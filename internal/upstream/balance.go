@@ -18,6 +18,7 @@ import (
 const (
 	VendorDeepSeek   = "deepseek"
 	VendorKimiCoding = "kimi-coding"
+	VendorStepFun    = "stepfun"
 )
 
 // balanceVendorHosts maps a base-URL hostname to its balance/quota vendor.
@@ -26,6 +27,9 @@ const (
 var balanceVendorHosts = map[string]string{
 	"api.deepseek.com": VendorDeepSeek,
 	"api.kimi.com":     VendorKimiCoding,
+	// stepfun.com 是国内站、stepfun.ai 是国际站，同一套账户 API。
+	"api.stepfun.com": VendorStepFun,
+	"api.stepfun.ai":  VendorStepFun,
 }
 
 // BalanceVendor reports which vendor-specific balance/quota API an upstream
@@ -53,6 +57,8 @@ func balanceURL(u *store.Upstream, vendor string) (string, error) {
 		return origin + "/user/balance", nil
 	case VendorKimiCoding:
 		return origin + "/coding/v1/usages", nil
+	case VendorStepFun:
+		return origin + "/v1/accounts", nil
 	}
 	return "", fmt.Errorf("unsupported vendor: %s", vendor)
 }
@@ -83,6 +89,8 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *store.Upstrea
 		payload, err = normalizeDeepSeekBalance(body)
 	case VendorKimiCoding:
 		payload, err = normalizeKimiCodingUsage(body)
+	case VendorStepFun:
+		payload, err = normalizeStepFunAccount(body)
 	}
 	if err != nil {
 		logger.Error("fetch balance: normalize failed", "vendor", vendor, "upstream", u.Name, "err", err)
@@ -177,6 +185,51 @@ func normalizeDeepSeekBalance(body []byte) (json.RawMessage, error) {
 		return nil, fmt.Errorf("encode balance payload: %w", err)
 	}
 	return payload, nil
+}
+
+// normalizeStepFunAccount converts GET /v1/accounts into the balance payload.
+// The wire amounts are JSON numbers (unlike DeepSeek's strings); json.Number
+// keeps the raw literal so no float precision is lost in the stored snapshot.
+// 充值金额映射 topped_up，赠送金额映射 granted。is_available 厂商不给，按账户
+// 语义推导：postpaid 先用后付视为可用，prepaid 看余额是否大于零。
+func normalizeStepFunAccount(body []byte) (json.RawMessage, error) {
+	var resp struct {
+		Type                string      `json:"type"` // prepaid | postpaid
+		Balance             json.Number `json:"balance"`
+		TotalCashBalance    json.Number `json:"total_cash_balance"`
+		TotalVoucherBalance json.Number `json:"total_voucher_balance"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode stepfun account: %w", err)
+	}
+	available := resp.Type == "postpaid"
+	if bal, err := resp.Balance.Float64(); err == nil && bal > 0 {
+		available = true
+	}
+	out := balancePayload{
+		Kind:        "balance",
+		IsAvailable: available,
+		Balances: []balanceEntry{{
+			Currency: "CNY",
+			Total:    numberOrZero(resp.Balance),
+			Granted:  numberOrZero(resp.TotalVoucherBalance),
+			ToppedUp: numberOrZero(resp.TotalCashBalance),
+		}},
+	}
+	payload, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode balance payload: %w", err)
+	}
+	return payload, nil
+}
+
+// numberOrZero renders a wire amount literal, mapping an absent field to "0"
+// so the UI never shows a bare currency symbol.
+func numberOrZero(n json.Number) string {
+	if n == "" {
+		return "0"
+	}
+	return n.String()
 }
 
 // normalizeKimiCodingUsage converts GET /coding/v1/usages into the quota
