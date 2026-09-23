@@ -9,10 +9,15 @@
  * - ~/.dsh/.credentials.yaml：扁平的「引用: 密钥」映射，ext key 明文落在这一行。
  * 因此一份剪贴板文本装两个片段，靠段头注释指明各自的粘贴位置。
  *
- * 不声明 reasoningEfforts：网关 IR 不承载 reasoning_effort 一类的推理档位参数，
- * 声明了只会让 dsh 发出被网关静默丢弃的字段；手工声明的模型在 dsh 里不暴露
- * 推理控件，上游模型按自身默认行为推理。contextWindow / maxTokens 只在网关
- * 录了值（> 0）时输出，缺省交给 dsh 的路由回退值（262144 / 32768）。
+ * 每个模型统一声明 reasoningEfforts（off + low/medium/high 透传档位）：
+ * reasoning_effort 不是 IR 的具名字段，但各格式的 extractExtra 会把它收进
+ * Request.Extra、编码时原样合并进上游请求（OpenAI 与 Anthropic 编码器都如此），
+ * 所以选中的档位会真实抵达上游，由厂商决定是否生效。off 不给线值（选中时
+ * 不发送该字段，用上游默认行为）；xhigh/max 等 pi-ai 扩展档位没有通行线值，
+ * 不声明。上游若说别的推理方言（DeepSeek 的 thinking 对象等），在模型条目上
+ * 加 compat.thinkingFormat 自行切换。
+ * contextWindow / maxTokens 只在网关录了值（> 0）时输出，缺省交给 dsh 的
+ * 路由回退值（262144 / 32768）。
  */
 import { yamlScalar } from './yaml'
 
@@ -71,6 +76,13 @@ export function buildDshYaml(opts: DshConfigOptions): string {
       settings.push(`        - id: ${yamlScalar(m.id)}`, `          name: ${yamlScalar(m.id)}`)
       if (m.contextWindow > 0) settings.push(`          contextWindow: ${m.contextWindow}`)
       if (m.maxTokens > 0) settings.push(`          maxTokens: ${m.maxTokens}`)
+      settings.push(
+        '          reasoningEfforts:',
+        '            off:',
+        '            low: low',
+        '            medium: medium',
+        '            high: high',
+      )
     }
   }
   return (

@@ -38,10 +38,20 @@ llm-pi-ai:
           name: deepseek/deepseek-v4-pro
           contextWindow: 1000000
           maxTokens: 384000
+          reasoningEfforts:
+            off:
+            low: low
+            medium: medium
+            high: high
         - id: openai/gpt-4o
           name: openai/gpt-4o
           contextWindow: 128000
           maxTokens: 16384
+          reasoningEfforts:
+            off:
+            low: low
+            medium: medium
+            high: high
 
 # ----- ~/.dsh/.credentials.yaml -----
 ANY_LLM_API_KEY: all-sk-test0000000000000000000000000
@@ -75,5 +85,7 @@ ANY_LLM_API_KEY: all-sk-test0000000000000000000000000
     })
     expect(yaml).not.toContain('contextWindow')
     expect(yaml).not.toContain('maxTokens')
+    // 推理档位不受容量缺省影响，仍完整声明
+    expect(yaml).toContain('          reasoningEfforts:')
   })
 })
