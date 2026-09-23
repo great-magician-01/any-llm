@@ -107,7 +107,7 @@ var schemaTables = []Table{
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			{Name: "updated_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			// 有效期截止时刻；可空，NULL = 永久有效。到点后网关侧等同禁用（见
-			// model.Upstream.Expired）。
+			// store.Upstream.Expired）。
 			{Name: "expires_at", Type: TypeTime, Nullable: true, LateAdd: true},
 			{Name: "is_active", Type: TypeInt, Default: "1", LateAdd: true},
 		},
@@ -295,7 +295,7 @@ func convShardIndexes(suffix string) []Index {
 }
 
 // convColumnOrder 是归档插入的列顺序（即参数顺序）。单独列出来供
-// model.insertConversationInto 拼装 INSERT，避免列清单与值列表漂移。
+// store.insertConversationInto 拼装 INSERT，避免列清单与值列表漂移。
 var convColumnOrder = []string{
 	"ext_key_id", "upstream_id", "upstream_name", "model", "in_format", "up_format",
 	"harness", "user_agent", "stream", "status",
@@ -809,7 +809,7 @@ func createTableStmts(d Dialect) ([]string, error) {
 
 // ConversationShardDDL 渲染一张对话归档月分表的 DDL。MySQL 的索引内联；PG 另需
 // CREATE SEQUENCE（由 ShardSequenceStatements 提供）。name 必须已过
-// model.convShardNameRe 白名单。
+// store.convShardNameRe 白名单。
 //
 // SQLite 拒绝渲染：它走 conversation_records 单表路径，没有分表机制。生成一份
 // 永远不会被执行的 DDL 只会让人误以为 SQLite 也支持分表。

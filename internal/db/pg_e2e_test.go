@@ -407,7 +407,7 @@ func deleteUpstreamE2E(d *sql.DB, id int64) error {
 	return err
 }
 
-// addModelE2E 复刻 model.AddModel 的两步策略：先复活同名软删行，复活不到再插入。
+// addModelE2E 复刻 store.AddModel 的两步策略：先复活同名软删行，复活不到再插入。
 // 少了复活这一步，软删后重加会新建一行而不是复用原 id —— MySQL e2e 正是靠它断言
 // 「复用同一行 id」，顺带覆盖 MySQL 错误 1093 的派生表改写。
 func addModelE2E(d *sql.DB, upstreamID int64, name string, manual bool) error {
@@ -589,7 +589,7 @@ func insertUsageE2E(d *sql.DB, r usageRecord) error {
 	return err
 }
 
-// usageSummaryE2E 是 model.UsageSummaryByGroup 的副本（db 包不能 import model），
+// usageSummaryE2E 是 store.UsageSummaryByGroup 的副本（db 包不能 import model），
 // 改动生产查询时需同步这里。
 func usageSummaryE2E(d *sql.DB, groupBy, from, to string) ([]summaryRow, error) {
 	fromClause := "usage_records u"

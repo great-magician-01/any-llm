@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 // Supported balance/quota vendors, identified by the upstream's base-URL host.
@@ -30,7 +30,7 @@ var balanceVendorHosts = map[string]string{
 
 // BalanceVendor reports which vendor-specific balance/quota API an upstream
 // supports, by the host of its base URL. "" means unsupported.
-func BalanceVendor(u *model.Upstream) string {
+func BalanceVendor(u *store.Upstream) string {
 	parsed, err := url.Parse(u.BaseURL)
 	if err != nil {
 		return ""
@@ -42,7 +42,7 @@ func BalanceVendor(u *model.Upstream) string {
 // origin (scheme://host) plus a fixed path. endpointURL is not used: it
 // inserts /v1 for anthropic-format upstreams, while these vendor APIs have
 // their own path rules (DeepSeek's balance endpoint has no /v1 prefix).
-func balanceURL(u *model.Upstream, vendor string) (string, error) {
+func balanceURL(u *store.Upstream, vendor string) (string, error) {
 	parsed, err := url.Parse(u.BaseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse base url: %w", err)
@@ -61,7 +61,7 @@ func balanceURL(u *model.Upstream, vendor string) (string, error) {
 // vendor id plus a normalized JSON payload (kind=balance|quota). The vendor
 // is derived from the upstream's base-URL host; unsupported upstreams return
 // an error.
-func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstream) (string, json.RawMessage, error) {
+func FetchBalance(ctx context.Context, httpClient *http.Client, u *store.Upstream) (string, json.RawMessage, error) {
 	vendor := BalanceVendor(u)
 	if vendor == "" {
 		return "", nil, fmt.Errorf("balance fetch not supported for upstream %q", u.Name)
@@ -91,7 +91,7 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstrea
 	return vendor, payload, nil
 }
 
-func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, u *model.Upstream) ([]byte, error) {
+func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, u *store.Upstream) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		logger.Error("fetch balance: create request", "url", url, "err", err)

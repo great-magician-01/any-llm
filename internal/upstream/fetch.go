@@ -8,10 +8,10 @@ import (
 	"net/http"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
-func FetchModels(ctx context.Context, httpClient *http.Client, u *model.Upstream) ([]string, error) {
+func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream) ([]string, error) {
 	// Anthropic's models endpoint is /v1/models; endpointURL inserts the /v1
 	// when the base URL doesn't already carry it. Some providers (e.g.
 	// DeepSeek) do not expose a models listing on their anthropic-compat

@@ -598,7 +598,7 @@ func listBalanceSnapshotsE2E(d *sql.DB, upstreamID int64) ([]struct {
 }
 
 // ensureConvShardForTest 建当月分表。db 包不能 import model（会成环），所以这里
-// 直接用渲染器 —— 生产路径走 model.EnsureConversationShard，两者同一份 DDL。
+// 直接用渲染器 —— 生产路径走 store.EnsureConversationShard，两者同一份 DDL。
 func ensureConvShardForTest(d *sql.DB, t time.Time) error {
 	name := "conversation_records_" + t.Format("2006_01")
 	stmts, err := ConversationShardDDL(DialectOf(d), name, "conversation_records_id_seq")

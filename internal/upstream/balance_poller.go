@@ -9,7 +9,7 @@ import (
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 // BalancePoller periodically snapshots vendor balance/quota for every
@@ -82,7 +82,7 @@ func (p *BalancePoller) Stop() {
 // Failures (vendor unreachable, disabled, unsupported) only log and skip that
 // upstream. Also used for the manual refresh and the one-shot poll at boot.
 func (p *BalancePoller) PollOnce(ctx context.Context) {
-	upstreams, err := model.ListUpstreams(p.d, nil)
+	upstreams, err := store.ListUpstreams(p.d, nil)
 	if err != nil {
 		logger.Error("balance poller: list upstreams failed", "err", err)
 		return
@@ -100,7 +100,7 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 			}
 			continue
 		}
-		snap := &model.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
-		p.writer.DoAsync(func(d *sql.DB) error { return model.InsertBalanceSnapshot(d, snap) })
+		snap := &store.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
+		p.writer.DoAsync(func(d *sql.DB) error { return store.InsertBalanceSnapshot(d, snap) })
 	}
 }
