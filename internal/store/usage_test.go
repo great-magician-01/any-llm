@@ -225,8 +225,11 @@ func TestUsageDailyStats(t *testing.T) {
 	if s, _ := UsageDailyStats(d, 0, "", ""); len(s) != 14 {
 		t.Fatalf("days=0 len=%d want default 14", len(s))
 	}
-	if s, _ := UsageDailyStats(d, 365, "", ""); len(s) != 90 {
-		t.Fatalf("days=365 len=%d want clamp 90", len(s))
+	if s, _ := UsageDailyStats(d, 365, "", ""); len(s) != 365 {
+		t.Fatalf("days=365 len=%d want 365 (dashboard calendar window)", len(s))
+	}
+	if s, _ := UsageDailyStats(d, 999, "", ""); len(s) != maxUsageDailyDays {
+		t.Fatalf("days=999 len=%d want clamp %d", len(s), maxUsageDailyDays)
 	}
 
 	// explicit from/to window: yesterday only
