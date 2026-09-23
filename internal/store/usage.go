@@ -40,17 +40,23 @@ type UsageDayStat struct {
 	ErrorCount          int       `json:"error_count"`
 }
 
+// maxUsageDailyDays caps the daily-stats window. The usage page queries at
+// most 90 days; the dashboard's contribution-calendar heatmap asks for a full
+// year (53 week-columns ≈ 371 cells, the leading blank cells never carry
+// data), so the cap sits just above 366.
+const maxUsageDailyDays = 370
+
 // UsageDailyStats returns per-local-day aggregates for a window of whole
 // days. With no from/to it covers [today-days+1, today]; with both set it
-// covers [from's day, to's day] (capped at 90 days). Days without records are
-// zero-filled. Days are bucketed in the server's local timezone, matching the
-// day windows used by the token-limit checks.
+// covers [from's day, to's day] (both capped at maxUsageDailyDays). Days
+// without records are zero-filled. Days are bucketed in the server's local
+// timezone, matching the day windows used by the token-limit checks.
 func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, error) {
 	if days < 1 {
 		days = 14
 	}
-	if days > 90 {
-		days = 90
+	if days > maxUsageDailyDays {
+		days = maxUsageDailyDays
 	}
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -(days - 1))
@@ -69,8 +75,8 @@ func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, erro
 		if end.Before(start) {
 			start, end = end.AddDate(0, 0, -1), start.AddDate(0, 0, 1)
 		}
-		if end.Sub(start) > 90*24*time.Hour {
-			end = start.AddDate(0, 0, 90)
+		if end.Sub(start) > maxUsageDailyDays*24*time.Hour {
+			end = start.AddDate(0, 0, maxUsageDailyDays)
 		}
 	}
 	// 天数按日历日逐日数（AddDate 每次落在当地午夜），不能用 end.Sub(start)/24h：
