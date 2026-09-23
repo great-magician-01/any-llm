@@ -2,12 +2,14 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { fetchSummary, type UsageSummary } from '@/api/usage'
-import { listUpstreams } from '@/api/upstreams'
+import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '@/api/usage'
+import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import UsageCalendar from '@/components/UsageCalendar.vue'
+import UpstreamUsagePanel from '@/components/UpstreamUsagePanel.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -17,6 +19,9 @@ const today = ref({ requests: 0, tokens: 0, ok: 0, error: 0 })
 const month = ref({ requests: 0, tokens: 0 })
 const allTime = ref({ requests: 0, tokens: 0 })
 const topModels = ref<UsageSummary[]>([])
+const daily = ref<UsageDayStat[]>([])
+const upstreamRows = ref<Upstream[]>([])
+const usageByUpstream = ref<Record<number, UsageTotals>>({})
 const upstreamCount = ref(0)
 const modelCount = ref(0)
 const keyCount = ref(0)
@@ -49,21 +54,35 @@ function monthStart(): string {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [todayList, monthList, allList, ups, ks] = await Promise.all([
+    const [todayList, monthList, allList, ups, ks, dailyStats] = await Promise.all([
       fetchSummary('model', dayStart()),
       fetchSummary('model', monthStart()),
       fetchSummary('model'),
       listUpstreams(),
       listKeys(),
+      // 日历热力图要铺满 53 周，窗口略大于一年（后端上限 370 天）
+      fetchDaily(370),
     ])
     today.value = sum(todayList)
     month.value = sum(monthList)
     allTime.value = sum(allList)
     topModels.value = [...monthList].sort((a, b) => b.total_tokens - a.total_tokens).slice(0, 8)
+    daily.value = dailyStats
+    upstreamRows.value = ups
     upstreamCount.value = ups.length
     modelCount.value = ups.reduce((n, u) => n + (u.model_count ?? 0), 0)
     keyCount.value = ks.length
     enabledKeyCount.value = ks.filter((k) => k.enabled).length
+    // 每个上游的今日/本月用量：依赖上游列表，跟在第一批之后（同 API 密钥页的做法）
+    const usageResults = await Promise.all(
+      ups.map((u) => (u.id != null ? getUpstreamUsage(u.id).catch(() => null) : Promise.resolve(null))),
+    )
+    const uMap: Record<number, UsageTotals> = {}
+    ups.forEach((u, i) => {
+      const r = usageResults[i]
+      if (u.id != null && r) uMap[u.id] = r
+    })
+    usageByUpstream.value = uMap
   } catch (e: any) {
     if (!silent) message.error('加载概览失败：' + (e?.message || String(e)))
   } finally {
@@ -138,6 +157,8 @@ onUnmounted(() => clearInterval(timer))
       />
     </div>
 
+    <UsageCalendar :stats="daily" />
+
     <div class="dash-grid">
       <n-card title="本月模型用量 Top" class="panel">
         <div v-if="topModels.length === 0" class="empty-hint">本月暂无用量数据</div>
@@ -195,6 +216,8 @@ onUnmounted(() => clearInterval(timer))
           </p>
         </n-card>
       </div>
+
+      <UpstreamUsagePanel :upstreams="upstreamRows" :usage="usageByUpstream" />
     </div>
   </div>
 </template>
