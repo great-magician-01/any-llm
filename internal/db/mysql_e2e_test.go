@@ -14,7 +14,9 @@ import (
 // database。未配置 DSN 时跳过。与 pgTestDB 的 schema 隔离对应：MySQL 的
 // database 就是 schema，所以按库隔离。
 //
-// 需要建库/删库权限；清理时先关闭连接再 drop，否则 mysqld 还占着连接。
+// 需要建库/删库权限；清理时先关闭业务连接再 drop（t.Cleanup 后进先出），否则
+// mysqld 还占着连接。控制连接必须活到清理那一刻：若在 helper 里 defer 关掉它，
+// DROP 会永远打在已关闭的连接上（错误被丢弃，测试库就此泄漏）。
 func mysqlTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("DB_TEST_MYSQL_DSN")
@@ -33,18 +35,22 @@ func mysqlTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open control conn: %v", err)
 	}
-	defer ctrl.Close()
 	if err := ctrl.Ping(); err != nil {
+		ctrl.Close()
 		t.Fatalf("ping control conn: %v", err)
 	}
 	// 建库时把字符集/排序规则钉死成与表级一致，避免服务器默认值不同导致行为漂移。
 	if _, err := ctrl.Exec(fmt.Sprintf(
 		"CREATE DATABASE %s DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", dbName)); err != nil {
+		ctrl.Close()
 		t.Fatalf("create database: %v", err)
 	}
 	t.Cleanup(func() {
-		// d 已关闭（下方 defer），这里用控制连接删库。
-		ctrl.Exec(fmt.Sprintf("DROP DATABASE %s", dbName))
+		// d 已关闭（下方 Cleanup 后注册、先执行），这里用控制连接删库。
+		if _, err := ctrl.Exec(fmt.Sprintf("DROP DATABASE %s", dbName)); err != nil {
+			t.Errorf("drop database %s: %v", dbName, err)
+		}
+		ctrl.Close()
 	})
 
 	cfg.DBName = dbName
@@ -633,4 +639,23 @@ func colOf(tableCol string) string {
 		}
 	}
 	return tableCol
+}
+
+// MySQL 的索引内联在 CREATE TABLE 里，天然没有「声明了却没建」的缺口；这个测试
+// 把它钉成不变量（与 SQLite/PG 侧的同名断言对应），防的是将来渲染器改动把内联
+// 索引弄丢。
+func TestMySQL_E2E_FreshSchemaHasAllDeclaredIndexes(t *testing.T) {
+	d := mysqlTestDB(t)
+	for _, tbl := range tablesFor(DialectMySQL) {
+		for _, ix := range tbl.Idx {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics
+				WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`, tbl.Name, ix.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("index %s on %s declared in schema but missing on a fresh database", ix.Name, tbl.Name)
+			}
+		}
+	}
 }
