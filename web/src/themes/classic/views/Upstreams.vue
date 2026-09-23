@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, h } from 'vue'
+import { ref, computed, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '@/api/upstreams'
@@ -8,6 +8,7 @@ import { exportConfig, importConfig, type ConfigFile } from '@/api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '@/utils/configTransfer'
 import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '@/utils/balance'
 import { expiryLabel, expiryToISO, isoToExpiry } from '@/utils/upstreamStatus'
+import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
 import { useUpstreamList } from '@/composables/useUpstreamList'
 import AppIcon from '@/components/AppIcon.vue'
@@ -22,6 +23,19 @@ const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: ''
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
 const editing = ref<Upstream | null>(null)
+// 内置上游预设快捷选择：只在「添加」时展示（编辑已有上游不套模板）。选中只
+// 带出 base_url 和 format 两项，名称/Key/限额仍由用户填，带出后字段也保持可改；
+// 清空选择（自定义）不动已填内容。
+const presetKey = ref<string | null>(null)
+const presetOptions = presetSelectOptions()
+const activePreset = computed(() => findPreset(presetKey.value))
+function onPresetSelect(key: string | null) {
+  presetKey.value = key
+  const p = findPreset(key)
+  if (!p) return
+  form.value.base_url = p.baseUrl
+  form.value.format = p.format
+}
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
 const newModelByUpstream = ref<Record<number, string>>({})
@@ -163,11 +177,11 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
-function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); showForm.value = true }
+function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; showForm.value = true }
 function add() { editing.value = null; resetForm(); showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function fetchM(id: number) {
@@ -517,6 +531,21 @@ onMounted(() => {
     <n-modal :show="showForm" @update:show="(show: boolean) => { if (!show) showForm = false }">
       <n-card :title="editing ? '编辑上游' : '添加上游'" :bordered="false" style="width:500px">
         <n-form label-placement="top">
+          <n-form-item v-if="!editing" label="快捷配置">
+            <div style="width: 100%">
+              <n-select
+                :value="presetKey"
+                :options="presetOptions"
+                clearable
+                filterable
+                placeholder="自定义（手动填写下方字段）"
+                @update:value="onPresetSelect"
+              />
+              <div v-if="activePreset" style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-3)">
+                <span class="mono">{{ activePreset.baseUrl }}</span><span v-if="activePreset.hint">，{{ activePreset.hint }}</span>
+              </div>
+            </div>
+          </n-form-item>
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
           <n-form-item label="Base URL"><n-input v-model:value="form.base_url" /></n-form-item>
           <n-form-item label="API Key">
