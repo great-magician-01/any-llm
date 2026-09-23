@@ -76,7 +76,10 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		Object  string `json:"object"`
 		Created int64  `json:"created"`
 	}
-	var data []modelObj
+	// data 必须是非 nil 空切片：一个可见模型都没有（key 的白名单全不匹配，
+	// 或所有上游都被禁用/过期跳过）时，nil 切片会编码成 "data":null，
+	// 遍历列表的 OpenAI 客户端在 null 上直接报错。
+	data := make([]modelObj, 0)
 	now := time.Now()
 	// 已过有效期的上游与禁用同样不对外暴露（行保留，续期即恢复）
 	expiredByID := make(map[int64]bool, len(upstreams))
