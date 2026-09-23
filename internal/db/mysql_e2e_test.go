@@ -123,6 +123,9 @@ func TestMySQL_E2E_ColumnTypes(t *testing.T) {
 		"usage_records.status":       "varchar",
 		"upstreams.created_at":       "datetime",
 		"upstreams.expires_at":       "datetime",
+		// remark 与 ext_keys 的同名列一致：不建索引 → 保持 TEXT（不是 VARCHAR），
+		// 默认值走表达式形式。谁给它补上 Len，这里就会挂。
+		"upstreams.remark": "text",
 	}
 	for tc, dt := range want {
 		var got string

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, h } from 'vue'
+import { ref, computed, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '@/api/upstreams'
@@ -10,14 +10,17 @@ import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '@/
 import { expiryLabel, expiryToISO, isoToExpiry } from '@/utils/upstreamStatus'
 import { formatInt, formatTime } from '@/utils/format'
 import { useUpstreamList } from '@/composables/useUpstreamList'
+import { useNarrowScreen, ACTIONS_COL_WIDTH } from '@/composables/useNarrowScreen'
 import AppIcon from '@/components/AppIcon.vue'
 
 const message = useMessage()
 // 列表 + 启用状态过滤 + 余额快照：两套皮肤共用（含请求序号守卫与切档只重查
 // 列表），见 composables/useUpstreamList.ts
 const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, toggleEnabled } = useUpstreamList()
+// 窄屏时操作列收窄、按钮换行（两套皮肤共用一个断点，见 useNarrowScreen）
+const { narrow } = useNarrowScreen()
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
@@ -139,6 +142,8 @@ async function save() {
     // 有效期由独立的选择器 ref 持有，提交前转成 ISO 覆写——这样清空选择器时
     // 会显式发出 null（后端据此清除有效期），而不是把字段整个省掉。
     form.value.expires_at = expiryToISO(expiryPicker.value)
+    // 备注同样在提交前归一：去掉首尾空白，没填就是空串（后端不 trim，与 keys 一致）
+    form.value.remark = (form.value.remark ?? '').trim()
     const created = !editing.value?.id
     const createdEnabled = form.value.enabled
     if (!created) {
@@ -163,7 +168,7 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
@@ -277,7 +282,30 @@ const historyColumns: DataTableColumns<BalanceSnapshot> = [
   { title: '内容', key: 'payload', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, balanceSummary(row) ?? '-') },
 ]
 
-const columns: DataTableColumns<Upstream> = [
+// 固定列宽集中一处：columns 与 scrollX 共用同一份。手写 scroll-x 漏改时，
+// fixed 布局下所有列会整体等比缩水——表格看着还能用，极难发现（加「备注」列
+// 就要 +150）。「地址」给的是 minWidth（吸收剩余空间），这里按它的最小值计。
+const COL_W = {
+  expand: 40,
+  name: 130,
+  status: 80,
+  expiry: 150,
+  remark: 150,
+  baseUrlMin: 180,
+  format: 110,
+  modelCount: 80,
+  balance: 180,
+  dailyLimit: 120,
+  monthlyLimit: 120,
+  maxConcurrent: 100,
+} as const
+
+// 操作列宽随窄屏收窄，5 个按钮于是换行成两行（宽屏仍是一行）
+const actionsWidth = computed(() => (narrow.value ? ACTIONS_COL_WIDTH.narrow : ACTIONS_COL_WIDTH.wide))
+const scrollX = computed(() => Object.values(COL_W).reduce((a, b) => a + b, 0) + actionsWidth.value)
+
+// columns 改为 computed：窄屏切换只重建列配置，不逐像素重算
+const columns = computed<DataTableColumns<Upstream>>(() => [
   { type: 'expand', expandable: () => true, renderExpand: (row) => {
     const id = row.id as number
     const models = modelsByUpstream.value[id] || []
@@ -354,13 +382,23 @@ const columns: DataTableColumns<Upstream> = [
   }},
   // 名称/地址之外的列宽固定；名称给定宽、地址给 minWidth 吸收剩余空间。
   // 配合 scroll-x，窗口过窄时表格横向滚动而不是把无宽度的列压成 0。
-  { title: '名称', key: 'name', width: 130, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
-  { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
+  { title: '名称', key: 'name', width: COL_W.name, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  // 备注紧跟名称：窄屏首屏就能看到（不用横向滚动），空值显示「—」
+  {
+    title: '备注',
+    key: 'remark',
+    width: COL_W.remark,
+    ellipsis: { tooltip: true },
+    render: (row) => (row.remark
+      ? h('span', { style: 'color: var(--text-2)' }, row.remark)
+      : h('span', { style: 'color: var(--text-4)' }, '—')),
+  },
+  { title: '状态', key: 'enabled', width: COL_W.status, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   {
     title: '有效期至',
     key: 'expires_at',
-    width: 150,
+    width: COL_W.expiry,
     render: (row) => {
       const { text, tone } = expiryLabel(row)
       if (tone === 'error') return h(NTag, { type: 'error', bordered: false, size: 'small' }, { default: () => text })
@@ -368,7 +406,7 @@ const columns: DataTableColumns<Upstream> = [
       return h('span', { style: 'font-size: 12.5px' }, text)
     },
   },
-  { title: '地址', key: 'base_url', minWidth: 180, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
+  { title: '地址', key: 'base_url', minWidth: COL_W.baseUrlMin, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
     key: 'format',
@@ -378,13 +416,13 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '模型数',
     key: 'model_count',
-    width: 80,
+    width: COL_W.modelCount,
     render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
   },
   {
     title: '余额/额度',
     key: 'balance',
-    width: 180,
+    width: COL_W.balance,
     render: (row) => {
       const s = balancesByUpstream.value[row.id as number]
       const v = s ? balanceView(s) : null
@@ -403,7 +441,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: 120,
+    width: COL_W.dailyLimit,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -411,7 +449,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: 120,
+    width: COL_W.monthlyLimit,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -419,12 +457,14 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '并发上限',
     key: 'max_concurrent',
-    width: 100,
+    width: COL_W.maxConcurrent,
     render: (row) => row.max_concurrent > 0
       ? h('span', { class: 'mono' }, formatInt(row.max_concurrent))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  { title: '操作', key: 'actions', width: 360, render: (row) => h(NSpace, { size: 8, wrap: false }, {
+  // 操作列宽随窄屏收窄（见 actionsWidth），NSpace 允许换行——窄屏下 5 个按钮
+  // 自然排成两行，宽屏则仍是一行
+  { title: '操作', key: 'actions', width: actionsWidth.value, render: (row) => h(NSpace, { size: 8, wrap: true }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -447,7 +487,7 @@ const columns: DataTableColumns<Upstream> = [
       }),
     ],
   })},
-]
+])
 
 // 打开页面时后台静默刷新所有受支持 upstream 的余额/额度，完成后更新对应行；
 // 失败不打扰用户（厂商接口超时/不支持时保持显示已有快照）
@@ -507,7 +547,7 @@ onMounted(() => {
         :bordered="false"
         :columns="columns"
         :data="upstreams"
-        :scroll-x="1650"
+        :scroll-x="scrollX"
         :row-key="(row: Upstream) => row.id"
         :expanded-row-keys="expandedRowKeys"
         @update:expanded-row-keys="onExpand"
@@ -518,6 +558,7 @@ onMounted(() => {
       <n-card :title="editing ? '编辑上游' : '添加上游'" :bordered="false" style="width:500px">
         <n-form label-placement="top">
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
+          <n-form-item label="备注"><n-input v-model:value="form.remark" placeholder="备注（可选）" /></n-form-item>
           <n-form-item label="Base URL"><n-input v-model:value="form.base_url" /></n-form-item>
           <n-form-item label="API Key">
             <n-input

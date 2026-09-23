@@ -553,6 +553,85 @@ func TestUpdateUpstream_EnableDisable(t *testing.T) {
 	}
 }
 
+// TestUpstreamRemark_API 覆盖管理端的 remark 三态：创建带入、PUT 显式覆盖、
+// 字段缺省保留现状（只发 enabled 的开关 PATCH 尤其不能清空备注），显式空串
+// 才是清空。指针语义与 keys.go 的 remark 一致。
+func TestUpstreamRemark_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) int64 {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			ID int64 `json:"id"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 创建时带入
+	id := create(map[string]any{"remark": "月付 200 元"})
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "月付 200 元" {
+		t.Fatalf("create remark=%q", u.Remark)
+	}
+	// 创建时不给：空串
+	if plain := create(map[string]any{"name": "plain"}); true {
+		if u, _ := store.GetUpstreamByID(d, plain); u.Remark != "" {
+			t.Fatalf("unset remark=%q, want empty", u.Remark)
+		}
+	}
+
+	// 字段缺省 → 保留现状
+	if w := do(id, map[string]any{"name": "u2"}); w.Code != 200 {
+		t.Fatalf("rename status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "月付 200 元" {
+		t.Fatalf("absent remark=%q, want preserved", u.Remark)
+	}
+
+	// 只发 enabled 的 PATCH（列表页开关走这条路）同样不得清空
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "月付 200 元" {
+		t.Fatalf("enabled-only patch cleared remark=%q", u.Remark)
+	}
+
+	// 显式覆盖
+	if w := do(id, map[string]any{"remark": "已停用"}); w.Code != 200 {
+		t.Fatalf("set status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "已停用" {
+		t.Fatalf("remark=%q, want 已停用", u.Remark)
+	}
+
+	// 显式空串 → 清空（用户把备注删干净再保存）
+	if w := do(id, map[string]any{"remark": ""}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "" {
+		t.Fatalf("remark=%q, want cleared", u.Remark)
+	}
+}
+
 // TestUpstreamExpiry_API 覆盖管理端三态：创建时设置、update 显式设置/清除/
 // 缺省保留，以及非法格式 400。缺省保留这一条尤其重要——toggleEnabled 那种
 // 只发 {"enabled":...} 的部分 PATCH 不能把有效期清掉。

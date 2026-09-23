@@ -64,6 +64,82 @@ func TestCreateAndGetUpstream(t *testing.T) {
 	}
 }
 
+// TestUpstreamRemark 盯住 remark 的完整往返：创建带入、三个读取入口读回、
+// 改别的字段再全量保存后仍在。最后一条是关键——UpdateUpstream 是全量覆盖，
+// UPDATE 语句漏了 remark 就会在每次保存（含只改 enabled 的开关）时静默清空备注。
+func TestUpstreamRemark(t *testing.T) {
+	d := testDB(t)
+	id, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai", Remark: "月付 200 元"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 未填备注的上游：空串而不是 NULL 扫描失败
+	plain, err := CreateUpstream(d, &Upstream{Name: "plain", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := GetUpstreamByID(d, plain); u.Remark != "" {
+		t.Fatalf("unset remark=%q, want empty", u.Remark)
+	}
+
+	for _, got := range []struct {
+		name string
+		u    *Upstream
+	}{
+		{"byID", mustGet(t, d, id)},
+		{"byName", mustGetByName(t, d, "u")},
+	} {
+		if got.u.Remark != "月付 200 元" {
+			t.Fatalf("%s remark=%q", got.name, got.u.Remark)
+		}
+	}
+	list, err := ListUpstreams(d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Remark != "月付 200 元" {
+		t.Fatalf("list remark=%q (len=%d)", list[0].Remark, len(list))
+	}
+
+	// 全量保存不得抹掉备注
+	u := mustGet(t, d, id)
+	u.BaseURL = "https://changed"
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	again := mustGet(t, d, id)
+	if again.Remark != "月付 200 元" || again.BaseURL != "https://changed" || again.Enabled {
+		t.Fatalf("after update=%+v", again)
+	}
+	// 改备注本身也要落库
+	again.Remark = "已停用"
+	if err := UpdateUpstream(d, again); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, d, id); got.Remark != "已停用" {
+		t.Fatalf("remark update=%q", got.Remark)
+	}
+}
+
+func mustGet(t *testing.T, d *sql.DB, id int64) *Upstream {
+	t.Helper()
+	u, err := GetUpstreamByID(d, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func mustGetByName(t *testing.T, d *sql.DB, name string) *Upstream {
+	t.Helper()
+	u, err := GetUpstreamByName(d, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
 func TestUniqueName(t *testing.T) {
 	d := testDB(t)
 	_, _ = CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "u", APIKey: "k", Format: "openai"})

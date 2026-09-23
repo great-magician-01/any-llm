@@ -17,6 +17,8 @@ export interface ConfigUpstream {
   base_url: string
   api_key: string
   format: string
+  /** 选填备注；缺省保持现状，空串表示清除 */
+  remark?: string
   enabled?: boolean
   /** 有效期截止时刻；缺省保持现状，null 表示清除（恢复永久有效） */
   expires_at?: string | null

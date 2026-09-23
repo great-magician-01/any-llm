@@ -233,7 +233,7 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 // scalar fields but leaves the enabled state and model list alone.
 func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 	a, d := setupAPI(t)
-	id, _ := store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://old", APIKey: "sk-old", Format: "openai"})
+	id, _ := store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://old", APIKey: "sk-old", Format: "openai", Remark: "月付 200 元"})
 	store.AddModel(d, id, store.UpstreamModel{ModelName: "m1", ContextLength: 3, MaxOutputLength: 4})
 	u, _ := store.GetUpstreamByID(d, id)
 	u.Enabled = false
@@ -253,9 +253,62 @@ func TestImportConfig_KeepsFieldsWhenAbsent(t *testing.T) {
 	if u.Enabled {
 		t.Fatal("enabled should stay false when absent from file")
 	}
+	if u.Remark != "月付 200 元" {
+		t.Fatalf("remark should stay when absent from file, got %q", u.Remark)
+	}
 	ms, _ := store.ListModels(d, id)
 	if len(ms) != 1 || ms[0].ModelName != "m1" || ms[0].ContextLength != 3 {
 		t.Fatalf("models should be kept: %+v", ms)
+	}
+}
+
+// TestConfigTransfer_Remark pins remark in config transfer: export carries it,
+// import overwrites when the file has it (including an explicit empty string to
+// clear), and leaves the current value alone when the file omits it — a config
+// file from an older version must not wipe remarks.
+func TestConfigTransfer_Remark(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://x", APIKey: "k", Format: "openai", Remark: "月付 200 元"})
+
+	// 导出带上 remark
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d", w.Code)
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Upstreams) != 1 || out.Upstreams[0]["remark"] != "月付 200 元" {
+		t.Fatalf("export remark=%v", out.Upstreams[0]["remark"])
+	}
+
+	importUp := func(extra map[string]any) {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{base}})
+		if w.Code != 200 {
+			t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	// 文件给了 → 覆盖
+	importUp(map[string]any{"remark": "已停用"})
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "已停用" {
+		t.Fatalf("remark=%q, want 已停用", u.Remark)
+	}
+	// 文件没给 → 保留
+	importUp(map[string]any{"base_url": "https://y"})
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "已停用" {
+		t.Fatalf("remark=%q, want preserved 已停用", u.Remark)
+	}
+	// 显式空串 → 清空
+	importUp(map[string]any{"remark": ""})
+	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "" {
+		t.Fatalf("remark=%q, want cleared", u.Remark)
 	}
 }
 

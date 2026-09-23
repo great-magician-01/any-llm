@@ -110,6 +110,10 @@ var schemaTables = []Table{
 			// store.Upstream.Expired）。
 			{Name: "expires_at", Type: TypeTime, Nullable: true, LateAdd: true},
 			{Name: "is_active", Type: TypeInt, Default: "1", LateAdd: true},
+			// 备注（选填，仅管理端元数据，网关路由不读）。与 ext_keys.remark 同款：
+			// 不给 Len、不建索引，MySQL 保持 TEXT，默认值走表达式形式（DEFAULT ('')）。
+			// 声明在列清单末尾：老库靠 LateAdd ALTER 追加也在末尾，两种库物理列序一致。
+			{Name: "remark", Type: TypeText, Default: "''", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_upstreams_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},

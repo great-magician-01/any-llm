@@ -17,6 +17,8 @@ type Upstream struct {
 	BaseURL           string `json:"base_url"`
 	APIKey            string `json:"api_key"`
 	Format            string `json:"format"`
+	// Remark 选填备注，纯管理端元数据（展示/导出用），网关路由与转发不读它。
+	Remark            string `json:"remark"`
 	Enabled           bool   `json:"enabled"`
 	DailyTokenLimit   int    `json:"daily_token_limit"`
 	MonthlyTokenLimit int    `json:"monthly_token_limit"`
