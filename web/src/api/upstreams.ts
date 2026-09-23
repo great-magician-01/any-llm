@@ -23,7 +23,8 @@ export interface UpstreamModel {
 export type UpstreamStatusFilter = 'enabled' | 'disabled' | 'all'
 
 export async function listUpstreams(status?: UpstreamStatusFilter) {
-  const { data } = await client.get('/upstreams', { params: status ? { status } : {} })
+  // axios 的默认序列化器会丢掉 undefined，不缺省判空分支
+  const { data } = await client.get('/upstreams', { params: { status } })
   return data.data as Upstream[]
 }
 
