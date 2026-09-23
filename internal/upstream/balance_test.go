@@ -21,6 +21,8 @@ func TestBalanceVendor(t *testing.T) {
 		{"https://api.deepseek.com/v1", VendorDeepSeek},
 		{"https://api.kimi.com/coding", VendorKimiCoding},
 		{"https://API.KIMI.COM", VendorKimiCoding},
+		{"https://api.stepfun.com/v1", VendorStepFun},
+		{"https://api.stepfun.ai/v1", VendorStepFun},
 		{"https://api.openai.com/v1", ""},
 		{"not a url", ""},
 		{"", ""},
@@ -165,6 +167,96 @@ func TestNormalizeKimiCodingUsage_FaultTolerance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(p.Windows) != 1 || p.Windows[0].ID != "weekly" || p.Windows[0].UsedPercent != "40.0" {
+		t.Fatalf("payload=%s", payload)
+	}
+}
+
+func TestFetchBalance_StepFun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/accounts" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-stepfun-test" {
+			t.Fatalf("auth=%s", r.Header.Get("Authorization"))
+		}
+		// 官方文档示例：金额为 JSON 数字（与 deepseek 的字符串不同）
+		w.Write([]byte(`{"object":"account","type":"prepaid","balance":26.00,"total_cash_balance":0.00,"total_voucher_balance":26.00}`))
+	}))
+	defer srv.Close()
+	registerTestHost(t, srv.URL, VendorStepFun)
+
+	u := &store.Upstream{Name: "stepfun", BaseURL: srv.URL, APIKey: "sk-stepfun-test"}
+	vendor, payload, err := FetchBalance(context.Background(), http.DefaultClient, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vendor != VendorStepFun {
+		t.Fatalf("vendor=%q", vendor)
+	}
+	var p struct {
+		Kind        string `json:"kind"`
+		IsAvailable bool   `json:"is_available"`
+		Balances    []struct {
+			Currency string `json:"currency"`
+			Total    string `json:"total"`
+			Granted  string `json:"granted"`
+			ToppedUp string `json:"topped_up"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Kind != "balance" || !p.IsAvailable || len(p.Balances) != 1 {
+		t.Fatalf("payload=%s", payload)
+	}
+	b := p.Balances[0]
+	if b.Currency != "CNY" || b.Total != "26.00" || b.Granted != "26.00" || b.ToppedUp != "0.00" {
+		t.Fatalf("balance=%+v", b)
+	}
+}
+
+// TestNormalizeStepFunAccount_Availability: is_available 由账户语义推导——
+// postpaid 先用后付恒可用；prepaid 余额大于零才可用；字段缺失按 0 处理。
+func TestNormalizeStepFunAccount_Availability(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{`{"type":"postpaid","balance":0.00,"total_cash_balance":0.00,"total_voucher_balance":0.00}`, true},
+		{`{"type":"prepaid","balance":0.00,"total_cash_balance":0.00,"total_voucher_balance":0.00}`, false},
+		{`{"type":"prepaid","balance":1.50,"total_cash_balance":1.50,"total_voucher_balance":0.00}`, true},
+	}
+	for _, c := range cases {
+		payload, err := normalizeStepFunAccount([]byte(c.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var p struct {
+			IsAvailable bool `json:"is_available"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.IsAvailable != c.want {
+			t.Errorf("body=%s available=%v want %v", c.body, p.IsAvailable, c.want)
+		}
+	}
+	// 金额字段整体缺失时条目按 "0" 归一化，前端不会出现裸币种符号
+	payload, err := normalizeStepFunAccount([]byte(`{"object":"account","type":"prepaid"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Balances []struct {
+			Total    string `json:"total"`
+			Granted  string `json:"granted"`
+			ToppedUp string `json:"topped_up"`
+		} `json:"balances"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Balances) != 1 || p.Balances[0].Total != "0" || p.Balances[0].Granted != "0" || p.Balances[0].ToppedUp != "0" {
 		t.Fatalf("payload=%s", payload)
 	}
 }
