@@ -159,9 +159,9 @@ export ANTHROPIC_MODEL=upstream名称/模型名  # 可选，或模型别名`,
         </section>
 
         <section class="doc-section">
-          <h3>opencode / Oh My Pi</h3>
+          <h3>opencode / Oh My Pi / dsh</h3>
           <p class="doc-note">
-            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> 按钮会生成并复制含该密钥的完整配置（受限密钥只导出白名单内的模型），粘贴进对应客户端的配置文件即可；新建密钥后的弹窗里也提供同样的按钮。
+            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> / <code class="mono">dsh</code> 按钮会生成并复制含该密钥的完整配置（受限密钥只导出白名单内的模型），粘贴进对应客户端的配置文件即可；新建密钥后的弹窗里也提供同样的按钮。dsh 的文本包含 settings.yaml 与 .credentials.yaml 两段，按段头注释分别粘贴。
           </p>
         </section>
 

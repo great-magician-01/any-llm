@@ -8,6 +8,8 @@
  * 按约定不做按模型名的启发式识别：所有模型统一按推理模型处理
  * （reasoning: true + effort 档位），名称原样输出不转换。
  */
+import { yamlScalar } from './yaml'
+
 export interface OmpModel {
   id: string
   contextWindow: number
@@ -20,19 +22,6 @@ export interface OmpConfigOptions {
   /** ext key 明文（apiKey 字段支持字面值） */
   apiKey: string
   models: OmpModel[]
-}
-
-/** 按需双引号转义，其余输出为合法 YAML 纯量 */
-function scalar(v: string): string {
-  if (v === '') return "''"
-  const plain =
-    !/^[\s\-?:,\[\]{}#&*!|>'"%@`]/.test(v) && // 不以指示符开头
-    !/^\s/.test(v) && // 无前导空白
-    !/\s$/.test(v) && // 无尾部空白
-    !/[\u0000-\u001f\u007f]/.test(v) && // 无控制字符/换行
-    !/[:#] /.test(v) // 无 ': ' / ' #'（行内映射/注释）
-  if (plain) return v
-  return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
 }
 
 const HEADER = `# ============================================================
@@ -50,9 +39,9 @@ export function buildOmpYaml(opts: OmpConfigOptions): string {
   const lines = [
     'providers:',
     '  any-llm:',
-    `    baseUrl: ${scalar(opts.baseUrl)}`,
+    `    baseUrl: ${yamlScalar(opts.baseUrl)}`,
     '    api: openai-completions',
-    `    apiKey: ${scalar(opts.apiKey)}`,
+    `    apiKey: ${yamlScalar(opts.apiKey)}`,
     '    authHeader: true',
   ]
   if (opts.models.length === 0) {
@@ -62,8 +51,8 @@ export function buildOmpYaml(opts: OmpConfigOptions): string {
     lines.push('    models:')
     for (const m of opts.models) {
       lines.push(
-        `      - id: ${scalar(m.id)}`,
-        `        name: ${scalar(m.id)}`,
+        `      - id: ${yamlScalar(m.id)}`,
+        `        name: ${yamlScalar(m.id)}`,
         '        reasoning: true',
         '        thinking:',
         '          minLevel: low',
