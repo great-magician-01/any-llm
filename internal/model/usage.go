@@ -73,7 +73,12 @@ func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, erro
 			end = start.AddDate(0, 0, 90)
 		}
 	}
-	days = int(end.Sub(start).Hours() / 24)
+	// 天数按日历日逐日数（AddDate 每次落在当地午夜），不能用 end.Sub(start)/24h：
+	// 含夏令时拨快的窗口实际不足 N×24 小时，截断会把最新一天的桶丢掉。
+	days = 0
+	for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
+		days++
+	}
 	if days < 1 {
 		days = 1
 	}

@@ -310,28 +310,31 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 	}
 	defer tx.Rollback()
 	// Preserve user-configured lengths across re-fetch: snapshot the current
-	// rows before soft-deleting them. manual 一并记录：软删除只动 manual=0，
-	// 所以复活时还活跃的同名行只可能是手动模型——此时不能复活旧的自动行，
-	// 否则两行同活跃在部分唯一索引上冲突（整个同步事务失败）。
-	// multimodal 同样是管理端手配字段，重新拉取时与长度一并保留。
+	// rows before soft-deleting them. 快照连软删行一起读：模型暂时从上游列表
+	// 消失（被软删）再回来时，复活要恢复它最后的配置，而不是落回默认值——
+	// 管理端手配的长度与 multimodal 都会丢。ORDER BY is_active, id 保证同名
+	// 多行时「活跃行优先、否则最新死行」留在 prev 里。
+	// activeManual 一并记录：软删除只动 manual=0，所以复活时还活跃的同名行
+	// 只可能是手动模型——此时不能复活旧的自动行，否则两行同活跃在部分唯一
+	// 索引上冲突（整个同步事务失败）。
 	type snapshot struct {
-		cl, ml     int
-		manual     bool
-		multimodal bool
+		cl, ml       int
+		multimodal   bool
+		activeManual bool // 同名活跃手动行存在
 	}
 	prev := make(map[string]snapshot)
-	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length, manual, multimodal FROM upstream_models WHERE upstream_id=? AND is_active = 1`), upstreamID)
+	rows, err := tx.Query(db.Rebind(d, `SELECT model_name, context_length, max_output_length, manual, multimodal, is_active FROM upstream_models WHERE upstream_id=? ORDER BY is_active, id`), upstreamID)
 	if err != nil {
 		return fmt.Errorf("snapshot models: %w", err)
 	}
 	for rows.Next() {
 		var name string
-		var cl, ml, manual, mm int
-		if err := rows.Scan(&name, &cl, &ml, &manual, &mm); err != nil {
+		var cl, ml, manual, mm, active int
+		if err := rows.Scan(&name, &cl, &ml, &manual, &mm, &active); err != nil {
 			rows.Close()
 			return fmt.Errorf("snapshot models: %w", err)
 		}
-		prev[name] = snapshot{cl, ml, manual != 0, mm != 0}
+		prev[name] = snapshot{cl, ml, mm != 0, manual != 0 && active != 0}
 	}
 	rows.Close()
 	// 同步删除改为软删除：行保留，若模型随后重新出现在上游列表里可复活，
@@ -347,7 +350,7 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 			cl, ml = p.cl, p.ml
 			mm = b2i(p.multimodal)
 		}
-		if ok && p.manual {
+		if ok && p.activeManual {
 			// 同名手动模型仍活跃：跳过复活与插入，保留手动行。
 			continue
 		}

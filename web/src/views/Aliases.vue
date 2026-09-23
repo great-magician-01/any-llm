@@ -6,6 +6,7 @@ import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } f
 import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '../api/upstreams'
 import AppIcon from '../components/AppIcon.vue'
 import { aliasUpstreamOptions } from '../utils/aliasOptions'
+import { isExpired } from '../utils/upstreamStatus'
 
 const message = useMessage()
 const aliases = ref<ModelAlias[]>([])
@@ -25,6 +26,13 @@ const modelOptions = ref<Record<number, UpstreamModel[]>>({})
 const upstreamOptions = computed(() =>
   aliasUpstreamOptions(upstreams.value, form.value.bindings.map((b) => b.upstream_id)),
 )
+
+// 绑定行的上游是否已过有效期：绑定只带 upstream_enabled 快照，有效期要从上游
+// 列表现查（与网关的读时判定一致，见 utils/upstreamStatus）。
+function isExpiredUpstream(id: number) {
+  const u = upstreams.value.find((x) => x.id === id)
+  return u ? isExpired(u) : false
+}
 
 function modelOptionsFor(upstreamId: number | null) {
   if (!upstreamId) return []
@@ -58,6 +66,17 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
         const dead = !b.upstream_name
         // 上游被禁用（而非删除）：名字仍在，但网关解析时会跳过该绑定
         const off = !!b.upstream_name && b.upstream_enabled === false
+        // 已过有效期同样被网关跳过（与禁用同级的提示，避免绿标误导排障）
+        const expired = !dead && !off && isExpiredUpstream(b.upstream_id)
+        const tip = dead
+          ? '该绑定指向的上游已被删除，请求时会跳过'
+          : off
+            ? '该绑定指向的上游已被禁用，请求时会跳过'
+            : expired
+              ? '该绑定指向的上游已过有效期，请求时会跳过（续期后恢复）'
+              : i === 0
+                ? '首选绑定'
+                : `第 ${i + 1} 顺位（前面全部失败时兜底）`
         nodes.push(
           h(
             NTooltip,
@@ -66,10 +85,10 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
               trigger: () =>
                 h(
                   NTag,
-                  { size: 'small', bordered: false, type: dead ? 'error' : off ? 'warning' : i === 0 ? 'success' : 'default' },
+                  { size: 'small', bordered: false, type: dead ? 'error' : off || expired ? 'warning' : i === 0 ? 'success' : 'default' },
                   { default: () => `${b.upstream_name || '上游#' + b.upstream_id} / ${b.model_name}` },
                 ),
-              default: () => (dead ? '该绑定指向的上游已被删除，请求时会跳过' : off ? '该绑定指向的上游已被禁用，请求时会跳过' : i === 0 ? '首选绑定' : `第 ${i + 1} 顺位（前面全部失败时兜底）`),
+              default: () => tip,
             },
           ),
         )

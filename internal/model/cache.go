@@ -2,6 +2,7 @@ package model
 
 import (
 	"database/sql"
+	"errors"
 	"sync"
 	"time"
 )
@@ -21,13 +22,19 @@ import (
 //   - 查询绝不在持锁状态下执行：loadThrough 先 RLock 探一次，未命中就锁外查库。
 //     争 leader 与回填各自只占锁一瞬间，查询本身不占。
 //   - 并发未命中走 singleflight：同一个 key 同时未命中/过期时只有一个 goroutine
-//     真去查库（leader），其余阻塞在 in-flight 上，leader 回填完再重取缓存。没有
-//     这一层，TTL 到期或冷启动的瞬间会有 N 个并发请求各打一次库（thundering herd）。
-//   - 回填带 CAS 式守卫：leader 动手前记下当时看到的条目，回填前比对——条目若在
-//     查询期间被写过（写路径逐出/刷新，或别的 leader 已回填），说明库里已有更新的
-//     值，leader 读到的旧值不能盖回去。否则「查库读到旧行 → 管理端写库 → 旧行才落
-//     缓存」会让一次改动最多沉寂一个 TTL。守卫只依赖条目自身（每次 store 都写新的
-//     loadedAt），不需要写路径配合，也就不存在「某个写函数忘了配合」的可能。
+//     真去查库（leader），其余阻塞在 in-flight 上，结束后直接取 leader 广播在
+//     flight 里的结果（含「没有这一行」的否定结果——否定结果不入库，但同一拍
+//     的 waiter 没理由各自再查一遍）。没有这一层，TTL 到期或冷启动的瞬间会有
+//     N 个并发请求各打一次库（thundering herd）。leader 查库失败时 waiter 顺延
+//     成新 leader 自重试，不会拿到假成功也不会永久堵住。
+//   - 回填带守卫，双保险：leader 动手前记下当时看到的条目与命名空间代数，
+//     回填前比对——条目若在查询期间被写过（写路径逐出/刷新，或别的 leader 已
+//     回填），或写路径动过这个命名空间（代数变了），说明库里已有更新的值，
+//     leader 读到的旧值不能盖回去。否则「查库读到旧行 → 管理端写库 → 旧行才落
+//     缓存」会让一次改动最多沉寂一个 TTL。条目比对看得见「条目被改成别的」，
+//     却看不见「逐出一个本就不存在的条目」「整表重置」（map 毫无变化）——所以
+//     另有每命名空间代数，下面写路径维护段的每个函数在改动生效后都必须递增它
+//     （新加写路径函数亦然），这是本文件内部的纪律，段外无人能写缓存。
 //   - 命中返回的是副本：网关多 goroutine 并发共享这份缓存，副本（含
 //     AllowedModels slice 与 ExpiresAt 指向的 time）彻底消除别名与数据竞争。
 //   - 不缓存否定结果：key / 上游名 / 别名未命中都不入库，否则任意随机字符串
@@ -64,15 +71,29 @@ func entryExpired(loadedAt time.Time) bool {
 	return time.Since(loadedAt) >= configCacheTTL
 }
 
+// flight 一次进行中的回填：leader 干完（含 panic）时关闭 done 唤醒 waiter，结果
+// 留在 val/err 里供 waiter 直接取用。err == nil 时 val 有效——零值即「查了，没有
+// 这一行」的否定结果；err 非 nil 时 waiter 不得取用 val，顺延成新 leader 自重试。
+type flight[T any] struct {
+	done chan struct{}
+	val  T
+	err  error
+}
+
+// errFlightPanicked 只做 flight.err 的占位标记：leader 的 resolve panic 时 waiter
+// 看到非 nil err 会顺延重试，而不会把 panic 前留下的零值当成否定结果。它永远不会
+// 返回给调用方（leader 自身重新 panic）。
+var errFlightPanicked = errors.New("model: cache resolve panicked")
+
 // ns 一类缓存条目（ext key / 上游 / 别名）的条目表与进行中的回填表。三者是独立
 // 命名空间：一个 ext key 字符串和一个上游名撞车毫无意义，in-flight 也各管各的。
 type ns[T any] struct {
 	entries  map[string]cacheEntry[T]
-	inflight map[string]chan struct{} // key → leader 干完时的唤醒信号
+	inflight map[string]*flight[T] // key → 进行中的回填
 }
 
 func newNS[T any]() ns[T] {
-	return ns[T]{entries: make(map[string]cacheEntry[T]), inflight: make(map[string]chan struct{})}
+	return ns[T]{entries: make(map[string]cacheEntry[T]), inflight: make(map[string]*flight[T])}
 }
 
 // cfgCache 包级读缓存（与 convShardCache 同一模式）。三个 map 的规模分别不超过
@@ -83,20 +104,28 @@ var cfgCache = struct {
 	keys    ns[*ExtKey]
 	ups     ns[*Upstream]
 	aliases ns[*aliasEntry]
+	// 写路径代数：写路径维护段的函数在改动生效后递增对应计数器（逐出未命中、
+	// 整表重置同样递增）。loadThrough 回填前比对基线代数——条目比对看不出的
+	// 写（见文件头「回填带守卫」）由它兜住。整表重置换掉的是 map 而非计数器，
+	// 所以代数必须放在 ns 外面。
+	keysGen    uint64
+	upsGen     uint64
+	aliasesGen uint64
 }{keys: newNS[*ExtKey](), ups: newNS[*Upstream](), aliases: newNS[*aliasEntry]()}
 
 // loadThrough 读穿透 + singleflight 的通用骨架，三类条目共用：
 //
 //   - 命中且未过期 → 返回副本；
-//   - 未命中/过期 → 争 leader：leader 锁外查库并回填，waiter 阻塞在 in-flight 上，
-//     leader 干完后重取（那时通常已命中）；leader 查库失败则 waiter 顺延成新 leader
-//     自己重试，不会拿到假成功也不会永久堵住；
-//   - 回填前比对基线条目，查询期间被写过就不盖（见文件头「CAS 式守卫」）。
+//   - 未命中/过期 → 争 leader：leader 锁外查库并回填，waiter 阻塞在 flight 上，
+//     leader 干完后 waiter 直接取走它广播的结果；leader 查库失败则 waiter 顺延
+//     成新 leader 自己重试，不会拿到假成功也不会永久堵住；
+//   - 回填前比对基线条目与基线代数（gen），查询期间被写过就不盖（见文件头
+//     「回填带守卫」）。gen 指向该命名空间的写路径代数。
 //
 // resolve 返回 error 表示不入库；返回零值 + nil error 表示「查了，没有这一行」
 // （别名未命中走这条），同样不入库。T 约束为 comparable 就是为了能跟零值比——
 // 三类条目都是指针，零值即「没有」。
-func loadThrough[T comparable](n *ns[T], key string, resolve func() (T, error), clone func(T) T) (T, error) {
+func loadThrough[T comparable](n *ns[T], gen *uint64, key string, resolve func() (T, error), clone func(T) T) (T, error) {
 	for {
 		cfgCache.RLock()
 		e, ok := n.entries[key]
@@ -115,34 +144,52 @@ func loadThrough[T comparable](n *ns[T], key string, resolve func() (T, error), 
 			return clone(v), nil
 		}
 		// 基线：回填前若条目变成了别的（loadedAt 变了，或从无到有/从有到无），
-		// 说明查询期间有人写过，旧值不能盖回去。
+		// 或写路径动过这个命名空间（gen 变了），说明查询期间有人写过，旧值不能
+		// 盖回去。
 		baseline := e
-		if ch, busy := n.inflight[key]; busy {
+		baselineGen := *gen
+		if f, busy := n.inflight[key]; busy {
 			cfgCache.Unlock()
-			<-ch // 等 leader 回填完，回环重取
-			continue
+			<-f.done
+			if f.err != nil {
+				continue // leader 失败（含 resolve panic）：顺延成新 leader 自重试
+			}
+			// leader 成功：结果（含否定结果）直接取用，这一拍的 waiter 不再各自回库。
+			return clone(f.val), nil
 		}
-		ch := make(chan struct{})
-		n.inflight[key] = ch
+		f := &flight[T]{done: make(chan struct{})}
+		n.inflight[key] = f
 		cfgCache.Unlock()
 
-		val, err := func() (T, error) {
-			// 正常返回还是 panic，都要摘掉 in-flight 并唤醒 waiter，否则这个 key
-			// 的后续请求会永远堵在 <-ch 上。
+		val, err := func() (val T, err error) {
+			// 正常返回还是 panic，都要留下结果、摘掉 in-flight 并唤醒 waiter，否则
+			// 这个 key 的后续请求会永远堵在 <-f.done 上。摘除只认自己这架 flight：
+			// 整表重置换掉 inflight map 后，里面可能已是新 leader 的 flight。
 			defer func() {
+				p := recover()
+				if p != nil {
+					f.err = errFlightPanicked
+				} else {
+					f.val, f.err = val, err
+				}
 				cfgCache.Lock()
-				delete(n.inflight, key)
+				if cur, ok := n.inflight[key]; ok && cur == f {
+					delete(n.inflight, key)
+				}
 				cfgCache.Unlock()
-				close(ch)
+				close(f.done)
+				if p != nil {
+					panic(p) // 原样重抛，调用方看到的 panic 不变
+				}
 			}()
-			val, err := resolve() // 锁外查库
+			val, err = resolve() // 锁外查库
 			var zero T
 			if err != nil || val == zero {
 				return val, err
 			}
 			cfgCache.Lock()
 			cur, curOK := n.entries[key]
-			if curOK == (baseline.val != zero) && cur.loadedAt == baseline.loadedAt {
+			if *gen == baselineGen && curOK == (baseline.val != zero) && cur.loadedAt == baseline.loadedAt {
 				n.entries[key] = cacheEntry[T]{val: clone(val), loadedAt: time.Now()}
 			}
 			cfgCache.Unlock()
@@ -159,7 +206,7 @@ func loadThrough[T comparable](n *ns[T], key string, resolve func() (T, error), 
 // CachedExtKey 按 key 字符串读 ext key（网关鉴权热路径）。未命中或已过 TTL 就回库
 // 重填；行不存在时原样返回 DB 错误（调用方判 401），且不写缓存。
 func CachedExtKey(d *sql.DB, key string) (*ExtKey, error) {
-	return loadThrough(&cfgCache.keys, key,
+	return loadThrough(&cfgCache.keys, &cfgCache.keysGen, key,
 		func() (*ExtKey, error) { return GetExtKey(d, key) },
 		cloneExtKey)
 }
@@ -167,7 +214,7 @@ func CachedExtKey(d *sql.DB, key string) (*ExtKey, error) {
 // CachedUpstreamByName 按名称读上游行（网关直连路由 name/model）。语义同
 // CachedExtKey：未命中或过期回库重填，不存在则返回 DB 错误且不缓存。
 func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
-	return loadThrough(&cfgCache.ups, name,
+	return loadThrough(&cfgCache.ups, &cfgCache.upsGen, name,
 		func() (*Upstream, error) { return GetUpstreamByName(d, name) },
 		cloneUpstream)
 }
@@ -180,7 +227,7 @@ func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 // 所以一个已缓存的别名不需要因为「时间走过 expires_at」而被失效——那与条目自身
 // 的 TTL 是两回事，后者到期会连候选一起重查。
 func CachedAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targets []AliasTarget, err error) {
-	entry, err := loadThrough(&cfgCache.aliases, name,
+	entry, err := loadThrough(&cfgCache.aliases, &cfgCache.aliasesGen, name,
 		func() (*aliasEntry, error) {
 			found, id, candidates, err := resolveAliasCandidates(d, name)
 			if err != nil || !found {
@@ -222,6 +269,7 @@ func liveTargets(candidates []AliasTarget, now time.Time) []AliasTarget {
 // putExtKey 把整行放入缓存。用于新建——行已在手，无需再查一次。
 func putExtKey(k *ExtKey) {
 	cfgCache.Lock()
+	cfgCache.keysGen++
 	cfgCache.keys.entries[k.Key] = cacheEntry[*ExtKey]{val: cloneExtKey(k), loadedAt: time.Now()}
 	cfgCache.Unlock()
 }
@@ -233,6 +281,7 @@ func refreshExtKey(d *sql.DB, id int64) {
 	k, err := GetExtKeyByID(d, id)
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.keysGen++
 	evictExtKeyIDLocked(id)
 	if err != nil {
 		return
@@ -246,6 +295,7 @@ func refreshExtKey(d *sql.DB, id int64) {
 func evictExtKeyByID(id int64) {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.keysGen++ // 哪怕条目本就不存在也要递增：代数是回填守卫的一部分
 	evictExtKeyIDLocked(id)
 }
 
@@ -266,6 +316,8 @@ func evictExtKeyIDLocked(id int64) {
 func evictUpstream(id int64, name string) {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.upsGen++
+	cfgCache.aliasesGen++ // 别名整表重置（见下），两个命名空间都算被写过
 	if name != "" {
 		delete(cfgCache.ups.entries, name)
 	}
@@ -281,6 +333,7 @@ func evictUpstream(id int64, name string) {
 func evictAliasByID(id int64) {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.aliasesGen++
 	for name, e := range cfgCache.aliases.entries {
 		if e.val.id == id {
 			delete(cfgCache.aliases.entries, name)
@@ -292,6 +345,7 @@ func evictAliasByID(id int64) {
 func evictAliasByName(name string) {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.aliasesGen++
 	delete(cfgCache.aliases.entries, name)
 }
 
@@ -351,6 +405,9 @@ func ResetConfigCache() {
 func resetConfigCache() {
 	cfgCache.Lock()
 	defer cfgCache.Unlock()
+	cfgCache.keysGen++
+	cfgCache.upsGen++
+	cfgCache.aliasesGen++
 	cfgCache.keys = newNS[*ExtKey]()
 	cfgCache.ups = newNS[*Upstream]()
 	cfgCache.aliases = newNS[*aliasEntry]()

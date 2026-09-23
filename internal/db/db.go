@@ -132,7 +132,7 @@ func warnIfSmallMaxAllowedPacket(d *sql.DB) {
 // migrateAll 是三种方言共用的迁移管线。OpenSQLite / OpenPG / OpenMySQL 与
 // MigrateForTest 都走这里，避免测试管线与生产管线漂移。
 //
-// 顺序是负载的：主迁移建表 → 补列 → 软删除升级 → 部分唯一索引 → usage 索引 →
+// 顺序是负载的：主迁移建表 → 补列 → 软删除升级 → 部分唯一索引 → 普通索引 →
 // label 唯一索引。部分唯一索引必须晚于 is_active 列就位；SQLite 的表重建必须在
 // PRAGMA foreign_keys=ON 之前（OpenSQLite 已保证）。
 func migrateAll(d *sql.DB) error {
@@ -148,7 +148,7 @@ func migrateAll(d *sql.DB) error {
 	if err := migratePartialUniqueIndexes(d); err != nil {
 		return err
 	}
-	if err := migrateUsageIndexes(d); err != nil {
+	if err := migratePlainIndexes(d); err != nil {
 		return err
 	}
 	ensureExtKeyLabelIndex(d)

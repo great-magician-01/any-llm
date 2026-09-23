@@ -894,3 +894,22 @@ CREATE TABLE conversation_records (
 		t.Fatalf("old rows kept: n=%d err=%v", n, err)
 	}
 }
+
+// 与 SQLite 侧 TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns 同一不变量：
+// 新装的 PG schema 必须拥有 schema 声明的全部索引（含普通索引——它们历史上
+// 只在 MySQL 内联创建，SQLite/PG 的新库曾一直缺）。
+func TestPG_FreshSchemaHasAllDeclaredIndexes(t *testing.T) {
+	d := pgTestDB(t)
+	for _, tbl := range tablesFor(DialectPostgres) {
+		for _, ix := range tbl.Idx {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM pg_indexes
+				WHERE schemaname = current_schema() AND indexname = $1`, ix.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("index %s declared in schema but missing on a fresh database", ix.Name)
+			}
+		}
+	}
+}

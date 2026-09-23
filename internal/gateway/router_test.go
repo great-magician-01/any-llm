@@ -609,3 +609,27 @@ func TestCachedReadsDoNotHitDatabase(t *testing.T) {
 		t.Fatalf("after db close status=%d want 200 (a cached read still hit the db?)", code)
 	}
 }
+
+// /v1/models 在无可见模型时必须返回 "data":[] 而非 "data":null——nil 切片编码
+// 成 null，遍历列表的 OpenAI 客户端会在 null 上报错。上游全部被禁用/过期跳过
+// 时同样走到这里。
+func TestModelsEndpointEmptyListEncodesArray(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	model.AddModel(d, uid, model.UpstreamModel{ModelName: "gpt-4o"})
+	// 白名单匹配不到任何模型
+	k, _ := model.CreateExtKey(d, "l", "", 0, 0, []string{"other/nope"})
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"data":[]`) {
+		t.Fatalf("empty model list should encode as [], got %s", body)
+	}
+}

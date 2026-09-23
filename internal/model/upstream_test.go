@@ -407,6 +407,64 @@ func TestModelMultimodal(t *testing.T) {
 	}
 }
 
+// 模型暂时从上游列表消失（被软删）再回来时，ReplaceModels 的复活要恢复它
+// 最后的管理端配置（长度、multimodal），而不是落回默认值——快照只读活跃行
+// 就丢了死行上的配置。
+func TestReplaceModelsRevivePreservesConfig(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	// 管理员手改配置（走精确替换接口设值，避开与本测试无关的函数签名）
+	if err := ReplaceModelsExact(d, uid, []UpstreamModel{
+		{ModelName: "m1", ContextLength: 1111, MaxOutputLength: 222, Multimodal: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 上游列表暂时不含 m1 → 软删
+	if err := ReplaceModels(d, uid, []string{}); err != nil {
+		t.Fatal(err)
+	}
+	// m1 回来 → 复活必须带回 1111/222/true
+	if err := ReplaceModels(d, uid, []string{"m1"}); err != nil {
+		t.Fatal(err)
+	}
+	models, _ := ListModels(d, uid)
+	if len(models) != 1 {
+		t.Fatalf("models=%+v", models)
+	}
+	m := models[0]
+	if m.ContextLength != 1111 || m.MaxOutputLength != 222 || !m.Multimodal {
+		t.Fatalf("revived model lost its curated config: %+v", m)
+	}
+
+	// 对照组：只被删除过的手动模型不挡复活路（死行 manual=1 不算「活跃手动行」）
+	if err := AddModel(d, uid, UpstreamModel{ModelName: "m2", Manual: true, ContextLength: 500, MaxOutputLength: 50}); err != nil {
+		t.Fatal(err)
+	}
+	ms, _ := ListModels(d, uid)
+	for _, m := range ms {
+		if m.ModelName == "m2" {
+			if err := DeleteModel(d, m.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// m2 出现在上游列表里：以自动行插入（死的手动行不阻止）
+	if err := ReplaceModels(d, uid, []string{"m1", "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	models, _ = ListModels(d, uid)
+	byName := map[string]UpstreamModel{}
+	for _, m := range models {
+		byName[m.ModelName] = m
+	}
+	if len(models) != 2 || byName["m2"].Manual {
+		t.Fatalf("dead manual row should not block re-sync: %+v", models)
+	}
+}
+
 // TestUpdateIgnoresSoftDeleted verifies Update/Touch 对已软删除的行静默无效。
 func TestUpdateIgnoresSoftDeleted(t *testing.T) {
 	d := testDB(t)

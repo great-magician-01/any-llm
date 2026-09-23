@@ -495,3 +495,36 @@ func TestOpenSQLite_FreshDBHasNoCheck(t *testing.T) {
 		t.Fatalf("upstreams still has CHECK: %s", sqlText)
 	}
 }
+
+// 新装的库必须拥有 schema 声明的全部索引与全部列。主迁移只发 CREATE TABLE，
+// 索引靠后续步骤建——历史上 response_sessions / balance_snapshots 的普通索引
+// 声明在 schema.go 里却没有任何代码路径创建（只有 MySQL 因索引内联不受影响），
+// 新装的 SQLite/PG 库会一直缺索引。这个测试把「声明即可建」钉成不变量。
+func TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh-idx.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for _, tbl := range tablesFor(DialectSQLite) {
+		for _, ix := range tbl.Idx {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, ix.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("index %s declared in schema but missing on a fresh database", ix.Name)
+			}
+		}
+		for _, c := range tbl.Cols {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tbl.Name, c.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("column %s.%s declared in schema but missing on a fresh database", tbl.Name, c.Name)
+			}
+		}
+	}
+}

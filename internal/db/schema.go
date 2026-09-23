@@ -39,6 +39,12 @@ type Column struct {
 	// Default 是 SQL 字面量（"0"、"'ok'"）或 CURRENT_TIMESTAMP 这类关键字；
 	// 空串 = 无默认值。
 	Default string
+	// LateAdd 表示这列是初始 schema 之后才加入的：老库升级后合理缺失它，
+	// migrateExtraCols 启动时按这份定义回填（幂等）。给已有的表加列时置上它
+	// 即完成登记——没有第二处需要同步的清单。初始 schema 就有的列永远不要置它：
+	// 同名表缺初始列说明那库不是本项目建的，应在查询时响亮报错、人工修库，
+	// 而不是静默补一个语义不明的空壳列。
+	LateAdd bool
 	// AutoID 表示自增主键，每表最多一个，与 PrimaryKey 互斥。
 	AutoID bool
 	// PrimaryKey 用于非自增主键（如 response_sessions.id）。
@@ -93,14 +99,17 @@ var schemaTables = []Table{
 			{Name: "base_url", Type: TypeText},
 			{Name: "api_key", Type: TypeText},
 			{Name: "format", Type: TypeText, Len: 32},
-			{Name: "enabled", Type: TypeInt, Default: "1"},
-			{Name: "daily_token_limit", Type: TypeInt, Default: "0"},
-			{Name: "monthly_token_limit", Type: TypeInt, Default: "0"},
-			{Name: "max_concurrent", Type: TypeInt, Default: "100"},
+			{Name: "enabled", Type: TypeInt, Default: "1", LateAdd: true},
+			{Name: "daily_token_limit", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "monthly_token_limit", Type: TypeInt, Default: "0", LateAdd: true},
+			// 每上游并发上限（默认 100，0 = 不限）
+			{Name: "max_concurrent", Type: TypeInt, Default: "100", LateAdd: true},
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			{Name: "updated_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
-			{Name: "expires_at", Type: TypeTime, Nullable: true},
-			{Name: "is_active", Type: TypeInt, Default: "1"},
+			// 有效期截止时刻；可空，NULL = 永久有效。到点后网关侧等同禁用（见
+			// model.Upstream.Expired）。
+			{Name: "expires_at", Type: TypeTime, Nullable: true, LateAdd: true},
+			{Name: "is_active", Type: TypeInt, Default: "1", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_upstreams_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
@@ -113,12 +122,12 @@ var schemaTables = []Table{
 			{Name: "upstream_id", Type: TypeBigInt},
 			{Name: "model_name", Type: TypeText, Len: 255},
 			{Name: "manual", Type: TypeInt, Default: "0"},
-			{Name: "context_length", Type: TypeInt, Default: "1000000"},
-			{Name: "max_output_length", Type: TypeInt, Default: "200000"},
+			{Name: "context_length", Type: TypeInt, Default: "1000000", LateAdd: true},
+			{Name: "max_output_length", Type: TypeInt, Default: "200000", LateAdd: true},
 			// 是否多模态（可接受图片等非文本输入）：0/1，默认否。管理端配置与
 			// 展示用，网关转发路径不读它。
-			{Name: "multimodal", Type: TypeInt, Default: "0"},
-			{Name: "is_active", Type: TypeInt, Default: "1"},
+			{Name: "multimodal", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "is_active", Type: TypeInt, Default: "1", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_upstream_models_uid_name", Columns: []string{"upstream_id", "model_name"}, Unique: true, Where: "is_active = 1"},
@@ -134,14 +143,15 @@ var schemaTables = []Table{
 			// TEXT（不引入任意长度上限）。TEXT 的默认值在 MySQL 上写成表达式形式即可
 			//（DEFAULT ('')，见 effectiveDefault），所以「无长度上限」与「有默认值」
 			// 可以兼得，不需要把写入路径逼成必填。
-			{Name: "remark", Type: TypeText, Default: "''"},
-			{Name: "enabled", Type: TypeInt, Default: "1"},
-			{Name: "daily_token_limit", Type: TypeInt, Default: "0"},
-			{Name: "monthly_token_limit", Type: TypeInt, Default: "0"},
-			{Name: "allowed_models", Type: TypeText, Default: "''"},
+			{Name: "remark", Type: TypeText, Default: "''", LateAdd: true},
+			{Name: "enabled", Type: TypeInt, Default: "1", LateAdd: true},
+			{Name: "daily_token_limit", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "monthly_token_limit", Type: TypeInt, Default: "0", LateAdd: true},
+			// 按 key 的模型白名单：'' = 不限；否则 JSON 数组文本（对外模型名）
+			{Name: "allowed_models", Type: TypeText, Default: "''", LateAdd: true},
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			{Name: "last_used_at", Type: TypeTime, Nullable: true},
-			{Name: "is_active", Type: TypeInt, Default: "1"},
+			{Name: "is_active", Type: TypeInt, Default: "1", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_ext_keys_key", Columns: []string{"key"}, Unique: true, Where: "is_active = 1"},
@@ -161,10 +171,10 @@ var schemaTables = []Table{
 			{Name: "prompt_tokens", Type: TypeInt, Default: "0"},
 			{Name: "completion_tokens", Type: TypeInt, Default: "0"},
 			{Name: "total_tokens", Type: TypeInt, Default: "0"},
-			{Name: "cache_read_tokens", Type: TypeInt, Default: "0"},
-			{Name: "cache_creation_tokens", Type: TypeInt, Default: "0"},
-			{Name: "reasoning_tokens", Type: TypeInt, Default: "0"},
-			{Name: "duration_ms", Type: TypeInt, Default: "0"},
+			{Name: "cache_read_tokens", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "cache_creation_tokens", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "reasoning_tokens", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "duration_ms", Type: TypeInt, Default: "0", LateAdd: true},
 			{Name: "stream", Type: TypeInt, Default: "0"},
 			{Name: "status", Type: TypeText, Len: 32, Default: "'ok'"},
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
@@ -764,11 +774,6 @@ func schemaTableByName(name string) (Table, bool) {
 	return Table{}, false
 }
 
-// column 按名字取列定义。
-func (t Table) column(name string) (Column, bool) {
-	return lookupColumn(t.Cols, name)
-}
-
 // migrateMain 执行主迁移：建所有表（含该方言内联的索引）。逐条执行而非整段脚本：
 // go-sql-driver 不支持一次 Exec 多条语句，而逐条执行对 PG/SQLite 同样幂等。
 func migrateMain(d *sql.DB) error {
@@ -787,7 +792,7 @@ func migrateMain(d *sql.DB) error {
 // createTableStmts 渲染主迁移的建表语句。**只含 CREATE TABLE，不含索引**：
 // 部分唯一索引的谓词引用 is_active，而该列要靠 migrateExtraCols /
 // migrateSoftDelete 才在老库上就位，所以索引必须晚一步建（见
-// migratePartialUniqueIndexes / migrateUsageIndexes）。MySQL 的索引本来就内联在
+// migratePartialUniqueIndexes / migratePlainIndexes）。MySQL 的索引本来就内联在
 // CREATE TABLE 里，对它是空操作。
 func createTableStmts(d Dialect) ([]string, error) {
 	cfg := DDLConfig{IfNotExists: true}
