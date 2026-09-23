@@ -7,6 +7,7 @@ import { listUpstreams, listModels } from '@/api/upstreams'
 import { listAliases } from '@/api/aliases'
 import { formatInt } from '@/utils/format'
 import { buildOmpYaml } from '@/utils/ompConfig'
+import { buildDshYaml } from '@/utils/dshConfig'
 import { useKeyForms } from '@/composables/useKeyForms'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
@@ -174,6 +175,15 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
             },
           ),
           h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyDshConfig(row.key, row.allowed_models, e) }, { default: () => 'dsh' }),
+              default: () => '复制 dsh 配置 YAML（含此密钥）',
+            },
+          ),
+          h(
             NPopconfirm,
             { onPositiveClick: () => { del(row.id) } },
             {
@@ -273,6 +283,26 @@ async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | nul
 async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const yaml = await buildOmpConfig(apiKey, allowedModels)
+    await copyKey(yaml, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function buildDshConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  const rows = await collectUpstreamModels()
+  return buildDshYaml({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: rows
+      .filter((m) => !(allowedModels && allowedModels.length > 0 && !allowedModels.includes(`${m.upstream}/${m.model_name}`)))
+      .map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
+  })
+}
+
+async function copyDshConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const yaml = await buildDshConfig(apiKey, allowedModels)
     await copyKey(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
@@ -440,6 +470,10 @@ onMounted(load)
           <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 Oh My Pi 配置 YAML（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyDshConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 dsh 配置 YAML（含此密钥）
           </n-button>
         </template>
         <template #footer>
