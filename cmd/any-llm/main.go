@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/great-magician-01/any-llm/internal/adminapi"
 	"github.com/great-magician-01/any-llm/internal/auth"
 	"github.com/great-magician-01/any-llm/internal/config"
 	"github.com/great-magician-01/any-llm/internal/db"
@@ -22,7 +23,6 @@ import (
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
-	"github.com/great-magician-01/any-llm/internal/adminapi"
 )
 
 //go:embed all:web/dist
