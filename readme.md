@@ -13,7 +13,7 @@
 - **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或 Oh My Pi 配置
 - **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
 - **对话记录**：自动归档每次调用的完整请求/响应（PostgreSQL / MySQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
-- **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量），保留历史趋势
+- **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量、阶跃星辰账户余额），保留历史趋势
 - **配置备份**：上游与别名配置一键导出/导入
 - **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0.13+（同为纯 Go 驱动）
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
@@ -101,7 +101,7 @@ docker compose up -d
 访问 `http://localhost:6718`，使用管理员密码登录：
 
 1. **Dashboard（总览）**：用量统计卡片、本月模型用量 Top、资源与快捷操作
-2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、日/月 Token 限额；DeepSeek / Kimi 上游自动抓取余额快照；支持配置导出/导入
+2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、日/月 Token 限额；DeepSeek / Kimi / 阶跃星辰上游自动抓取余额快照；支持配置导出/导入
 3. **Keys（API 密钥）**：创建和管理外部 API Key，可填写名称与备注，设置日/月 Token 限额与可用模型白名单，一键复制调用示例或 Oh My Pi 配置
 4. **Aliases（模型别名）**：维护固定对外模型名及绑定列表
 5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（PostgreSQL / MySQL，SQLite 下显示禁用提示）
