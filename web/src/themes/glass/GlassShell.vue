@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { darkTheme, lightTheme, zhCN, dateZhCN } from 'naive-ui'
-import { useTheme } from '../composables/useTheme'
+import { useTheme } from '@/composables/useTheme'
 import { darkGlassThemeOverrides, lightGlassThemeOverrides } from './theme'
 
 const { isDark } = useTheme()

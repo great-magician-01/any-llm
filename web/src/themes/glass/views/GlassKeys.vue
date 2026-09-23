@@ -2,14 +2,14 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip, NSelect } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listKeys, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '../api/keys'
-import { listUpstreams, listModels } from '../api/upstreams'
-import { listAliases } from '../api/aliases'
-import { formatInt } from '../utils/format'
-import { buildOmpYaml } from '../utils/ompConfig'
-import { useKeyForms } from '../composables/useKeyForms'
-import AppIcon from '../components/AppIcon.vue'
-import UsageDocDrawer from '../components/UsageDocDrawer.vue'
+import { listKeys, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '@/api/keys'
+import { listUpstreams, listModels } from '@/api/upstreams'
+import { listAliases } from '@/api/aliases'
+import { formatInt } from '@/utils/format'
+import { buildOmpYaml } from '@/utils/ompConfig'
+import { useKeyForms } from '@/composables/useKeyForms'
+import AppIcon from '@/components/AppIcon.vue'
+import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
@@ -500,7 +500,7 @@ onMounted(load)
 .key-chip {
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border-soft);
   font-size: 12px;
   color: var(--text-2);
@@ -508,7 +508,7 @@ onMounted(load)
 .code-chip {
   padding: 1px 6px;
   border-radius: 5px;
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-2);
   font-size: 12px;
 }

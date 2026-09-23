@@ -2,11 +2,11 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useMessage, NPopconfirm, NButton, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSelect, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '../api/aliases'
-import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '../api/upstreams'
-import AppIcon from '../components/AppIcon.vue'
-import { aliasUpstreamOptions } from '../utils/aliasOptions'
-import { isExpired } from '../utils/upstreamStatus'
+import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '@/api/aliases'
+import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '@/api/upstreams'
+import AppIcon from '@/components/AppIcon.vue'
+import { aliasUpstreamOptions } from '@/utils/aliasOptions'
+import { isExpired } from '@/utils/upstreamStatus'
 
 const message = useMessage()
 const aliases = ref<ModelAlias[]>([])

@@ -2,12 +2,12 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { fetchSummary, type UsageSummary } from '../api/usage'
-import { listUpstreams } from '../api/upstreams'
-import { listKeys } from '../api/keys'
-import { formatCompact, formatInt, formatPercent, localISO } from '../utils/format'
-import StatCard from '../components/StatCard.vue'
-import AppIcon from '../components/AppIcon.vue'
+import { fetchSummary, type UsageSummary } from '@/api/usage'
+import { listUpstreams } from '@/api/upstreams'
+import { listKeys } from '@/api/keys'
+import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
+import StatCard from '@/components/StatCard.vue'
+import AppIcon from '@/components/AppIcon.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -176,11 +176,11 @@ onUnmounted(() => clearInterval(timer))
 
         <n-card title="快捷操作" class="panel">
           <div class="quick-list">
-            <n-button block class="quick-btn" @click="router.push({ name: 'upstreams' })">
+            <n-button block class="quick-btn" @click="router.push({ name: 'glass-upstreams' })">
               <template #icon><AppIcon name="plus" :size="15" /></template>
               配置上游
             </n-button>
-            <n-button block class="quick-btn" @click="router.push({ name: 'keys' })">
+            <n-button block class="quick-btn" @click="router.push({ name: 'glass-keys' })">
               <template #icon><AppIcon name="key" :size="15" /></template>
               签发密钥
             </n-button>
@@ -249,14 +249,14 @@ onUnmounted(() => clearInterval(timer))
   margin-top: 6px;
   height: 6px;
   border-radius: 3px;
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
 .rank-bar-fill {
   height: 100%;
   border-radius: 3px;
   background: var(--grad);
-  box-shadow: 0 0 8px rgba(91, 140, 255, 0.5);
+  box-shadow: 0 0 8px rgba(123, 163, 255, 0.5);
   transition: width 0.5s ease;
 }
 .rank-sub {
@@ -307,7 +307,7 @@ onUnmounted(() => clearInterval(timer))
 .quick-hint code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-2);
   font-size: 11px;
 }

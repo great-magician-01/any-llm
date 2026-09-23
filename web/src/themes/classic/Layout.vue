@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import client from '../api/client'
-import BrandMark from './BrandMark.vue'
-import AppIcon, { type IconName } from './AppIcon.vue'
-import ThemeToggle from './ThemeToggle.vue'
+import client from '@/api/client'
+import BrandMark from '@/components/BrandMark.vue'
+import AppIcon, { type IconName } from '@/components/AppIcon.vue'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const router = useRouter()
 const route = useRoute()

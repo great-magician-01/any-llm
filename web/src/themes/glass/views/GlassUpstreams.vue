@@ -2,15 +2,15 @@
 import { ref, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '../api/upstreams'
-import { listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '../api/balances'
-import { exportConfig, importConfig, type ConfigFile } from '../api/config'
-import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '../utils/configTransfer'
-import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '../utils/balance'
-import { expiryLabel, expiryToISO, isoToExpiry } from '../utils/upstreamStatus'
-import { formatInt, formatTime } from '../utils/format'
-import { useUpstreamList } from '../composables/useUpstreamList'
-import AppIcon from '../components/AppIcon.vue'
+import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '@/api/upstreams'
+import { listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '@/api/balances'
+import { exportConfig, importConfig, type ConfigFile } from '@/api/config'
+import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '@/utils/configTransfer'
+import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '@/utils/balance'
+import { expiryLabel, expiryToISO, isoToExpiry } from '@/utils/upstreamStatus'
+import { formatInt, formatTime } from '@/utils/format'
+import { useUpstreamList } from '@/composables/useUpstreamList'
+import AppIcon from '@/components/AppIcon.vue'
 
 const message = useMessage()
 // 列表 + 启用状态过滤 + 余额快照：两套皮肤共用（含请求序号守卫与切档只重查
@@ -352,9 +352,7 @@ const columns: DataTableColumns<Upstream> = [
           ),
     ])
   }},
-  // 名称/地址之外的列宽固定；名称给定宽、地址给 minWidth 吸收剩余空间。
-  // 配合 scroll-x，窗口过窄时表格横向滚动而不是把无宽度的列压成 0。
-  { title: '名称', key: 'name', width: 130, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
   { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   {
@@ -368,7 +366,7 @@ const columns: DataTableColumns<Upstream> = [
       return h('span', { style: 'font-size: 12.5px' }, text)
     },
   },
-  { title: '地址', key: 'base_url', minWidth: 180, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
+  { title: '地址', key: 'base_url', ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
     key: 'format',
@@ -378,7 +376,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '模型数',
     key: 'model_count',
-    width: 80,
+    width: 90,
     render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
   },
   {
@@ -403,7 +401,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: 120,
+    width: 130,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -411,7 +409,7 @@ const columns: DataTableColumns<Upstream> = [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: 120,
+    width: 130,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -424,7 +422,7 @@ const columns: DataTableColumns<Upstream> = [
       ? h('span', { class: 'mono' }, formatInt(row.max_concurrent))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  { title: '操作', key: 'actions', width: 360, render: (row) => h(NSpace, { size: 8, wrap: false }, {
+  { title: '操作', key: 'actions', width: 320, render: (row) => h(NSpace, { size: 8 }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -507,7 +505,6 @@ onMounted(() => {
         :bordered="false"
         :columns="columns"
         :data="upstreams"
-        :scroll-x="1650"
         :row-key="(row: Upstream) => row.id"
         :expanded-row-keys="expandedRowKeys"
         @update:expanded-row-keys="onExpand"

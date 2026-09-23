@@ -1,5 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import Login from './views/Login.vue'
+import Login from '@/themes/classic/views/Login.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -7,34 +7,34 @@ const router = createRouter({
     { path: '/login', name: 'login', component: Login },
     {
       path: '/',
-      component: () => import('./components/Layout.vue'),
+      component: () => import('@/themes/classic/Layout.vue'),
       children: [
         { path: '', redirect: '/dashboard' },
-        { path: 'dashboard', name: 'dashboard', component: () => import('./views/Dashboard.vue') },
-        { path: 'upstreams', name: 'upstreams', component: () => import('./views/Upstreams.vue') },
-        { path: 'aliases', name: 'aliases', component: () => import('./views/Aliases.vue') },
-        { path: 'keys', name: 'keys', component: () => import('./views/Keys.vue') },
-        { path: 'usage', name: 'usage', component: () => import('./views/Usage.vue') },
-        { path: 'conversations', name: 'conversations', component: () => import('./views/Conversations.vue') },
+        { path: 'dashboard', name: 'dashboard', component: () => import('@/themes/classic/views/Dashboard.vue') },
+        { path: 'upstreams', name: 'upstreams', component: () => import('@/themes/classic/views/Upstreams.vue') },
+        { path: 'aliases', name: 'aliases', component: () => import('@/themes/classic/views/Aliases.vue') },
+        { path: 'keys', name: 'keys', component: () => import('@/themes/classic/views/Keys.vue') },
+        { path: 'usage', name: 'usage', component: () => import('@/themes/classic/views/Usage.vue') },
+        { path: 'conversations', name: 'conversations', component: () => import('@/themes/classic/views/Conversations.vue') },
       ],
     },
     {
       // 毛玻璃风格页面套件：与经典版一一对应，仅视觉风格不同
       path: '/glass',
-      component: () => import('./glass/GlassShell.vue'),
+      component: () => import('@/themes/glass/GlassShell.vue'),
       children: [
-        { path: 'login', name: 'glass-login', component: () => import('./glass/views/GlassLogin.vue') },
+        { path: 'login', name: 'glass-login', component: () => import('@/themes/glass/views/GlassLogin.vue') },
         {
           path: '',
-          component: () => import('./glass/GlassLayout.vue'),
+          component: () => import('@/themes/glass/GlassLayout.vue'),
           children: [
             { path: '', redirect: '/glass/dashboard' },
-            { path: 'dashboard', name: 'glass-dashboard', component: () => import('./glass/views/GlassDashboard.vue') },
-            { path: 'upstreams', name: 'glass-upstreams', component: () => import('./glass/views/GlassUpstreams.vue') },
-            { path: 'aliases', name: 'glass-aliases', component: () => import('./glass/views/GlassAliases.vue') },
-            { path: 'keys', name: 'glass-keys', component: () => import('./glass/views/GlassKeys.vue') },
-            { path: 'usage', name: 'glass-usage', component: () => import('./glass/views/GlassUsage.vue') },
-            { path: 'conversations', name: 'glass-conversations', component: () => import('./glass/views/GlassConversations.vue') },
+            { path: 'dashboard', name: 'glass-dashboard', component: () => import('@/themes/glass/views/GlassDashboard.vue') },
+            { path: 'upstreams', name: 'glass-upstreams', component: () => import('@/themes/glass/views/GlassUpstreams.vue') },
+            { path: 'aliases', name: 'glass-aliases', component: () => import('@/themes/glass/views/GlassAliases.vue') },
+            { path: 'keys', name: 'glass-keys', component: () => import('@/themes/glass/views/GlassKeys.vue') },
+            { path: 'usage', name: 'glass-usage', component: () => import('@/themes/glass/views/GlassUsage.vue') },
+            { path: 'conversations', name: 'glass-conversations', component: () => import('@/themes/glass/views/GlassConversations.vue') },
           ],
         },
       ],
