@@ -40,8 +40,8 @@ export const UPSTREAM_PRESETS: UpstreamPreset[] = [
   { key: 'zhipu-coding-openai', label: 'GLM Coding Plan（OpenAI 格式）', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', format: 'openai', group: 'coding', hint: '需 Coding Plan 专属 Key' },
   { key: 'kimi-coding', label: 'Kimi For Coding', baseUrl: 'https://api.moonshot.cn/anthropic', format: 'anthropic', group: 'coding', hint: '需 Kimi For Coding 订阅 Key' },
   { key: 'minimax-coding', label: 'MiniMax Coding Plan', baseUrl: 'https://api.minimaxi.com/anthropic', format: 'anthropic', group: 'coding', hint: '需 Coding Plan 订阅 Key' },
-  { key: 'qwen-coding-openai', label: '通义千问 Coding Plan（OpenAI 格式）', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', format: 'openai', group: 'coding', hint: '需 Coding Plan 专属 Key（sk-sp- 开头）' },
-  { key: 'qwen-coding-anthropic', label: '通义千问 Coding Plan（Anthropic 格式）', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', format: 'anthropic', group: 'coding', hint: '需 Coding Plan 专属 Key（sk-sp- 开头）' },
+  { key: 'qwen-coding-openai', label: '通义千问 Coding Plan（OpenAI 格式）', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', format: 'openai', group: 'coding', hint: '需在百炼控制台 Coding Plan 页单独开通' },
+  { key: 'qwen-coding-anthropic', label: '通义千问 Coding Plan（Anthropic 格式）', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', format: 'anthropic', group: 'coding', hint: '需在百炼控制台 Coding Plan 页单独开通' },
   // —— 海外官方 ——
   { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', format: 'openai', group: 'official' },
   { key: 'openai-responses', label: 'OpenAI（Responses 格式）', baseUrl: 'https://api.openai.com/v1', format: 'responses', group: 'official' },
