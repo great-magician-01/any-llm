@@ -683,6 +683,169 @@ func TestUpstreamExpiry_TimezoneHandling(t *testing.T) {
 	}
 }
 
+// TestUpstreamConnectivity_API 连通性测试：未保存的表单配置走 /upstreams/test，
+// 已保存的走 /upstreams/{id}/test。钉住结果分层语义——网络失败 reachable=false；
+// 收到应答 reachable=true，2xx 才 ok=true 并给出模型数。
+func TestUpstreamConnectivity_API(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`))
+	}))
+	defer srv.Close()
+
+	a, _ := setupAPI(t)
+	a.client = upstream.NewClient(http.DefaultClient)
+
+	post := func(path string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		var rd *bytes.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		} else {
+			rd = bytes.NewReader(nil)
+		}
+		req := httptest.NewRequest("POST", path, rd)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+	var result struct {
+		OK        bool   `json:"ok"`
+		Reachable bool   `json:"reachable"`
+		LatencyMs int64  `json:"latency_ms"`
+		Status    int    `json:"status"`
+		Models    *int   `json:"models"`
+		Detail    string `json:"detail"`
+	}
+
+	// 未保存配置：2xx + 模型列表 → ok，认证头按格式下发
+	w := post("/api/admin/upstreams/test", map[string]any{"base_url": srv.URL, "api_key": "sk-real", "format": "openai"})
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || !result.Reachable || result.Models == nil || *result.Models != 2 || result.Status != 200 {
+		t.Fatalf("result=%+v", result)
+	}
+	if gotAuth != "Bearer sk-real" {
+		t.Fatalf("auth header=%q", gotAuth)
+	}
+
+	// 参数校验：缺 base_url / 非法 format → 400
+	if w := post("/api/admin/upstreams/test", map[string]any{"base_url": " ", "format": "openai"}); w.Code != 400 {
+		t.Fatalf("missing base_url status=%d want 400", w.Code)
+	}
+	if w := post("/api/admin/upstreams/test", map[string]any{"base_url": srv.URL, "format": "yaml"}); w.Code != 400 {
+		t.Fatalf("bad format status=%d want 400", w.Code)
+	}
+}
+
+// TestUpstreamConnectivity_Classification 按上游应答分层：401 → 连通但非 ok；
+// 网络错误（服务器已关）→ reachable=false。
+func TestUpstreamConnectivity_Classification(t *testing.T) {
+	a, _ := setupAPI(t)
+	a.client = upstream.NewClient(http.DefaultClient)
+
+	run := func(baseURL string) map[string]any {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"base_url": baseURL, "api_key": "k", "format": "openai"})
+		req := httptest.NewRequest("POST", "/api/admin/upstreams/test", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var res map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	srv401 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"invalid key"}`))
+	}))
+	defer srv401.Close()
+	res := run(srv401.URL)
+	if res["ok"] != false || res["reachable"] != true || res["status"] != float64(401) {
+		t.Fatalf("401 case: %+v", res)
+	}
+
+	// 先建再关，拿到一个必定拒绝连接的地址
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	res = run(deadURL)
+	if res["ok"] != false || res["reachable"] != false {
+		t.Fatalf("dead server case: %+v", res)
+	}
+	if res["detail"] == nil || res["detail"] == "" {
+		t.Fatalf("dead server should carry a detail: %+v", res)
+	}
+}
+
+// TestUpstreamConnectivity_ByID 已保存上游的测试：空请求体直接用库存配置；
+// 回传掩码 key 时沿用库存真 key（与 update 的掩码跳过约定一致）；id 不存在 404。
+func TestUpstreamConnectivity_ByID(t *testing.T) {
+	var gotKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("x-api-key")
+		w.Write([]byte(`{"data":[{"id":"claude-3"}]}`))
+	}))
+	defer srv.Close()
+
+	a, d := setupAPI(t)
+	a.client = upstream.NewClient(http.DefaultClient)
+	const realKey = "sk-ant-real-key-123456"
+	id, _ := store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: srv.URL, APIKey: realKey, Format: "anthropic"})
+	path := "/api/admin/upstreams/" + strconv.FormatInt(id, 10) + "/test"
+
+	// 空请求体（Content-Length 0，无 JSON）→ 直接用库存配置
+	req := httptest.NewRequest("POST", path, nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var res struct {
+		OK     bool `json:"ok"`
+		Models *int `json:"models"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if !res.OK || res.Models == nil || *res.Models != 1 {
+		t.Fatalf("result=%+v", res)
+	}
+	if gotKey != realKey {
+		t.Fatalf("stored key not used: %q", gotKey)
+	}
+
+	// 掩码 key 覆盖 → 仍用库存真 key
+	masked := realKey[:4] + "****" + realKey[len(realKey)-4:]
+	body, _ := json.Marshal(map[string]any{"api_key": masked})
+	req = httptest.NewRequest("POST", path, bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("masked status=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotKey != realKey {
+		t.Fatalf("masked key must fall back to stored key, got %q", gotKey)
+	}
+
+	// 不存在的 id → 404
+	req = httptest.NewRequest("POST", "/api/admin/upstreams/999999/test", nil)
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("missing id status=%d want 404", w.Code)
+	}
+}
+
 // 模型写操作的错误语义：添加已存在的活跃模型返回 409（静默 200 会让管理员以为
 // 新配置生效了）；编辑不存在/已软删/跨上游的模型返回 404（更新 0 行不能假成功）。
 func TestModelWriteErrorSemantics(t *testing.T) {

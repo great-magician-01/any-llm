@@ -30,6 +30,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/admin/upstreams/{id}", withID(a.updateUpstream))
 	mux.HandleFunc("DELETE /api/admin/upstreams/{id}", withID(a.deleteUpstream))
 	mux.HandleFunc("POST /api/admin/upstreams/{id}/fetch-models", withID(a.fetchModels))
+	mux.HandleFunc("POST /api/admin/upstreams/test", a.testUpstreamConfig)
+	mux.HandleFunc("POST /api/admin/upstreams/{id}/test", withID(a.testUpstream))
 	mux.HandleFunc("GET /api/admin/upstreams/{id}/models", withID(a.listModels))
 	mux.HandleFunc("POST /api/admin/upstreams/{id}/models", withID(a.addModel))
 	mux.HandleFunc("PUT /api/admin/upstreams/{id}/models/{mid}", withIDPair(a.updateModel))

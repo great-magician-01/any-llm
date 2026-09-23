@@ -47,6 +47,30 @@ export async function fetchModels(id: number) {
   return data.models as string[]
 }
 
+// 连通性测试结果（与后端 upstream.TestResult 对应）：reachable=false 是网络层
+// 失败；reachable=true 而 ok=false 是收到了应答但非 2xx（401/403 多为 key 无效，
+// 404 多为该端点没有模型列表）；ok=true 时 models 为模型数。
+export interface ConnectivityTestResult {
+  ok: boolean
+  reachable: boolean
+  latency_ms: number
+  status?: number
+  models?: number
+  detail?: string
+}
+
+// 测未保存的表单配置（新增上游时用，后端不查库）
+export async function testUpstreamConfig(u: { base_url: string; api_key: string; format: string }) {
+  const { data } = await client.post('/upstreams/test', u)
+  return data as ConnectivityTestResult
+}
+
+// 测已保存的上游；override 带表单里的当前值（api_key 为空或掩码时后端沿用库存真 key）
+export async function testUpstream(id: number, override?: { base_url?: string; api_key?: string; format?: string }) {
+  const { data } = await client.post(`/upstreams/${id}/test`, override ?? {})
+  return data as ConnectivityTestResult
+}
+
 export async function listModels(upstreamId: number) {
   const { data } = await client.get(`/upstreams/${upstreamId}/models`)
   return data.data as UpstreamModel[]

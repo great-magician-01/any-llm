@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -262,6 +263,75 @@ func (a *API) fetchModels(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"models": names})
+}
+
+// testUpstreamConfig serves POST /api/admin/upstreams/test — 对未落库的表单
+// 配置（新增上游时的 base_url/api_key/format）做连通性测试。结果总是 200 +
+// TestResult JSON：上游不可达是测试结果而不是本接口的失败。
+func (a *API) testUpstreamConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if strings.TrimSpace(req.BaseURL) == "" {
+		writeJSON(w, 400, map[string]any{"error": "base_url is required"})
+		return
+	}
+	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+		return
+	}
+	if a.client == nil {
+		writeJSON(w, 500, map[string]any{"error": "upstream client not configured"})
+		return
+	}
+	u := &store.Upstream{BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format}
+	writeJSON(w, 200, upstream.TestConnectivity(r.Context(), a.client.HTTP(), u))
+}
+
+// testUpstream serves POST /api/admin/upstreams/{id}/test — 按 id 测已保存的
+// 上游。请求体可空（列表页直接测）；也可带 base_url/format/api_key 覆盖，供
+// 编辑表单测「表单里的新值」——api_key 留空或回传掩码占位符时沿用库存真 key
+// （与 updateUpstream 的跳过掩码约定一致）。
+func (a *API) testUpstream(w http.ResponseWriter, r *http.Request, id int64) {
+	u, err := store.GetUpstreamByID(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
+		return
+	}
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
+	}
+	// 列表页测试不带请求体：EOF 视为无覆盖。
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	if req.BaseURL != "" {
+		u.BaseURL = req.BaseURL
+	}
+	if req.APIKey != "" && !isMaskedKey(req.APIKey) {
+		u.APIKey = req.APIKey
+	}
+	if req.Format != "" {
+		if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+			writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+			return
+		}
+		u.Format = req.Format
+	}
+	if a.client == nil {
+		writeJSON(w, 500, map[string]any{"error": "upstream client not configured"})
+		return
+	}
+	writeJSON(w, 200, upstream.TestConnectivity(r.Context(), a.client.HTTP(), u))
 }
 
 // listModels serves GET /api/admin/upstreams/{id}/models.
