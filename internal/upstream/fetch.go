@@ -16,31 +16,21 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream
 	// when the base URL doesn't already carry it. Some providers (e.g.
 	// DeepSeek) do not expose a models listing on their anthropic-compat
 	// path; fetch will simply 404 there.
-	url := endpointURL(u, "/models")
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := newAuthedModelsRequest(ctx, u)
 	if err != nil {
-		logger.Error("fetch models: create request", "url", url, "err", err)
-		return nil, fmt.Errorf("create fetch request: %w", err)
-	}
-	switch u.Format {
-	case "openai", "responses":
-		req.Header.Set("Authorization", "Bearer "+u.APIKey)
-	case "anthropic":
-		req.Header.Set("x-api-key", u.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	default:
-		return nil, fmt.Errorf("unknown format: %s", u.Format)
+		logger.Error("fetch models: create request", "upstream", u.Name, "err", err)
+		return nil, err
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		logger.Error("fetch models: request failed", "url", url, "upstream", u.Name, "err", err)
+		logger.Error("fetch models: request failed", "url", req.URL.String(), "upstream", u.Name, "err", err)
 		return nil, fmt.Errorf("fetch models: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
 		logger.Error("fetch models: upstream error",
-			"url", url,
+			"url", req.URL.String(),
 			"upstream", u.Name,
 			"status", resp.StatusCode,
 			"body", truncateFetch(string(body), 512),
@@ -55,7 +45,7 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		logger.Error("fetch models: decode failed", "url", url, "upstream", u.Name, "err", err)
+		logger.Error("fetch models: decode failed", "url", req.URL.String(), "upstream", u.Name, "err", err)
 		return nil, fmt.Errorf("decode models response: %w", err)
 	}
 	out := make([]string, 0, len(result.Data))
@@ -64,6 +54,26 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream
 	}
 	logger.Info("fetched models", "upstream", u.Name, "count", len(out))
 	return out, nil
+}
+
+// newAuthedModelsRequest 构造 GET {base}/models 请求并按上游格式带认证头，
+// FetchModels 与连通性测试（test.go）共用。
+func newAuthedModelsRequest(ctx context.Context, u *store.Upstream) (*http.Request, error) {
+	url := endpointURL(u, "/models")
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create fetch request: %w", err)
+	}
+	switch u.Format {
+	case "openai", "responses":
+		req.Header.Set("Authorization", "Bearer "+u.APIKey)
+	case "anthropic":
+		req.Header.Set("x-api-key", u.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	default:
+		return nil, fmt.Errorf("unknown format: %s", u.Format)
+	}
+	return req, nil
 }
 
 // maxFetchBody caps how many bytes of an upstream GET response (models list,
