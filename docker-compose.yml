@@ -1,7 +1,9 @@
 services:
   any-llm:
-    # 从 CI 下载的 .tar 镜像导入（docker load -i any-llm.tar），
-    # 或本地构建（docker build -t any-llm:latest .）
+    # 从 CI 下载的 .tar 镜像导入（docker load -i any-llm.tar），或本地构建
+    # （docker build -t any-llm:latest .）。注意 CI 产出的 tag 是唯一的
+    # （any-llm:<日期>-<短 sha>）：导入后要么 retag 成 any-llm:latest，要么把
+    # 下面的 image 改成那个 tag，否则 compose 会按 build: . 本地重建（见 docs/docker.md）。
     build: .
     image: any-llm:latest
     container_name: any-llm

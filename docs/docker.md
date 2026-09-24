@@ -1,6 +1,6 @@
 # Docker 部署指南
 
-本仓库的 `docker` 分支配置了 GitHub Actions：每次 push 到 `docker` 分支都会自动构建镜像，并把镜像保存为**未压缩的 `.tar` 文件**（`docker save` 原始输出，不是 `.tar.gz`）上传到 Actions artifact，可直接下载。
+本仓库的 `docker` 分支配置了 GitHub Actions：每次 push 到 `docker` 分支都会自动构建镜像，并把镜像保存为**未压缩的 `.tar` 文件**（`docker save` 原始输出，不是 `.tar.gz`）上传到 Actions artifact，可直接下载。每次构建的 tag 都是唯一的（`any-llm:<日期>-<短 sha>`），不产出会被互相覆盖的 `latest`。
 
 ## 1. 获取镜像
 
@@ -18,7 +18,13 @@ docker load -i any-llm.tar
 docker images | grep any-llm
 ```
 
-镜像包含两个 tag：`any-llm:latest` 和 `any-llm:<commit-sha>`。
+镜像只有一个 tag：`any-llm:<构建日期>-<短 sha>`（如 `any-llm:2026.09.24-3e3a51a`）。每次构建都是新 tag，不会覆盖之前的镜像，也不会在导入时覆盖你本地已有的同名镜像；这次构建用的是哪个 tag，见该次运行页面的 step summary。
+
+导入后如果要用下面的 compose 文件（它的 `image` 字段是 `any-llm:latest`），先手动 retag 一次：
+
+```bash
+docker tag any-llm:2026.09.24-3e3a51a any-llm:latest
+```
 
 ### 方式 B：本地构建
 
@@ -76,6 +82,7 @@ docker run -d --name any-llm \
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成密钥的存放文件（容器里放到挂载卷下，否则重启登录失效） |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志文件路径；容器里建议指向挂载卷，如 `/data/logs/any-llm.log`（logger 会按日期自动建子目录，同时输出到 stdout） |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `TZ` | `Asia/Shanghai` | 不是应用变量，而是镜像的 `ENV` 默认值；日志按日轮转建目录、日/月额度窗口都按容器本地时间算，运行时可用 `-e TZ=UTC` 等覆盖 |
 
 ## 5. 使用 PostgreSQL（可选）
 
@@ -159,6 +166,9 @@ GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压
 **Q：改了 `ANY_LLM_PORT` 之后访问不到？**
 `EXPOSE` 只是声明性信息（镜像里声明的是默认的 6718），应用实际监听端口由 `ANY_LLM_PORT` 决定。改了它必须同步改端口映射，例如 `ANY_LLM_PORT=9000` 就映射 `9000:9000`；反过来映射 `8080:6718` 也可以从 8080 访问。
 
+**Q：导入镜像后 `docker compose up` 为什么在本地重新构建？**
+CI 产出的 tag 是唯一的（`any-llm:<日期>-<短 sha>`），而 compose 的 `image` 字段写的是 `any-llm:latest`。本地没有这个 tag 时，compose 看到 `build: .` 会走本地构建 —— 慢，而且构建出的不一定是你下载的那份代码。先 `docker tag any-llm:<tag> any-llm:latest`，或把 compose 的 `image` 改成带 tag 的名字。
+
 **Q：容器重启后登录失效？**
 会话密钥被随机重新生成了。把 `ANY_LLM_SESSION_SECRET_FILE` 指向挂载卷（compose 文件已处理），或显式设置 `ANY_LLM_SESSION_SECRET`。
 
@@ -169,7 +179,8 @@ GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压
 
 `.github/workflows/docker.yml` 在 push 到 `docker` 分支（或手动触发）时执行：
 
-1. `docker/build-push-action` 多阶段构建（Vue 前端 + Go 后端 → alpine 运行镜像），带 GHA 层缓存
-2. `docker save -o any-llm.tar` 导出为未压缩 tar
-3. `file any-llm.tar` 校验导出格式
-4. 上传 artifact `any-llm-docker-image`（保留 30 天）
+1. 计算本次构建的唯一 tag `any-llm:<UTC 日期>-<短 sha>`，写进该次运行的 step summary
+2. `docker/build-push-action` 多阶段构建（Vue 前端 + Go 后端 → alpine 运行镜像），带 GHA 层缓存，只打这一个 tag
+3. `docker save -o any-llm.tar` 把该 tag 导出为未压缩 tar
+4. `file any-llm.tar` 校验导出格式
+5. 上传 artifact `any-llm-docker-image`（保留 30 天）
