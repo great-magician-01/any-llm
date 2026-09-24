@@ -12,11 +12,11 @@ func b2i(b bool) int {
 }
 
 type Upstream struct {
-	ID                int64  `json:"id"`
-	Name              string `json:"name"`
-	BaseURL           string `json:"base_url"`
-	APIKey            string `json:"api_key"`
-	Format            string `json:"format"`
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Format  string `json:"format"`
 	// Remark 选填备注，纯管理端元数据（展示/导出用），网关路由与转发不读它。
 	Remark            string `json:"remark"`
 	Enabled           bool   `json:"enabled"`

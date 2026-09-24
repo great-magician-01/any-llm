@@ -145,10 +145,10 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	var req struct {
-		Name              string  `json:"name"`
-		BaseURL           string  `json:"base_url"`
-		APIKey            string  `json:"api_key"`
-		Format            string  `json:"format"`
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
 		// 指针区分「没给」与「给了空串」：只带 enabled 的 PATCH（如列表页开关）
 		// 不得顺手清空备注；显式空串才是清空。
 		Remark            *string `json:"remark"`
