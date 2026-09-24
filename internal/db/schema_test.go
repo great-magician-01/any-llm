@@ -140,6 +140,18 @@ func TestSchemaMySQLPartialUniqueIsCompositeAware(t *testing.T) {
 	}
 }
 
+// TestSchemaMySQLIndexKeepsSortDirection 盯住索引列的排序方向：声明里的
+// "id DESC" 在 MySQL 内联索引上也要渲染成 DESC，不能随反引号化被丢掉——否则
+// 同一个声明在 MySQL 与 PG/SQLite 上建出的索引静默分叉（余额历史按
+// upstream_id 过滤 + id 倒序翻页吃的就是这个索引）。
+func TestSchemaMySQLIndexKeepsSortDirection(t *testing.T) {
+	tbl, _ := schemaTableByName("balance_snapshots")
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(ddl, "KEY `idx_balance_snapshots_upstream` (`upstream_id`, `id` DESC)") {
+		t.Errorf("MySQL balance_snapshots DDL lost the DESC sort direction:\n%s", ddl)
+	}
+}
+
 // TestSchemaMySQLLongTextForSessionMessages 盯住 64 KiB 陷阱：MySQL 的 TEXT 只有
 // 64 KiB，而 messages 存的是累积的整段会话历史，长会话会直接写失败。
 func TestSchemaMySQLLongTextForSessionMessages(t *testing.T) {

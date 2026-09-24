@@ -3,7 +3,7 @@ import { onScopeDispose, readonly, ref } from 'vue'
 /**
  * 视口宽度断点（两套皮肤的 Upstreams 页共用）。
  *
- * 上游管理页的操作列有 5 个按钮：宽屏一行铺开最顺手，窄屏还按一行算宽就把
+ * 上游管理页的操作列有 6 个按钮：宽屏一行铺开最顺手，窄屏还按一行算宽就把
  * 表格撑爆、横向滚动条拉老长。这里只做「宽/窄」两档，不逐像素重算——
  * 表格列宽是声明式配置，档位切换时重建一次 columns 即可，中间态没有意义。
  *
@@ -14,8 +14,14 @@ import { onScopeDispose, readonly, ref } from 'vue'
 /** 窄于此宽度切到「按钮换行」档（视口宽度，含滚动条）。 */
 export const NARROW_BREAKPOINT = 1400
 
-/** 操作列宽度：宽屏一行 5 个按钮；窄屏收窄，按钮自然换行成两行。 */
-export const ACTIONS_COL_WIDTH = { wide: 360, narrow: 250 } as const
+/**
+ * 操作列宽度：宽屏一行 6 个按钮；窄屏收窄，按钮自然换行成两行。
+ *
+ * wide 是按 6 个 small 按钮（编辑/测试/拉取模型/刷新余额/历史/删除）加
+ * NSpace 间距和单元格内边距实测出来的下限——加「测试」按钮时从 360 抬到
+ * 440，再压回去宽屏就会换行，「宽屏仍是一行」的约定就没了。
+ */
+export const ACTIONS_COL_WIDTH = { wide: 440, narrow: 250 } as const
 
 function narrowQuery(): MediaQueryList | undefined {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {

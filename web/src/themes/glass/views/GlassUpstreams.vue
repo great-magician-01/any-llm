@@ -2,12 +2,14 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, NPopconfirm, NInput, NInputNumber, NSwitch, NText, NDatePicker, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '@/api/upstreams'
+import { createUpstream, updateUpstream, deleteUpstream, fetchModels as fetchUpsModels, listModels, addModel, updateModel, deleteModel, testUpstream, testUpstreamConfig, DEFAULT_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_MAX_OUTPUT_LENGTH, type Upstream, type UpstreamModel } from '@/api/upstreams'
 import { listBalanceHistory, refreshBalance, refreshAllBalances, type BalanceSnapshot } from '@/api/balances'
 import { exportConfig, importConfig, type ConfigFile } from '@/api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '@/utils/configTransfer'
 import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '@/utils/balance'
 import { expiryLabel, expiryToISO, isoToExpiry } from '@/utils/upstreamStatus'
+import { connectivityView, type ConnectivityView } from '@/utils/connectivity'
+import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
 import { useUpstreamList } from '@/composables/useUpstreamList'
 import { useNarrowScreen, ACTIONS_COL_WIDTH } from '@/composables/useNarrowScreen'
@@ -25,6 +27,19 @@ const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: ''
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
 const editing = ref<Upstream | null>(null)
+// 内置上游预设快捷选择：只在「添加」时展示（编辑已有上游不套模板）。选中只
+// 带出 base_url 和 format 两项，名称/Key/限额仍由用户填，带出后字段也保持可改；
+// 清空选择（自定义）不动已填内容。
+const presetKey = ref<string | null>(null)
+const presetOptions = presetSelectOptions()
+const activePreset = computed(() => findPreset(presetKey.value))
+function onPresetSelect(key: string | null) {
+  presetKey.value = key
+  const p = findPreset(key)
+  if (!p) return
+  form.value.base_url = p.baseUrl
+  form.value.format = p.format
+}
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
 const newModelByUpstream = ref<Record<number, string>>({})
@@ -34,6 +49,10 @@ const modelFormUpstreamId = ref(0)
 const modelForm = ref<UpstreamModel | null>(null)
 const fetchingId = ref<number | null>(null)
 const refreshingId = ref<number | null>(null)
+const testingId = ref<number | null>(null)
+// 表单内连通性测试：结果按 成功/警告/失败 三档就地展示在按钮下方
+const formTesting = ref(false)
+const formTestResult = ref<ConnectivityView | null>(null)
 const showHistory = ref(false)
 const historyUpstream = ref<Upstream | null>(null)
 const historyRows = ref<BalanceSnapshot[]>([])
@@ -168,12 +187,12 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
-function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); showForm.value = true }
-function add() { editing.value = null; resetForm(); showForm.value = true }
+function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; showForm.value = true }
+function add() { editing.value = null; resetForm(); formTestResult.value = null; showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function fetchM(id: number) {
   if (fetchingId.value !== null) return
@@ -252,6 +271,44 @@ async function refreshB(id: number) {
     message.error('刷新余额/额度失败：' + errMsg(e))
   } finally {
     refreshingId.value = null
+  }
+}
+
+async function testRow(u: Upstream) {
+  if (testingId.value !== null) return
+  testingId.value = u.id as number
+  try {
+    const v = connectivityView(await testUpstream(u.id as number))
+    const text = `「${u.name}」${v.text}`
+    if (v.type === 'success') message.success(text, { duration: 6000 })
+    else if (v.type === 'warning') message.warning(text, { duration: 8000 })
+    else message.error(text, { duration: 8000 })
+  } catch (e) {
+    message.error('测试失败：' + errMsg(e))
+  } finally {
+    testingId.value = null
+  }
+}
+
+// 表单内测试：编辑态把表单当前值（可能已改过地址/key）作为覆盖发给 by-id 端点
+// ——key 还是掩码或留空时后端沿用库存真 key；新增态直接测表单里的配置。
+async function testForm() {
+  if (formTesting.value) return
+  if (!form.value.base_url.trim()) {
+    message.warning('请先填写 Base URL')
+    return
+  }
+  formTesting.value = true
+  formTestResult.value = null
+  try {
+    const r = editing.value?.id
+      ? await testUpstream(editing.value.id, { base_url: form.value.base_url, api_key: form.value.api_key, format: form.value.format })
+      : await testUpstreamConfig({ base_url: form.value.base_url, api_key: form.value.api_key, format: form.value.format })
+    formTestResult.value = connectivityView(r)
+  } catch (e) {
+    formTestResult.value = { type: 'error', text: '测试失败：' + errMsg(e) }
+  } finally {
+    formTesting.value = false
   }
 }
 
@@ -449,6 +506,12 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
         size: 'small',
+        loading: testingId.value === row.id,
+        disabled: testingId.value !== null,
+        onClick: () => testRow(row),
+      }, { default: () => '测试' }),
+      h(NButton, {
+        size: 'small',
         loading: fetchingId.value === row.id,
         disabled: fetchingId.value !== null,
         onClick: () => fetchM(row.id as number),
@@ -536,6 +599,21 @@ onMounted(() => {
     <n-modal :show="showForm" @update:show="(show: boolean) => { if (!show) showForm = false }">
       <n-card :title="editing ? '编辑上游' : '添加上游'" :bordered="false" style="width:500px">
         <n-form label-placement="top">
+          <n-form-item v-if="!editing" label="快捷配置">
+            <div style="width: 100%">
+              <n-select
+                :value="presetKey"
+                :options="presetOptions"
+                clearable
+                filterable
+                placeholder="自定义（手动填写下方字段）"
+                @update:value="onPresetSelect"
+              />
+              <div v-if="activePreset" style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-3)">
+                <span class="mono">{{ activePreset.baseUrl }}</span><span v-if="activePreset.hint">，{{ activePreset.hint }}</span>
+              </div>
+            </div>
+          </n-form-item>
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
           <n-form-item label="备注"><n-input v-model:value="form.remark" placeholder="备注（可选）" /></n-form-item>
           <n-form-item label="Base URL"><n-input v-model:value="form.base_url" /></n-form-item>
@@ -552,6 +630,14 @@ onMounted(() => {
               <n-radio value="anthropic">Anthropic</n-radio>
               <n-radio value="responses">Responses</n-radio>
             </n-radio-group>
+          </n-form-item>
+          <n-form-item label="连通性">
+            <div style="width: 100%">
+              <n-button size="small" :loading="formTesting" @click="testForm">测试连通性</n-button>
+              <n-alert v-if="formTestResult" :type="formTestResult.type" :bordered="false" style="margin-top: 8px">
+                {{ formTestResult.text }}
+              </n-alert>
+            </div>
           </n-form-item>
           <n-form-item label="启用"><n-switch v-model:value="form.enabled" /></n-form-item>
           <n-form-item label="有效期至">

@@ -8,6 +8,7 @@ import { listAliases } from '@/api/aliases'
 import { formatInt } from '@/utils/format'
 import { buildOmpYaml } from '@/utils/ompConfig'
 import { buildDshYaml } from '@/utils/dshConfig'
+import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
@@ -218,30 +219,19 @@ async function del(id: number) {
   }
 }
 
-// Aggregate every upstream's models (shared by the opencode / OMP exporters).
-// The model id is `upstream-name/model-name`, matching the gateway's /v1/models.
-async function collectUpstreamModels() {
-  const ups = await listUpstreams()
-  const out: Array<{ upstream: string; model_name: string; context_length: number; max_output_length: number }> = []
-  await Promise.all(ups.map(async (u) => {
-    if (u.id == null) return
-    const ms = await listModels(u.id).catch(() => [])
-    for (const m of ms) {
-      out.push({ upstream: u.name, model_name: m.model_name, context_length: m.context_length, max_output_length: m.max_output_length })
-    }
-  }))
-  return out
+// 导出用的模型清单（直连名 + 别名，口径与 /v1/models 一致）由
+// utils/exportModels 统一收集，opencode / OMP / dsh 三套导出器共用。
+// 受限 key 只导出白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
+async function exportModels(allowedModels?: string[] | null) {
+  return filterAllowedModels(await collectExportModels(), allowedModels)
 }
 
-// opencode custom provider config: aggregate every upstream's models into
-// the models map so the copied JSON works out of the box. 受限 key 只导出
-// 白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
+// opencode custom provider config: aggregate every exportable model into
+// the models map so the copied JSON works out of the box.
 async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
   const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
-  for (const m of await collectUpstreamModels()) {
-    const id = `${m.upstream}/${m.model_name}`
-    if (allowedModels && allowedModels.length > 0 && !allowedModels.includes(id)) continue
-    models[id] = { name: id, limit: { context: m.context_length, output: m.max_output_length } }
+  for (const m of await exportModels(allowedModels)) {
+    models[m.id] = { name: m.id, limit: { context: m.contextLength, output: m.maxOutputLength } }
   }
   const cfg: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
@@ -261,13 +251,10 @@ async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | nu
 }
 
 async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
-  const rows = await collectUpstreamModels()
   return buildOmpYaml({
     baseUrl: `${origin.value}/v1`,
     apiKey,
-    models: rows
-      .filter((m) => !(allowedModels && allowedModels.length > 0 && !allowedModels.includes(`${m.upstream}/${m.model_name}`)))
-      .map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
   })
 }
 
@@ -290,13 +277,10 @@ async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, ev
 }
 
 async function buildDshConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
-  const rows = await collectUpstreamModels()
   return buildDshYaml({
     baseUrl: `${origin.value}/v1`,
     apiKey,
-    models: rows
-      .filter((m) => !(allowedModels && allowedModels.length > 0 && !allowedModels.includes(`${m.upstream}/${m.model_name}`)))
-      .map((m) => ({ id: `${m.upstream}/${m.model_name}`, contextWindow: m.context_length, maxTokens: m.max_output_length })),
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
   })
 }
 
