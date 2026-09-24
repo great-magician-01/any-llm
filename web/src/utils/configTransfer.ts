@@ -34,7 +34,7 @@ export function parseConfigFile(text: string): ConfigFile {
 export function describeConfigFile(f: ConfigFile): string {
   return `该文件包含 ${f.upstreams.length} 个上游、${f.aliases.length} 个别名。` +
     '导入后：同名配置将被覆盖，其余现有配置保持不变。' +
-    '注意：地址、API Key、格式等基础字段以文件为准（缺省会清空原值），启用状态与限额缺省则保持现状。'
+    '注意：地址、API Key、格式等基础字段以文件为准（缺省会清空原值），启用状态、限额、有效期与备注缺省则保持现状。'
 }
 
 /** 导入完成后的结果摘要。 */

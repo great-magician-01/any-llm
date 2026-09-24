@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -33,9 +33,9 @@ func TestCompletion_StreamCrossFormat_OAIin_ANTup(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
-	model.AddModel(d, uid, "claude-3-5", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "claude-3-5"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"ant/claude-3-5","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -60,7 +60,7 @@ func TestCompletion_StreamCrossFormat_OAIin_ANTup(t *testing.T) {
 	if !strings.Contains(body, `"prompt_tokens":10`) {
 		t.Fatalf("missing prompt_tokens=10 in usage: %s", body)
 	}
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 {
 		t.Fatalf("records=%d", len(records))
 	}
@@ -87,9 +87,9 @@ func TestCompletion_StreamSSE_NoSpaceAfterColon(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -107,7 +107,7 @@ func TestCompletion_StreamSSE_NoSpaceAfterColon(t *testing.T) {
 	if !strings.Contains(body, "[DONE]") {
 		t.Fatalf("missing [DONE]: %s", body)
 	}
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 || records[0].TotalTokens != 5 {
 		t.Fatalf("records=%+v", records)
 	}
@@ -132,9 +132,9 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
@@ -161,7 +161,7 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 	if !strings.Contains(body, `"stop_reason":"end_turn"`) {
 		t.Fatalf("missing stop_reason end_turn: %s", body)
 	}
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 {
 		t.Fatalf("records=%d", len(records))
 	}
@@ -195,9 +195,9 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup_ToolOnly(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"weather?"}],"stream":true}`))

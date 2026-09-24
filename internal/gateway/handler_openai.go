@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
@@ -19,7 +19,7 @@ import (
 // dispatch 按候选链依次尝试调用上游。直连路由是单候选的特例；别名路由可含
 // 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
 // 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
-func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, body []byte) {
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, body []byte) {
 	first := targets[0]
 	logger.Info("completion request",
 		"key_id", key.ID,
@@ -79,12 +79,24 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 
 	// 非流式：按序尝试，任一候选成功即返回；全部失败回最后一个错误。
 	var lastErr error
+	busy := 0
 	for i := range targets {
 		t := &targets[i]
+		release, ok := g.conc.tryAcquire(t.Upstream)
+		if !ok {
+			// 并发已达上限的候选直接跳过（未发起上游调用，不记 usage），
+			// 故障转移到下一候选；全部候选都满则在循环后统一回 429。
+			busy++
+			logger.Info("candidate skipped: upstream concurrency limit reached",
+				"alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "max_concurrent", t.Upstream.MaxConcurrent)
+			continue
+		}
 		irReq.Model = t.ModelName
 		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body)
 		callStart := time.Now()
 		result, err := g.client.Call(r.Context(), t.Upstream, irReq, r.Header)
+		// 非流式 Call 返回时上游响应体已完整读取，立即释放并发槽。
+		release()
 		callDur := time.Since(callStart)
 		if err != nil {
 			if len(targets) > 1 {
@@ -99,6 +111,11 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			result.Response.ID = sess.respID
 		}
 		g.handleNonStream(w, inFormat, result, key, t.Upstream, t.ModelName, irReq.Stream, sess, rec, callDur)
+		return
+	}
+	if busy == len(targets) {
+		// 所有候选都因并发上限被跳过：没有真实上游错误可回，回 429 让客户端重试。
+		WriteError(w, 429, inFormat, "upstream concurrency limit reached, please retry later", "rate_limit_error")
 		return
 	}
 	if ue, ok := lastErr.(*upstream.UpstreamError); ok {
@@ -116,7 +133,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *model.ExtKey, u *model.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *store.ExtKey, u *store.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -160,7 +177,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 // callWithKeepalive 在流式头部已 flush 后执行一次上游调用；等待期间按
 // keepalive ticker 向客户端发 ping。clientGone=true 表示客户端上下文先结束
 // （上游调用随 r.Context() 取消，带缓冲的 callCh 保证 goroutine 不泄漏）。
-func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, writePing func(), u *model.Upstream, irReq *translate.Request, streamStart time.Time) (result *upstream.Result, err error, clientGone bool) {
+func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, writePing func(), u *store.Upstream, irReq *translate.Request, streamStart time.Time) (result *upstream.Result, err error, clientGone bool) {
 	type callRet struct {
 		result *upstream.Result
 		err    error
@@ -188,7 +205,7 @@ func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, wri
 	}
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *model.ExtKey, targets []model.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
@@ -197,6 +214,28 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body).finish("error", translate.Usage{}, nil)
 		return
 	}
+	// 并发上限：在 flush 200 头部之前先为候选占槽——所有候选都满还能回干净的
+	// 429（SDK 会自动重试）；一旦头部流出就只能写带内错误帧了。占到的槽位
+	// 供下面的候选循环直接使用。
+	heldIdx := -1
+	var heldRelease func()
+	for i := range targets {
+		if rel, ok := g.conc.tryAcquire(targets[i].Upstream); ok {
+			heldIdx, heldRelease = i, rel
+			break
+		}
+		logger.Info("stream candidate skipped: upstream concurrency limit reached",
+			"alias_candidate", i, "upstream", targets[i].Upstream.Name, "model", targets[i].ModelName, "max_concurrent", targets[i].Upstream.MaxConcurrent)
+	}
+	if heldRelease == nil {
+		WriteError(w, 429, inFormat, "upstream concurrency limit reached, please retry later", "rate_limit_error")
+		return
+	}
+	// 命中候选的并发槽持有到本函数结束（流式期间上游连接一直存活）。
+	// 释放函数幂等：失败路径上提前 release 后，defer 的再调用是空操作。
+	winRelease := heldRelease
+	defer func() { winRelease() }()
+
 	// 对话归档：flusher 断言之后安装 tee，捕获发给客户端的全部字节。
 	// 多候选共享一个 tee（keep-alive 与后续帧都在同一缓冲），各次尝试创建的
 	// rec 引用它。
@@ -232,16 +271,30 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	keepalive := time.NewTicker(500 * time.Millisecond)
 	defer keepalive.Stop()
 
-	// 第一阶段：按序尝试候选，直到某次调用成功建立。期间客户端只看到
-	// keep-alive 延续；某候选调用失败后转移到下一个候选对客户端透明。
-	// 一旦进入事件转发阶段（有内容帧流出）就不再转移。
+	// 第一阶段：从预占成功的候选开始按序尝试，直到某次调用成功建立。期间
+	// 客户端只看到 keep-alive 延续；某候选调用失败后转移到下一个候选对客户端
+	// 透明。一旦进入事件转发阶段（有内容帧流出）就不再转移。并发已满的候选
+	// 直接跳过（预占时已过滤一遍；循环内再试占是为了覆盖故障转移到的候选）。
 	var result *upstream.Result
-	var win *model.AliasTarget
+	var win *store.AliasTarget
 	var winStart time.Time // 命中候选的调用开始时刻，作为该次调用的计时起点
 	var rec *convCtx
 	var lastErr error
-	for i := range targets {
+	for i := heldIdx; i < len(targets); i++ {
 		t := &targets[i]
+		var release func()
+		if i == heldIdx {
+			release = heldRelease
+		} else {
+			rel, ok := g.conc.tryAcquire(t.Upstream)
+			if !ok {
+				logger.Info("stream candidate skipped: upstream concurrency limit reached",
+					"alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "max_concurrent", t.Upstream.MaxConcurrent)
+				continue
+			}
+			release = rel
+		}
+		winRelease = release
 		irReq.Model = t.ModelName
 		rec = g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body)
 		if rec != nil {
@@ -251,6 +304,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, t.Upstream, irReq, streamStart)
 		callDur := time.Since(callStart)
 		if clientGone {
+			release()
 			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			logger.Info("completion done",
@@ -260,6 +314,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			return
 		}
 		if err != nil {
+			release()
 			lastErr = err
 			if len(targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
@@ -496,9 +551,9 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	}
 }
 
-func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
+func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
 	total := usage.InputTokens + usage.OutputTokens
-	rec := &model.UsageRecord{
+	rec := &store.UsageRecord{
 		UpstreamName:        u.Name,
 		Model:               realModel,
 		InFormat:            inFormat,
@@ -522,9 +577,9 @@ func (g *Gateway) recordUsage(key *model.ExtKey, u *model.Upstream, realModel, i
 		rec.UpstreamID = &uid
 	}
 	if g.writer != nil {
-		g.writer.DoAsync(func(d *sql.DB) error { return model.InsertUsage(d, rec) })
+		g.writer.DoAsync(func(d *sql.DB) error { return store.InsertUsage(d, rec) })
 	} else {
-		if err := model.InsertUsage(g.db, rec); err != nil {
+		if err := store.InsertUsage(g.db, rec); err != nil {
 			logger.Error("record usage sync write failed", "key_id", rec.ExtKeyID, "upstream", rec.UpstreamName, "model", rec.Model, "total_tokens", rec.TotalTokens, "err", err)
 		}
 	}

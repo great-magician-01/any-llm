@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -56,6 +57,104 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='enabled'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("upstreams.enabled missing: n=%d err=%v", n, err)
 	}
+	// 新库 upstreams 带可空的有效期列（NULL = 永久有效）
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.expires_at missing: n=%d err=%v", n, err)
+	}
+	// 可空：新插入的行不带该列也是 NULL
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at' AND "notnull"=0`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.expires_at should be nullable: n=%d err=%v", n, err)
+	}
+}
+
+// 老库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 enabled/remark
+// 这类后加的列：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，缺列会潜伏到
+// 查询时才以 42703 暴露。迁移必须补齐，且不碰老数据。
+func TestOpenSQLite_BackfillsMissingExtKeyCols(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-extra-cols.db")
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE ext_keys (
+	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+	    key TEXT NOT NULL UNIQUE,
+	    label TEXT NOT NULL DEFAULT '',
+	    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_used_at DATETIME
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-old','legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	got, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+
+	var label, remark string
+	var enabled int
+	if err := got.QueryRow(`SELECT label, enabled, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&label, &enabled, &remark); err != nil {
+		t.Fatalf("legacy row after migration: %v", err)
+	}
+	if label != "legacy" || enabled != 1 || remark != "" {
+		t.Fatalf("legacy row label=%q enabled=%d remark=%q, want legacy/1/\"\"", label, enabled, remark)
+	}
+}
+
+// 历史库留有重名活跃 key（label 唯一性是后加的）时唯一索引建不起来：启动不阻断、
+// 不自动改别人的数据，只告警；人工去重后下次启动自动补上。
+func TestOpenSQLite_LabelIndexToleratesLegacyDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dup-labels.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟历史重名：先摘掉索引再裸插（索引在时这种状态造不出来）
+	if _, err := d.Exec(`DROP INDEX idx_ext_keys_label`); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"all-sk-a", "all-sk-b"} {
+		if _, err := d.Exec(`INSERT INTO ext_keys (key, label) VALUES (?, 'dup')`, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Close()
+
+	countIndex := func(d *sql.DB) int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_ext_keys_label'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// 有冲突时重开：启动成功，索引缺席（冲突只告警）
+	d2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen with legacy duplicates: %v", err)
+	}
+	if n := countIndex(d2); n != 0 {
+		t.Fatalf("index should be absent while duplicates exist: n=%d", n)
+	}
+	// 人工去重后重开：索引自动补上
+	if _, err := d2.Exec(`UPDATE ext_keys SET label='deduped' WHERE key='all-sk-b'`); err != nil {
+		t.Fatal(err)
+	}
+	d2.Close()
+	d3, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d3.Close()
+	if n := countIndex(d3); n != 1 {
+		t.Fatalf("index should appear after manual dedupe: n=%d", n)
+	}
 }
 
 func TestOpenPG_DSNEncodesSpecialChars(t *testing.T) {
@@ -91,7 +190,7 @@ func TestOpenPG_FreshCreatesAllTables(t *testing.T) {
 	if err := d.Ping(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
-	if _, err := d.Exec(migrationPG); err != nil {
+	if err := MigrateForTest(d); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	for _, table := range []string{"upstreams", "upstream_models", "ext_keys", "usage_records"} {
@@ -195,10 +294,40 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if err := got.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name IN ('u1','u2')`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("old rows: n=%d err=%v", n, err)
 	}
+	// 名称列就是初始 schema 的 label（旧值原样保留），remark 列就位
+	var keyLabel string
+	if err := got.QueryRow(`SELECT label FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyLabel); err != nil || keyLabel != "legacy" {
+		t.Fatalf("ext key label after migrate: v=%q err=%v", keyLabel, err)
+	}
+	var remark string
+	if err := got.QueryRow(`SELECT remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&remark); err != nil || remark != "" {
+		t.Fatalf("ext key remark backfill: v=%q err=%v", remark, err)
+	}
 	// enabled 列经 extraCols 回填后随重建保留，老行默认启用
 	var enabled int
 	if err := got.QueryRow(`SELECT enabled FROM upstreams WHERE name='u1'`).Scan(&enabled); err != nil || enabled != 1 {
 		t.Fatalf("enabled backfill: v=%d err=%v", enabled, err)
+	}
+	// expires_at 由 extraCols 补成可空列，且必须活过表重建（sqliteSoftDeleteSpecs
+	// 的 cols 漏了它就会被重建丢掉，要等下次重启才补回来——这里盯住这一点）
+	var expiresAt sql.NullTime
+	if err := got.QueryRow(`SELECT expires_at FROM upstreams WHERE name='u1'`).Scan(&expiresAt); err != nil {
+		t.Fatalf("expires_at dropped by rebuild: %v", err)
+	}
+	if expiresAt.Valid {
+		t.Fatalf("legacy row expires_at=%v, want NULL", expiresAt.Time)
+	}
+	// remark 同样由 extraCols 补列：老行回填空串，且要活过表重建
+	var upRemark string
+	if err := got.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
+		t.Fatalf("upstream remark backfill: v=%q err=%v", upRemark, err)
+	}
+	// 补上的列真的能用：写一个到期时刻再读回
+	if _, err := got.Exec(`UPDATE upstreams SET expires_at=? WHERE name='u1'`, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("write expires_at: %v", err)
+	}
+	if err := got.QueryRow(`SELECT expires_at FROM upstreams WHERE name='u1'`).Scan(&expiresAt); err != nil || !expiresAt.Valid {
+		t.Fatalf("expires_at round-trip: valid=%v err=%v", expiresAt.Valid, err)
 	}
 	var id1 int64
 	if err := got.QueryRow(`SELECT id FROM upstreams WHERE name='u1'`).Scan(&id1); err != nil || id1 != 1 {
@@ -258,10 +387,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	}
 }
 
-// allowed_models 列就位的三条路径：新库 CREATE TABLE 自带；旧库（无 UNIQUE）
-// 走 ALTER 回填；旧库（带内联 UNIQUE）走软删除重建，列随 spec 就位。
-// 旧数据保留，默认空串（= 不限制）。
-func TestOpenSQLite_BackfillsAllowedModels(t *testing.T) {
+// allowed_models / remark 列就位的三条路径：新库 CREATE TABLE 自带；旧库
+// （无 UNIQUE）走 ALTER 回填；旧库（带内联 UNIQUE）走软删除重建，列随 spec
+// 就位。旧数据保留，默认空串（= 不限制）。
+func TestOpenSQLite_BackfillsLegacyCols(t *testing.T) {
 	// 新库：CREATE TABLE 已含列
 	fresh := filepath.Join(t.TempDir(), "fresh.db")
 	fd, err := OpenSQLite(fresh)
@@ -269,7 +398,7 @@ func TestOpenSQLite_BackfillsAllowedModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fd.Close()
-	if _, err := fd.Exec(`INSERT INTO ext_keys (key, label) VALUES ('all-sk-new','brand')`); err != nil {
+	if _, err := fd.Exec(`INSERT INTO ext_keys (key, label, remark) VALUES ('all-sk-new','brand','note')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,6 +451,24 @@ func TestOpenSQLite_BackfillsAllowedModels(t *testing.T) {
 			if err := got.QueryRow(`SELECT allowed_models FROM ext_keys WHERE key='all-sk-old'`).Scan(&allowed); err != nil || allowed != "" {
 				t.Fatalf("allowed_models backfill: v=%q err=%v", allowed, err)
 			}
+			// 名称列仍是 label（没被改成 name），remark 列回填
+			var nameCol, labelCol, remarkCol int
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='name'`).Scan(&nameCol); err != nil {
+				t.Fatal(err)
+			}
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='label'`).Scan(&labelCol); err != nil {
+				t.Fatal(err)
+			}
+			if err := got.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ext_keys') WHERE name='remark'`).Scan(&remarkCol); err != nil {
+				t.Fatal(err)
+			}
+			if nameCol != 0 || labelCol != 1 || remarkCol != 1 {
+				t.Fatalf("cols: name=%d label=%d remark=%d", nameCol, labelCol, remarkCol)
+			}
+			var nm, rm string
+			if err := got.QueryRow(`SELECT label, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&nm, &rm); err != nil || nm != "legacy" || rm != "" {
+				t.Fatalf("legacy row: label=%q remark=%q err=%v", nm, rm, err)
+			}
 			// 回填后可直接写入白名单
 			if _, err := got.Exec(`UPDATE ext_keys SET allowed_models='["a/b"]' WHERE key='all-sk-old'`); err != nil {
 				t.Fatalf("write allowed_models: %v", err)
@@ -351,5 +498,38 @@ func TestOpenSQLite_FreshDBHasNoCheck(t *testing.T) {
 	}
 	if strings.Contains(sqlText, "CHECK") {
 		t.Fatalf("upstreams still has CHECK: %s", sqlText)
+	}
+}
+
+// 新装的库必须拥有 schema 声明的全部索引与全部列。主迁移只发 CREATE TABLE，
+// 索引靠后续步骤建——历史上 response_sessions / balance_snapshots 的普通索引
+// 声明在 schema.go 里却没有任何代码路径创建（只有 MySQL 因索引内联不受影响），
+// 新装的 SQLite/PG 库会一直缺索引。这个测试把「声明即可建」钉成不变量。
+func TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fresh-idx.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for _, tbl := range tablesFor(DialectSQLite) {
+		for _, ix := range tbl.Idx {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, ix.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("index %s declared in schema but missing on a fresh database", ix.Name)
+			}
+		}
+		for _, c := range tbl.Cols {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, tbl.Name, c.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("column %s.%s declared in schema but missing on a fresh database", tbl.Name, c.Name)
+			}
+		}
 	}
 }

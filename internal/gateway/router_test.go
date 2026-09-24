@@ -8,14 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
 func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 	t.Helper()
+	// 配置读缓存是 model 包级、进程内的，而每个用例都是一个临时库：不清就会把
+	// 上一个用例的上游/别名条目带到本用例（同名即遮蔽）。
+	store.ResetConfigCache()
+	t.Cleanup(store.ResetConfigCache)
 	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -27,10 +32,10 @@ func setupGateway(t *testing.T) (*Gateway, *sql.DB) {
 
 func TestModelsEndpoint(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o-mini"})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+k.Key)
@@ -83,11 +88,11 @@ func TestModelsEndpointRequiresKey(t *testing.T) {
 // /v1/models 按 key 白名单过滤：受限 key 只看到已列的模型与别名。
 func TestModelsEndpointFilteredByAllowedModels(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
-	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
-	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o", "fast"})
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o-mini"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fast", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := store.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o", "fast"})
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+k.Key)
@@ -126,7 +131,7 @@ func TestAuthMissingKey(t *testing.T) {
 
 func TestAuthInvalidKey(t *testing.T) {
 	g, d := setupGateway(t)
-	model.CreateExtKey(d, "l", 0, 0, nil)
+	store.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"x/y","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer all-sk-invalid")
 	w := httptest.NewRecorder()
@@ -138,7 +143,7 @@ func TestAuthInvalidKey(t *testing.T) {
 
 func TestRouteModelNotFound(t *testing.T) {
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"nonexistent/model","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
@@ -150,7 +155,7 @@ func TestRouteModelNotFound(t *testing.T) {
 
 func TestRouteInvalidModelFormat(t *testing.T) {
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"nomodelslash","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
@@ -163,13 +168,13 @@ func TestRouteInvalidModelFormat(t *testing.T) {
 // 直连请求禁用的上游 → 404，错误消息明确说明已禁用（区别于 not found）。
 func TestRouteDisabledUpstream(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
-	u, _ := model.GetUpstreamByID(d, uid)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u, _ := store.GetUpstreamByID(d, uid)
 	u.Enabled = false
-	if err := model.UpdateUpstream(d, u); err != nil {
+	if err := store.UpdateUpstream(d, u); err != nil {
 		t.Fatal(err)
 	}
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"off/m","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+k.Key)
 	w := httptest.NewRecorder()
@@ -185,19 +190,19 @@ func TestRouteDisabledUpstream(t *testing.T) {
 // /v1/models 不列出禁用上游的模型，也不列出仅指向禁用上游的别名。
 func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	g, d := setupGateway(t)
-	off, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
-	on, _ := model.CreateUpstream(d, &model.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, off, "m1", false, 0, 0)
-	model.AddModel(d, on, "m2", false, 0, 0)
-	model.CreateAlias(d, &model.ModelAlias{Name: "dead-alias", Bindings: []model.AliasBinding{{UpstreamID: off, ModelName: "m1"}}})
-	model.CreateAlias(d, &model.ModelAlias{Name: "live-alias", Bindings: []model.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
+	off, _ := store.CreateUpstream(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	on, _ := store.CreateUpstream(d, &store.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, off, store.UpstreamModel{ModelName: "m1"})
+	store.AddModel(d, on, store.UpstreamModel{ModelName: "m2"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "dead-alias", Bindings: []store.AliasBinding{{UpstreamID: off, ModelName: "m1"}}})
+	store.CreateAlias(d, &store.ModelAlias{Name: "live-alias", Bindings: []store.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
 
-	u, _ := model.GetUpstreamByID(d, off)
+	u, _ := store.GetUpstreamByID(d, off)
 	u.Enabled = false
-	if err := model.UpdateUpstream(d, u); err != nil {
+	if err := store.UpdateUpstream(d, u); err != nil {
 		t.Fatal(err)
 	}
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+k.Key)
@@ -224,6 +229,77 @@ func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	}
 }
 
+// 直连请求已过有效期的上游 → 404，与禁用分开报（该去续期，不是去点启用）。
+func TestRouteExpiredUpstream(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "old", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u, _ := store.GetUpstreamByID(d, uid)
+	// 仍启用，只是有效期已过——两个维度必须互相独立
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	u.ExpiresAt = &at
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"old/m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 {
+		t.Fatalf("status=%d want 404, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "is expired") {
+		t.Fatalf("body=%s", w.Body.String())
+	}
+}
+
+// /v1/models 同样不列出已过期上游的模型与别名；到期判定独立于 enabled
+// （上游仍处于启用状态，只是有效期过了）。
+func TestModelsEndpointExcludesExpired(t *testing.T) {
+	g, d := setupGateway(t)
+	old, _ := store.CreateUpstream(d, &store.Upstream{Name: "old", BaseURL: "b", APIKey: "k", Format: "openai"})
+	on, _ := store.CreateUpstream(d, &store.Upstream{Name: "on", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, old, store.UpstreamModel{ModelName: "m1"})
+	store.AddModel(d, on, store.UpstreamModel{ModelName: "m2"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "dead-alias", Bindings: []store.AliasBinding{{UpstreamID: old, ModelName: "m1"}}})
+	store.CreateAlias(d, &store.ModelAlias{Name: "live-alias", Bindings: []store.AliasBinding{{UpstreamID: on, ModelName: "m2"}}})
+
+	u, _ := store.GetUpstreamByID(d, old)
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	u.ExpiresAt = &at
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	if !u.Enabled {
+		t.Fatal("expiry must not touch enabled")
+	}
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	ids := map[string]bool{}
+	for _, m := range resp.Data {
+		ids[m.ID] = true
+	}
+	if ids["old/m1"] || ids["dead-alias"] {
+		t.Fatalf("expired upstream leaked to /v1/models: %+v", ids)
+	}
+	if !ids["on/m2"] || !ids["live-alias"] {
+		t.Fatalf("unexpired upstream missing: %+v", ids)
+	}
+}
+
 // /v1/responses 走 responses 入站格式：无 key 401、错误形状与 openai 一致
 func TestResponsesRoute(t *testing.T) {
 	gw, _ := setupGateway(t) // router_test.go 的现有辅助：(*Gateway, *sql.DB)
@@ -239,11 +315,11 @@ func TestResponsesRoute(t *testing.T) {
 
 func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
 	// key with daily limit of 100, already used 100
-	k, _ := model.CreateExtKey(d, "l", 100, 0, nil)
-	model.InsertUsage(d, &model.UsageRecord{
+	k, _ := store.CreateExtKey(d, "l", "", 100, 0, nil)
+	store.InsertUsage(d, &store.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
 		InFormat: "openai", UpFormat: "openai", TotalTokens: 100, Status: "ok",
 	})
@@ -261,10 +337,10 @@ func TestExtKeyDailyTokenLimitExceeded(t *testing.T) {
 
 func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "l", 0, 50, nil)
-	model.InsertUsage(d, &model.UsageRecord{
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 50, nil)
+	store.InsertUsage(d, &store.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
 		InFormat: "openai", UpFormat: "openai", TotalTokens: 50, Status: "ok",
 	})
@@ -279,10 +355,10 @@ func TestExtKeyMonthlyTokenLimitExceeded(t *testing.T) {
 
 func TestUpstreamDailyTokenLimitExceeded(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai", DailyTokenLimit: 100})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
-	model.InsertUsage(d, &model.UsageRecord{
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai", DailyTokenLimit: 100})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+	store.InsertUsage(d, &store.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
 		InFormat: "openai", UpFormat: "openai", TotalTokens: 100, Status: "ok",
 	})
@@ -303,10 +379,10 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai", DailyTokenLimit: 1000})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "l", 1000, 5000, nil)
-	model.InsertUsage(d, &model.UsageRecord{
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai", DailyTokenLimit: 1000})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "l", "", 1000, 5000, nil)
+	store.InsertUsage(d, &store.UsageRecord{
 		ExtKeyID: &k.ID, UpstreamID: &uid, UpstreamName: "oai", Model: "gpt-4o",
 		InFormat: "openai", UpFormat: "openai", TotalTokens: 50, Status: "ok",
 	})
@@ -327,10 +403,10 @@ func TestTokenLimitNotExceeded(t *testing.T) {
 // 入站格式都生效；缺 model 字段的畸形请求仍走后续 400，不误报 403。
 func TestModelNotAllowedForRestrictedKey(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.AddModel(d, uid, "gpt-4o-mini", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o"})
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o-mini"})
+	k, _ := store.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o"})
 
 	for _, tc := range []struct{ path, body string }{
 		{"/v1/chat/completions", `{"model":"oai/gpt-4o-mini","messages":[]}`},
@@ -370,9 +446,9 @@ func TestModelAllowedForRestrictedKey(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "restricted", 0, 0, []string{"oai/gpt-4o"})
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "restricted", "", 0, 0, []string{"oai/gpt-4o"})
 	g.client = upstream.NewClient(http.DefaultClient)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
 	req.Header.Set("Authorization", "Bearer "+k.Key)
@@ -387,15 +463,16 @@ func TestModelAllowedForRestrictedKey(t *testing.T) {
 // 反之 key 限定直连名后，别名也得列入才可用。
 func TestAllowedModelsMatchPublicName(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.CreateAlias(d, &model.ModelAlias{Name: "fast", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fast", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 
 	for _, tc := range []struct{ allow, model string }{
 		{"fast", "oai/gpt-4o"}, // 只列别名 → 直连名被拒
 		{"oai/gpt-4o", "fast"}, // 只列直连名 → 别名被拒
 	} {
-		k, _ := model.CreateExtKey(d, "l", 0, 0, []string{tc.allow})
+		// 名称取白名单条目：同一 DB 里要建两个 key，名称不能重复
+		k, _ := store.CreateExtKey(d, tc.allow, "", 0, 0, []string{tc.allow})
 		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+tc.model+`","messages":[]}`))
 		req.Header.Set("Authorization", "Bearer "+k.Key)
 		w := httptest.NewRecorder()
@@ -403,5 +480,156 @@ func TestAllowedModelsMatchPublicName(t *testing.T) {
 		if w.Code != 403 {
 			t.Fatalf("allow=%q model=%q status=%d want 403, body=%s", tc.allow, tc.model, w.Code, w.Body.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 配置读缓存：写路径失效必须一路打到网关上
+// ---------------------------------------------------------------------------
+
+// fakeUpstream 起一个返回固定 OpenAI 补全的假上游，让请求能真正走完 dispatch。
+func fakeUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// postCompletion 用给定 key 打一次补全请求，返回状态码。
+func postCompletion(g *Gateway, key, modelName string) int {
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"`+modelName+`","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	return w.Code
+}
+
+// 禁用 key 后同一个 key 必须立刻 401：缓存里那份已过期的行不能继续放行。
+// 失效失效漏了的话，这里读到的是内存里的旧 enabled=true。
+func TestKeyDisableInvalidatesAuthCache(t *testing.T) {
+	g, d := setupGateway(t)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	listModels := func() int {
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := listModels(); code != 200 {
+		t.Fatalf("first request status=%d want 200", code)
+	}
+	cur, _ := store.GetExtKeyByID(d, k.ID)
+	if err := store.UpdateExtKey(d, k.ID, cur.Label, cur.Remark, false, cur.DailyTokenLimit, cur.MonthlyTokenLimit, cur.AllowedModels); err != nil {
+		t.Fatal(err)
+	}
+	if code := listModels(); code != 401 {
+		t.Fatalf("disabled key status=%d want 401 (auth cache not invalidated?)", code)
+	}
+}
+
+// 别名绑定的上游被禁用后，候选必须从链中消失 → 404 has no available bindings。
+func TestUpstreamDisableInvalidatesAliasCache(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fast", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("alias request status=%d want 200, body missing fake upstream?", code)
+	}
+	u, _ := store.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"fast","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "no available bindings") {
+		t.Fatalf("status=%d want 404 has no available bindings, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 直连路由同理：上游禁用后走内存那份行也要能看出已禁用。
+func TestUpstreamDisableInvalidatesDirectRouteCache(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	if code := postCompletion(g, k.Key, "oai/gpt-4o"); code != 200 {
+		t.Fatalf("direct request status=%d want 200", code)
+	}
+	u, _ := store.GetUpstreamByID(d, uid)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "is disabled") {
+		t.Fatalf("status=%d want 404 is disabled, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// 缓存命中不打库：把数据库关掉之后，别名请求仍然能成功走完——鉴权、别名解析、
+// 上游行全在内存里。
+//
+// 只测别名路由：直连路由（name/model）每次都先用模型字符串探一次别名表，未命中
+// 不缓存（否则任意随机字符串都能把缓存撑大），所以它关了库必然失败，这是有意
+// 为之，不是回归。
+func TestCachedReadsDoNotHitDatabase(t *testing.T) {
+	srv := fakeUpstream(t)
+	g, d := setupGateway(t)
+	g.client = upstream.NewClient(http.DefaultClient)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fast", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	// 预热：key、别名、内嵌的上游行各读一次进缓存（token 限额均为 0，不查库）
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("warmup status=%d want 200", code)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := postCompletion(g, k.Key, "fast"); code != 200 {
+		t.Fatalf("after db close status=%d want 200 (a cached read still hit the db?)", code)
+	}
+}
+
+// /v1/models 在无可见模型时必须返回 "data":[] 而非 "data":null——nil 切片编码
+// 成 null，遍历列表的 OpenAI 客户端会在 null 上报错。上游全部被禁用/过期跳过
+// 时同样走到这里。
+func TestModelsEndpointEmptyListEncodesArray(t *testing.T) {
+	g, d := setupGateway(t)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "my-openai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	// 白名单匹配不到任何模型
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, []string{"other/nope"})
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"data":[]`) {
+		t.Fatalf("empty model list should encode as [], got %s", body)
 	}
 }

@@ -9,7 +9,7 @@ import (
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 )
 
@@ -44,10 +44,10 @@ type convCtx struct {
 
 // snapshotRequestIR 在 dispatch 解码后、responses session 合并前对请求 IR 做
 // 一次 JSON 快照，供故障转移各次候选调用的 newConvCtx 共用（保证 request_ir
-// 是客户端原始请求而非合并历史后的形态）。非 PG 或 marshal 失败返回 nil，
-// 后续 newConvCtx 随之返回 nil（归档关闭）。
+// 是客户端原始请求而非合并历史后的形态）。归档关闭（SQLite）或 marshal 失败
+// 返回 nil，后续 newConvCtx 随之返回 nil（归档关闭）。
 func (g *Gateway) snapshotRequestIR(irReq *translate.Request) []byte {
-	if db.DialectOf(g.db) != db.DialectPostgres {
+	if !db.DialectOf(g.db).SupportsConversationArchive() {
 		return nil
 	}
 	b, err := json.Marshal(irReq)
@@ -62,7 +62,7 @@ func (g *Gateway) snapshotRequestIR(irReq *translate.Request) []byte {
 // 或快照失败）时返回 nil。reqIRJSON 必须是 dispatch 在 responses session 合并
 // irReq 之前的快照（见 snapshotRequestIR），保证 request_ir 是客户端原始请求
 // 的归一化快照。
-func (g *Gateway) newConvCtx(r *http.Request, key *model.ExtKey, u *model.Upstream, realModel, inFormat string, reqIRJSON []byte, stream bool, body []byte) *convCtx {
+func (g *Gateway) newConvCtx(r *http.Request, key *store.ExtKey, u *store.Upstream, realModel, inFormat string, reqIRJSON []byte, stream bool, body []byte) *convCtx {
 	if reqIRJSON == nil {
 		return nil
 	}
@@ -124,7 +124,7 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 	if len(reqRaw) > convReqRawCap {
 		reqRaw = append([]byte(nil), reqRaw[:convReqRawCap]...)
 	}
-	rec := &model.ConversationRecord{
+	rec := &store.ConversationRecord{
 		ExtKeyID:            c.extKeyID,
 		UpstreamID:          c.upstreamID,
 		UpstreamName:        c.upstreamName,
@@ -148,9 +148,9 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 		CreatedAt:           c.createdAt,
 	}
 	if c.g.writer != nil {
-		c.g.writer.DoAsync(func(d *sql.DB) error { return model.InsertConversation(d, rec) })
+		c.g.writer.DoAsync(func(d *sql.DB) error { return store.InsertConversation(d, rec) })
 	} else {
-		if err := model.InsertConversation(c.g.db, rec); err != nil {
+		if err := store.InsertConversation(c.g.db, rec); err != nil {
 			logger.Error("conversation: sync write failed", "model", rec.Model, "err", err)
 		}
 	}

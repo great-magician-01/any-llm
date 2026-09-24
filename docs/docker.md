@@ -68,9 +68,9 @@ docker run -d --name any-llm \
 |------|--------|------|
 | `ANY_LLM_HOST` | `0.0.0.0` | 监听地址 |
 | `ANY_LLM_PORT` | `6718` | 监听端口（注意：Dockerfile 的 `EXPOSE 8080` 仅作声明，不影响实际端口） |
-| `DB_TYPE` | `sqlite` | 数据库类型：`sqlite`（默认）或 `postgres` |
+| `DB_TYPE` | `sqlite` | 数据库类型：`sqlite`（默认）/ `postgres` / `mysql` |
 | `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite 文件路径，容器里建议放到挂载卷下 |
-| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SCHEMA` | — | `DB_TYPE=postgres` 时的连接配置 |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SCHEMA` | — | `DB_TYPE=postgres` / `mysql` 时的连接配置（`DB_SCHEMA` 仅 PG 有效） |
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | 管理界面登录密码，**建议务必修改** |
 | `ANY_LLM_SESSION_SECRET` | 空 | 会话密钥；为空时自动生成并持久化到 `ANY_LLM_SESSION_SECRET_FILE` |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成密钥的存放文件（容器里放到挂载卷下，否则重启登录失效） |
@@ -110,7 +110,48 @@ volumes:
   pg-data:
 ```
 
-## 6. 常见问题
+## 6. 使用 MySQL（可选）
+
+```yaml
+services:
+  any-llm:
+    image: any-llm:latest
+    ports:
+      - "6718:6718"
+    environment:
+      DB_TYPE: mysql
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: your-db-password
+      DB_NAME: any_llm
+      ANY_LLM_MASTER_PASSWORD: your-password
+      ANY_LLM_LOG_FILE: ""
+    depends_on:
+      - mysql
+
+  mysql:
+    image: mysql:8.0
+    command:
+      # 归档的 response_raw 单行可达 64 MiB，默认 64 MiB 的 packet 上限会写失败。
+      - --max_allowed_packet=256M
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+    environment:
+      MYSQL_ROOT_PASSWORD: your-db-password
+      MYSQL_DATABASE: any_llm
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+volumes:
+  mysql-data:
+```
+
+注意：需要 **MySQL 8.0.13+** —— schema 渲染器依赖 MySQL 对 TEXT/JSON 列的「表达式默认值」支持（`DEFAULT ('')`），8.0.13 之前的版本只接受裸字面量默认值，会报错误 1101。
+
+注意：`DB_SCHEMA` 在 MySQL 下无效——MySQL 的 database 就是 schema，库名由 `DB_NAME` 给。启动时若设置了 `DB_SCHEMA`，日志会打一条 `db_schema_ignored`。表由 `OpenMySQL` 在启动时自动创建（幂等，可重复重启）。
+
+## 7. 常见问题
 
 **Q：下载的 artifact 是 zip？**
 GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压后里面就是 `.tar`。镜像导出阶段保证是未压缩 tar（`docker save` 输出，未经 gzip）。
@@ -124,7 +165,7 @@ GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压
 **Q：如何重新构建镜像？**
 推一个新的提交到 `docker` 分支，或在 Actions 页面手动触发（Run workflow）。
 
-## 7. CI 工作流说明
+## 8. CI 工作流说明
 
 `.github/workflows/docker.yml` 在 push 到 `docker` 分支（或手动触发）时执行：
 

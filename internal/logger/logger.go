@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 type Level = slog.Level
@@ -26,7 +25,7 @@ var (
 	currentHandler *handler
 	fileOnlyLogger *slog.Logger
 	closer         io.Closer
-	logFilePath    string
+	fileWriter     *dailyFileWriter
 )
 
 func init() {
@@ -102,21 +101,13 @@ func Init(opts Options) error {
 	outputs := []output{{w: os.Stdout, color: true, console: true}}
 
 	if opts.FilePath != "" {
-		dir := filepath.Dir(opts.FilePath)
-		filename := filepath.Base(opts.FilePath)
-		dateDir := filepath.Join(dir, time.Now().Format("2006-01-02"))
-		actualPath := filepath.Join(dateDir, filename)
-
-		if err := os.MkdirAll(dateDir, 0o755); err != nil {
-			return fmt.Errorf("create log dir: %w", err)
-		}
-		f, err := os.OpenFile(actualPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		w, err := newDailyFileWriter(filepath.Dir(opts.FilePath), filepath.Base(opts.FilePath))
 		if err != nil {
-			return fmt.Errorf("open log file: %w", err)
+			return err
 		}
-		outputs = append(outputs, output{w: f, color: false, console: false})
-		closer = f
-		logFilePath = actualPath
+		outputs = append(outputs, output{w: w, color: false, console: false})
+		closer = w
+		fileWriter = w
 	}
 
 	h := newHandler(level, outputs, nil, "")
@@ -132,7 +123,10 @@ func Init(opts Options) error {
 func LogFilePath() string {
 	mu.Lock()
 	defer mu.Unlock()
-	return logFilePath
+	if fileWriter == nil {
+		return ""
+	}
+	return fileWriter.Path()
 }
 
 func Debug(msg string, args ...any) { Default().Debug(msg, args...) }

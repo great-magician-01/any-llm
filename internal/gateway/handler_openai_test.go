@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -22,9 +22,9 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -42,7 +42,7 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 		t.Fatalf("no usage in response: %s", w.Body.String())
 	}
 
-	records, total, _ := model.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 1 {
 		t.Fatalf("usage records=%d", total)
 	}
@@ -69,9 +69,9 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}`))
@@ -88,7 +88,7 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "[DONE]") {
 		t.Fatalf("no [DONE]: %s", w.Body.String())
 	}
-	records, total, _ := model.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 1 {
 		t.Fatalf("usage records=%d", total)
 	}
@@ -108,9 +108,9 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`))
@@ -127,7 +127,7 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"type":"message"`) {
 		t.Fatalf("not anthropic format: %s", w.Body.String())
 	}
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if records[0].InFormat != "anthropic" || records[0].UpFormat != "openai" {
 		t.Fatalf("formats=%+v", records[0])
 	}
@@ -141,9 +141,9 @@ func TestCompletion_UpstreamError(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`))
@@ -158,7 +158,7 @@ func TestCompletion_UpstreamError(t *testing.T) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v", records)
 	}
@@ -177,12 +177,12 @@ func TestResponsesNonStreamToOpenAIUpstream(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t) // router_test.go 现有辅助
-	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	rec := httptest.NewRecorder()
@@ -224,12 +224,12 @@ func TestResponsesStreamFallbackNonStreamJSON(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	// 第一轮：流式 + store，上游用非流式 JSON 应答
@@ -302,12 +302,12 @@ func TestResponsesStatefulToolLoop(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "mock", BaseURL: srv.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 	gw := g
 
@@ -385,12 +385,12 @@ func TestResponsesFailedCallDoesNotSave(t *testing.T) {
 	defer srv500.Close()
 
 	g, d := setupGateway(t)
-	uid, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: srv500.URL, APIKey: "sk-x", Format: "openai"})
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "mock", BaseURL: srv500.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d, uid, "m", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	rec := httptest.NewRecorder()
@@ -438,12 +438,12 @@ func TestResponsesFailedCallDoesNotSave(t *testing.T) {
 	defer srvAbort.Close()
 
 	g2, d2 := setupGateway(t)
-	uid2, err := model.CreateUpstream(d2, &model.Upstream{Name: "mock2", BaseURL: srvAbort.URL, APIKey: "sk-x", Format: "openai"})
+	uid2, err := store.CreateUpstream(d2, &store.Upstream{Name: "mock2", BaseURL: srvAbort.URL, APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model.AddModel(d2, uid2, "m", false, 0, 0)
-	k2, _ := model.CreateExtKey(d2, "test", 0, 0, nil)
+	store.AddModel(d2, uid2, store.UpstreamModel{ModelName: "m"})
+	k2, _ := store.CreateExtKey(d2, "test", "", 0, 0, nil)
 	g2.client = upstream.NewClient(http.DefaultClient)
 
 	recS := httptest.NewRecorder()
@@ -463,11 +463,11 @@ func TestResponsesFailedCallDoesNotSave(t *testing.T) {
 // 未知 previous_response_id -> 400 invalid_previous_response_id
 func TestResponsesUnknownPreviousID(t *testing.T) {
 	g, d := setupGateway(t)
-	_, err := model.CreateUpstream(d, &model.Upstream{Name: "mock", BaseURL: "http://127.0.0.1:1", APIKey: "sk-x", Format: "openai"})
+	_, err := store.CreateUpstream(d, &store.Upstream{Name: "mock", BaseURL: "http://127.0.0.1:1", APIKey: "sk-x", Format: "openai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(
 		`{"model":"mock/m","previous_response_id":"resp_nope","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
@@ -493,9 +493,9 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 	defer srv.Close()
 
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"oai/gpt-4o","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`))
@@ -530,7 +530,7 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 		t.Fatalf("message should be plain text, got: %s", resp.Error.Message)
 	}
 
-	records, _, _ := model.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10)
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v", records)
 	}

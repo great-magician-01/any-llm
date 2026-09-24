@@ -32,7 +32,9 @@ func pgTestDB(t *testing.T) *sql.DB {
 	// search_path 走连接参数而非 SET：pgx 连接池里 SET 只影响单条连接，
 	// 池内其他连接会漏配。
 	cfg.RuntimeParams["search_path"] = schema
-	d := stdlib.OpenDB(*cfg)
+	// 与 OpenPG 一致注册 timestamp→本地时区的 codec，否则扫出的 created_at
+	// 标为 UTC（生产路径不会有这种行为，测试连接也不该有）。
+	d := stdlib.OpenDB(*cfg, stdlib.OptionAfterConnect(registerLocalTimestamp))
 	if err := d.Ping(); err != nil {
 		d.Close()
 		t.Fatalf("ping: %v", err)
@@ -41,7 +43,7 @@ func pgTestDB(t *testing.T) *sql.DB {
 		d.Close()
 		t.Fatalf("create schema: %v", err)
 	}
-	if err := MigratePGForTest(d); err != nil {
+	if err := MigrateForTest(d); err != nil {
 		d.Exec(fmt.Sprintf("DROP SCHEMA %s CASCADE", schema))
 		d.Close()
 		t.Fatalf("migrate: %v", err)
@@ -162,6 +164,9 @@ func TestPG_E2E_ExtKeyCRUD(t *testing.T) {
 	if got.ID != k1.ID || got.Enabled == 0 {
 		t.Fatalf("got=%+v", got)
 	}
+	if got.Label != "label-1" {
+		t.Fatalf("label=%q want label-1", got.Label)
+	}
 	if got.CreatedAt.IsZero() {
 		t.Fatal("created_at zero")
 	}
@@ -201,7 +206,7 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 	d := pgTestDB(t)
 
 	uid, _ := createUpstreamE2E(d, "up", "https://x", "k", "openai")
-	k, _ := createExtKeyE2E(d, "l")
+	k, _ := createExtKeyE2E(d, "key-one")
 	uidPtr := uid
 	kID := k.ID
 
@@ -217,15 +222,17 @@ func TestPG_E2E_UsageAndSummary(t *testing.T) {
 		}
 	}
 
-	// summary by model — exercises the COALESCE(CAST(... AS TEXT),'0') fix
-	// indirectly (group by model here, but the key grouping path is the one
-	// that previously broke due to BIGINT -> string scan).
+	// summary by key — 展示密钥名称（LEFT JOIN ext_keys），同时覆盖 BIGINT
+	// 与 join 下 GROUP BY 在 PG 里的合法性
 	sumByKey, err := usageSummaryE2E(d, "key", "", "")
 	if err != nil {
 		t.Fatalf("summary by key: %v", err)
 	}
 	if len(sumByKey) != 1 {
 		t.Fatalf("summary by key len=%d", len(sumByKey))
+	}
+	if sumByKey[0].groupKey != "key-one" {
+		t.Fatalf("summary by key group=%q want key-one", sumByKey[0].groupKey)
 	}
 	if sumByKey[0].requestCount != 3 || sumByKey[0].totalTokens != 55 {
 		t.Fatalf("summary by key=%+v", sumByKey[0])
@@ -337,11 +344,12 @@ type summaryRow struct {
 	errorCount    int
 }
 
+// createUpstreamE2E 等下面的助手被 PG 与 MySQL 两套 e2e 共用，所以一律走
+// db.InsertReturningID / db.ConflictIgnoreSuffix 等方言助手，不直接写
+// RETURNING 或 ON CONFLICT —— 否则 MySQL 侧一复用就语法错误。
 func createUpstreamE2E(d *sql.DB, name, baseURL, apiKey, format string) (int64, error) {
-	var id int64
-	err := d.QueryRow(Rebind(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`),
-		name, baseURL, apiKey, format).Scan(&id)
-	return id, err
+	return InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?) RETURNING id`,
+		name, baseURL, apiKey, format)
 }
 
 func getUpstreamByNameE2E(d *sql.DB, name string) (struct {
@@ -399,12 +407,21 @@ func deleteUpstreamE2E(d *sql.DB, id int64) error {
 	return err
 }
 
+// addModelE2E 复刻 store.AddModel 的两步策略：先复活同名软删行，复活不到再插入。
+// 少了复活这一步，软删后重加会新建一行而不是复用原 id —— MySQL e2e 正是靠它断言
+// 「复用同一行 id」，顺带覆盖 MySQL 错误 1093 的派生表改写。
 func addModelE2E(d *sql.DB, upstreamID int64, name string, manual bool) error {
 	m := 0
 	if manual {
 		m = 1
 	}
-	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`),
+	if _, err := d.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 1, manual=?
+		WHERE id = (SELECT id FROM (SELECT MIN(id) AS id FROM upstream_models
+			WHERE upstream_id=? AND model_name=? AND is_active = 0) AS cand)`),
+		m, upstreamID, name); err != nil {
+		return err
+	}
+	_, err := d.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,?)`+ConflictIgnoreSuffix(d, "upstream_id, model_name")),
 		upstreamID, name, m)
 	return err
 }
@@ -454,7 +471,7 @@ func replaceModelsE2E(d *sql.DB, upstreamID int64, names []string) error {
 		if _, err := tx.Exec(Rebind(d, `UPDATE upstream_models SET is_active = 1 WHERE upstream_id=? AND model_name=? AND manual=0 AND is_active = 0`), upstreamID, n); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0) ON CONFLICT (upstream_id, model_name) WHERE is_active = 1 DO NOTHING`), upstreamID, n); err != nil {
+		if _, err := tx.Exec(Rebind(d, `INSERT INTO upstream_models (upstream_id, model_name, manual) VALUES (?,?,0)`+ConflictIgnoreSuffix(d, "upstream_id, model_name")), upstreamID, n); err != nil {
 			return err
 		}
 	}
@@ -476,8 +493,8 @@ func createExtKeyE2E(d *sql.DB, label string) (struct {
 			Enabled int
 		}{}, err
 	}
-	var id int64
-	err = d.QueryRow(Rebind(d, `INSERT INTO ext_keys (key, label) VALUES (?,?) RETURNING id`), key, label).Scan(&id)
+	keyCol := QuoteIdent(d, "key")
+	id, err := InsertReturningID(d, `INSERT INTO ext_keys (`+keyCol+`, label) VALUES (?,?) RETURNING id`, key, label)
 	if err != nil {
 		return struct {
 			ID      int64
@@ -510,7 +527,7 @@ func getExtKeyE2E(d *sql.DB, key string) (struct {
 		CreatedAt time.Time
 		LastUsed  sql.NullTime
 	}
-	err := d.QueryRow(Rebind(d, `SELECT id, key, label, enabled, created_at, last_used_at FROM ext_keys WHERE key=?`), key).
+	err := d.QueryRow(Rebind(d, `SELECT id, `+QuoteIdent(d, "key")+`, label, enabled, created_at, last_used_at FROM ext_keys WHERE `+QuoteIdent(d, "key")+`=?`), key).
 		Scan(&k.ID, &k.Key, &k.Label, &k.Enabled, &k.CreatedAt, &k.LastUsed)
 	return k, err
 }
@@ -521,7 +538,7 @@ func listExtKeysE2E(d *sql.DB) ([]struct {
 	Label   string
 	Enabled int
 }, error) {
-	rows, err := d.Query(`SELECT id, key, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT id, ` + QuoteIdent(d, "key") + `, label, enabled FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -572,29 +589,31 @@ func insertUsageE2E(d *sql.DB, r usageRecord) error {
 	return err
 }
 
+// usageSummaryE2E 是 store.UsageSummaryByGroup 的副本（db 包不能 import model），
+// 改动生产查询时需同步这里。
 func usageSummaryE2E(d *sql.DB, groupBy, from, to string) ([]summaryRow, error) {
-	var groupCol string
+	fromClause := "usage_records u"
+	selectCol, groupCol := "u.model", "u.model"
 	switch groupBy {
 	case "key":
-		groupCol = "COALESCE(CAST(ext_key_id AS TEXT), '0')"
-	case "model":
-		groupCol = "model"
+		fromClause = "usage_records u LEFT JOIN ext_keys k ON k.id = u.ext_key_id"
+		hashID := ConcatExpr(d, "'#'", CastTextExpr(d, "u.ext_key_id"))
+		selectCol = "COALESCE(NULLIF(k.label, ''), " + hashID + ", '—')"
+		groupCol = "k.id, k.label, u.ext_key_id"
 	case "upstream":
-		groupCol = "upstream_name"
-	default:
-		groupCol = "model"
+		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END)
-		FROM usage_records`, groupCol)
+		FROM %s`, selectCol, fromClause)
 	var conditions []string
 	var args []any
 	if from != "" {
-		conditions = append(conditions, "created_at >= ?")
+		conditions = append(conditions, "u.created_at >= ?")
 		args = append(args, from)
 	}
 	if to != "" {
-		conditions = append(conditions, "created_at <= ?")
+		conditions = append(conditions, "u.created_at <= ?")
 		args = append(args, to)
 	}
 	if len(conditions) > 0 {
@@ -833,14 +852,20 @@ CREATE TABLE conversation_records (
 	}
 
 	// 与 OpenPG 相同的迁移管线
-	if _, err := d.Exec(migrationPG); err != nil {
-		t.Fatalf("migrationPG: %v", err)
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
 	}
-	if err := migrateExtraCols(d); err != nil {
-		t.Fatalf("extraCols: %v", err)
+
+	// 名称列仍是 label（旧值保留），remark 列就位
+	var keyLabel, keyRemark string
+	if err := d.QueryRow(`SELECT label, remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&keyLabel, &keyRemark); err != nil || keyLabel != "legacy" || keyRemark != "" {
+		t.Fatalf("ext key cols: label=%q remark=%q err=%v", keyLabel, keyRemark, err)
 	}
-	if err := migrateSoftDelete(d); err != nil {
-		t.Fatalf("soft delete migrate: %v", err)
+
+	// upstreams.remark 同样由 extraCols 补列：老行回填空串
+	var upRemark string
+	if err := d.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
+		t.Fatalf("upstream remark backfill: %q err=%v", upRemark, err)
 	}
 
 	// CHECK 已移除：可插入 responses
@@ -873,5 +898,24 @@ CREATE TABLE conversation_records (
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM upstream_models WHERE model_name='m1'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("old rows kept: n=%d err=%v", n, err)
+	}
+}
+
+// 与 SQLite 侧 TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns 同一不变量：
+// 新装的 PG schema 必须拥有 schema 声明的全部索引（含普通索引——它们历史上
+// 只在 MySQL 内联创建，SQLite/PG 的新库曾一直缺）。
+func TestPG_FreshSchemaHasAllDeclaredIndexes(t *testing.T) {
+	d := pgTestDB(t)
+	for _, tbl := range tablesFor(DialectPostgres) {
+		for _, ix := range tbl.Idx {
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM pg_indexes
+				WHERE schemaname = current_schema() AND indexname = $1`, ix.Name).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("index %s declared in schema but missing on a fresh database", ix.Name)
+			}
+		}
 	}
 }

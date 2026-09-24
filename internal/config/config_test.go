@@ -82,6 +82,55 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 }
 
+// DB_TYPE=mysql 时 DB_PORT 未显式设置应默认 3306 —— 5432 是 PG 的默认值，
+// 两者不能共用一个。显式设置的 DB_PORT 优先。
+func TestLoad_MySQLDefaultsPort(t *testing.T) {
+	t.Setenv("DB_TYPE", "mysql")
+	os.Unsetenv("DB_PORT")
+	os.Unsetenv("DB_HOST")
+	os.Unsetenv("DB_USER")
+	os.Unsetenv("DB_PASSWORD")
+	os.Unsetenv("DB_NAME")
+	os.Unsetenv("DB_SCHEMA")
+	t.Setenv("ANY_LLM_SESSION_SECRET", "test-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBType != "mysql" {
+		t.Fatalf("dbtype=%q want mysql", cfg.DBType)
+	}
+	if cfg.DBPort != 3306 {
+		t.Fatalf("mysql DB_PORT=%d want 3306", cfg.DBPort)
+	}
+
+	t.Setenv("DB_PORT", "13306")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBPort != 13306 {
+		t.Fatalf("explicit DB_PORT=%d want 13306", cfg.DBPort)
+	}
+}
+
+// 别名归一：mariadb 也归到 mysql。
+func TestNormalizeDBType(t *testing.T) {
+	for in, want := range map[string]string{
+		"sqlite": "sqlite", "SQLite": "sqlite", " sqlite ": "sqlite",
+		"postgres": "postgres", "postgresql": "postgres", "pg": "postgres",
+		"PG": "postgres", " Postgres ": "postgres",
+		"mysql": "mysql", "MySQL": "mysql", "mariadb": "mysql",
+		// 未知值折成 sqlite（保持既有行为：默认单文件、零配置可跑）
+		"": "sqlite", "whatever": "sqlite",
+	} {
+		if got := normalizeDBType(in); got != want {
+			t.Errorf("normalizeDBType(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
 func TestLoad_SessionSecretFileGenerated(t *testing.T) {
 	os.Unsetenv("ANY_LLM_SESSION_SECRET")
 	path := filepath.Join(t.TempDir(), "session-secret")
