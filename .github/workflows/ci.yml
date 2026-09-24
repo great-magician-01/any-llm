@@ -8,6 +8,26 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      # MySQL e2e 套件（internal/db/mysql_e2e_test.go）需要它。
+      # 固定 8.0 而非 mysql:8，让结果可复现。
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: anyllm
+          # 测试库由 harness 自己按 UnixNano 建（DB_TEST_MYSQL_DSN 里只给一个
+          # 可连接的初始库），这里建一个空的给它连。
+          MYSQL_DATABASE: any_llm_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -panyllm"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      DB_TEST_MYSQL_DSN: >-
+        root:anyllm@tcp(127.0.0.1:3306)/any_llm_test?parseTime=true&loc=Local&charset=utf8mb4&collation=utf8mb4_bin&maxAllowedPacket=0
     steps:
       - uses: actions/checkout@v4
 

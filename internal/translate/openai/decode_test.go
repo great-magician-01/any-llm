@@ -147,6 +147,28 @@ func TestDecodeRequest_StreamOptionsFlowsToExtra(t *testing.T) {
 	}
 }
 
+// reasoning_effort 不是 IR 的具名字段，但前端 dsh 配置导出器声明的推理档位
+// 依赖它经 Extra 原样透传到上游——钉住这条 decode → Extra → encode 链路。
+func TestDecodeRequest_ReasoningEffortPassthrough(t *testing.T) {
+	src := []byte(`{"model":"gpt-4o","messages":[],"reasoning_effort":"high"}`)
+	req, err := DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Extra["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort dropped from Extra: %+v", req.Extra)
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort not re-emitted: %+v", got)
+	}
+}
+
 func _useTranslate() { _ = translate.Request{} }
 
 func TestDecodeResponse_TextAndUsage(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -19,10 +19,11 @@ type Gateway struct {
 	writer   *db.Writer
 	client   *upstream.Client
 	sessions *SessionStore
+	conc     *concManager
 }
 
 func New(db *sql.DB, writer *db.Writer, client *upstream.Client) *Gateway {
-	return &Gateway{db: db, writer: writer, client: client, sessions: NewSessionStore(db, sessionTTL)}
+	return &Gateway{db: db, writer: writer, client: client, sessions: NewSessionStore(db, sessionTTL), conc: newConcManager()}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,24 +49,24 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 401, "openai", "missing API key", "authentication_error")
 		return
 	}
-	if !model.IsValidKeyFormat(extKey) {
+	if !store.IsValidKeyFormat(extKey) {
 		WriteError(w, 401, "openai", "invalid API key format", "authentication_error")
 		return
 	}
-	k, err := model.GetExtKey(g.db, extKey)
+	k, err := store.CachedExtKey(g.db, extKey)
 	if err != nil || !k.Enabled {
 		WriteError(w, 401, "openai", "invalid API key", "authentication_error")
 		return
 	}
 	if g.writer != nil {
-		g.writer.DoAsync(func(d *sql.DB) error { return model.TouchExtKey(d, k.ID) })
+		g.writer.DoAsync(func(d *sql.DB) error { return store.TouchExtKey(d, k.ID) })
 	} else {
-		if err := model.TouchExtKey(g.db, k.ID); err != nil {
+		if err := store.TouchExtKey(g.db, k.ID); err != nil {
 			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
 		}
 	}
 
-	upstreams, err := model.ListUpstreams(g.db)
+	upstreams, err := store.ListUpstreams(g.db, nil)
 	if err != nil {
 		WriteError(w, 500, "openai", "failed to list upstreams", "internal_error")
 		return
@@ -75,12 +76,21 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		Object  string `json:"object"`
 		Created int64  `json:"created"`
 	}
-	var data []modelObj
+	// data 必须是非 nil 空切片：一个可见模型都没有（key 的白名单全不匹配，
+	// 或所有上游都被禁用/过期跳过）时，nil 切片会编码成 "data":null，
+	// 遍历列表的 OpenAI 客户端在 null 上直接报错。
+	data := make([]modelObj, 0)
+	now := time.Now()
+	// 已过有效期的上游与禁用同样不对外暴露（行保留，续期即恢复）
+	expiredByID := make(map[int64]bool, len(upstreams))
 	for _, u := range upstreams {
-		if !u.Enabled { // 禁用的上游不对外暴露模型（行保留，重新启用即恢复）
+		if u.Expired(now) {
+			expiredByID[u.ID] = true
+		}
+		if !u.Enabled || expiredByID[u.ID] {
 			continue
 		}
-		models, err := model.ListModels(g.db, u.ID)
+		models, err := store.ListModels(g.db, u.ID)
 		if err != nil {
 			logger.Warn("gateway: list models failed, skipping upstream", "upstream", u.Name, "upstream_id", u.ID, "err", err)
 			continue
@@ -98,14 +108,15 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 固定对外模型（别名）：以别名本身作为模型 id，客户端可发现并直接请求。
-	aliases, err := model.ListAliases(g.db)
+	aliases, err := store.ListAliases(g.db)
 	if err != nil {
 		logger.Warn("gateway: list aliases failed, skipping", "err", err)
 	} else {
 		for _, a := range aliases {
 			hasUsable := false
 			for _, b := range a.Bindings {
-				if b.UpstreamName != "" && b.UpstreamEnabled { // 绑定指向的上游仍活跃且启用
+				// 绑定指向的上游仍活跃、启用且未过期
+				if b.UpstreamName != "" && b.UpstreamEnabled && !expiredByID[b.UpstreamID] {
 					hasUsable = true
 					break
 				}
@@ -130,19 +141,19 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		WriteError(w, 401, inFormat, "missing API key", "authentication_error")
 		return
 	}
-	if !model.IsValidKeyFormat(extKey) {
+	if !store.IsValidKeyFormat(extKey) {
 		WriteError(w, 401, inFormat, "invalid API key format", "authentication_error")
 		return
 	}
-	k, err := model.GetExtKey(g.db, extKey)
+	k, err := store.CachedExtKey(g.db, extKey)
 	if err != nil || !k.Enabled {
 		WriteError(w, 401, inFormat, "invalid API key", "authentication_error")
 		return
 	}
 	if g.writer != nil {
-		g.writer.DoAsync(func(d *sql.DB) error { return model.TouchExtKey(d, k.ID) })
+		g.writer.DoAsync(func(d *sql.DB) error { return store.TouchExtKey(d, k.ID) })
 	} else {
-		if err := model.TouchExtKey(g.db, k.ID); err != nil {
+		if err := store.TouchExtKey(g.db, k.ID); err != nil {
 			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
 		}
 	}
@@ -174,7 +185,9 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 	// 固定对外模型（别名）：对整个 model 字符串精确匹配，命中后按绑定优先级
 	// 得到候选链，dispatch 内逐候选尝试并自动故障转移。别名优先于
 	// 'name/model' 直连拆分（管理员显式配置即可遮蔽直连路由）。
-	found, targets, err := model.ResolveAliasTargets(g.db, probe.Model)
+	// now 一次取定：同一请求内别名解析与直连路由的到期口径一致。
+	now := time.Now()
+	found, targets, err := store.CachedAliasTargets(g.db, probe.Model, now)
 	if err != nil {
 		logger.Error("gateway: resolve model alias DB error", "model", probe.Model, "err", err)
 		WriteError(w, 500, inFormat, "failed to resolve model alias: "+err.Error(), "internal_error")
@@ -190,7 +203,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		}
 		// 上游限额在 dispatch（流式会先 flush 200 头部）之前过滤：超限的候选
 		// 直接跳过；全部超限则 429。
-		usable := make([]model.AliasTarget, 0, len(targets))
+		usable := make([]store.AliasTarget, 0, len(targets))
 		var firstLimit *limitError
 		for i := range targets {
 			err := g.checkUpstreamLimits(targets[i].Upstream)
@@ -226,13 +239,19 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
-	u, err := model.GetUpstreamByName(g.db, name)
+	u, err := store.CachedUpstreamByName(g.db, name)
 	if err != nil {
 		WriteError(w, 404, inFormat, "upstream '"+name+"' not found", "not_found_error")
 		return
 	}
 	if !u.Enabled {
 		WriteError(w, 404, inFormat, "upstream '"+name+"' is disabled", "not_found_error")
+		return
+	}
+	// 与禁用分开报：管理员主动关掉的上游，「已禁用」比「已过期」更可操作
+	// （后者该去续期）。改有效期即可恢复，无需重新点启用。
+	if u.Expired(now) {
+		WriteError(w, 404, inFormat, "upstream '"+name+"' is expired", "not_found_error")
 		return
 	}
 
@@ -243,7 +262,7 @@ func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFor
 		return
 	}
 
-	g.dispatch(w, r, inFormat, k, []model.AliasTarget{{Upstream: u, ModelName: realModel}}, body)
+	g.dispatch(w, r, inFormat, k, []store.AliasTarget{{Upstream: u, ModelName: realModel}}, body)
 }
 
 // limitError indicates an ext key or upstream has exceeded its daily or
@@ -260,7 +279,7 @@ func (e *limitError) Error() string { return e.message }
 // writeLimitError 把限额检查错误写成 HTTP 响应；err 为 nil 时返回 false。
 // 超限返回 429 并记日志，DB 错误返回 500。upstreamName 仅用于日志（key 级
 // 限额没有对应上游时可传空串）。
-func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *model.ExtKey, upstreamName string, err error) bool {
+func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *store.ExtKey, upstreamName string, err error) bool {
 	if err == nil {
 		return false
 	}
@@ -281,7 +300,7 @@ func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *mod
 // checkKeyLimits verifies the ext key is within its daily and monthly token
 // quotas. A limit of 0 means unbounded. Returns a *limitError when exceeded,
 // or a wrapped error on DB failure.
-func (g *Gateway) checkKeyLimits(k *model.ExtKey) error {
+func (g *Gateway) checkKeyLimits(k *store.ExtKey) error {
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -289,7 +308,7 @@ func (g *Gateway) checkKeyLimits(k *model.ExtKey) error {
 	monthEnd := monthStart.AddDate(0, 1, 0)
 
 	if k.DailyTokenLimit > 0 {
-		used, err := model.SumTokens(g.db, &k.ID, nil, dayStart, dayEnd)
+		used, err := store.SumTokens(g.db, &k.ID, nil, dayStart, dayEnd)
 		if err != nil {
 			return err
 		}
@@ -299,7 +318,7 @@ func (g *Gateway) checkKeyLimits(k *model.ExtKey) error {
 		}
 	}
 	if k.MonthlyTokenLimit > 0 {
-		used, err := model.SumTokens(g.db, &k.ID, nil, monthStart, monthEnd)
+		used, err := store.SumTokens(g.db, &k.ID, nil, monthStart, monthEnd)
 		if err != nil {
 			return err
 		}
@@ -314,7 +333,7 @@ func (g *Gateway) checkKeyLimits(k *model.ExtKey) error {
 // checkUpstreamLimits verifies the upstream is within its daily and monthly
 // token quotas. A limit of 0 means unbounded. Returns a *limitError when
 // exceeded, or a wrapped error on DB failure.
-func (g *Gateway) checkUpstreamLimits(u *model.Upstream) error {
+func (g *Gateway) checkUpstreamLimits(u *store.Upstream) error {
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -322,7 +341,7 @@ func (g *Gateway) checkUpstreamLimits(u *model.Upstream) error {
 	monthEnd := monthStart.AddDate(0, 1, 0)
 
 	if u.DailyTokenLimit > 0 {
-		used, err := model.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)
+		used, err := store.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)
 		if err != nil {
 			return err
 		}
@@ -332,7 +351,7 @@ func (g *Gateway) checkUpstreamLimits(u *model.Upstream) error {
 		}
 	}
 	if u.MonthlyTokenLimit > 0 {
-		used, err := model.SumTokens(g.db, nil, &u.ID, monthStart, monthEnd)
+		used, err := store.SumTokens(g.db, nil, &u.ID, monthStart, monthEnd)
 		if err != nil {
 			return err
 		}

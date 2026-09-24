@@ -1,0 +1,548 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, h } from 'vue'
+import { useMessage, NPopconfirm, NButton, NInputNumber, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSwitch, NAlert, NProgress, NTooltip, NSelect } from 'naive-ui'
+import type { DataTableColumns } from 'naive-ui'
+import { listKeys, deleteKey, getKeyUsage, type ExtKey, type UsageTotals } from '@/api/keys'
+import { listUpstreams, listModels } from '@/api/upstreams'
+import { listAliases } from '@/api/aliases'
+import { formatInt } from '@/utils/format'
+import { buildOmpYaml } from '@/utils/ompConfig'
+import { buildDshYaml } from '@/utils/dshConfig'
+import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
+import { useKeyForms } from '@/composables/useKeyForms'
+import AppIcon from '@/components/AppIcon.vue'
+import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
+
+const message = useMessage()
+const keys = ref<ExtKey[]>([])
+const usageByKey = ref<Record<number, UsageTotals>>({})
+const showDoc = ref(false)
+
+// 新增/编辑弹窗的表单状态与保存逻辑在 composables/useKeyForms（两套皮肤共用一份）
+const {
+  showCreateModal, createModalState, createForm, newlyCreatedKey,
+  showEditModal, editForm,
+  openCreate, saveCreate, resetCreateForm, openEdit, saveEdit,
+} = useKeyForms(keys, { reload: () => load(), ensureModelOptions })
+
+// 模型白名单选项：各上游模型（upstream/model）+ 别名，与 /v1/models 一致。
+// 打开表单时懒加载一次。
+const modelOptions = ref<Array<{ label: string; value: string }>>([])
+let modelOptionsLoaded = false
+async function ensureModelOptions() {
+  if (modelOptionsLoaded) return
+  modelOptionsLoaded = true
+  try {
+    const [ups, aliases] = await Promise.all([listUpstreams(), listAliases()])
+    const opts: Array<{ label: string; value: string }> = []
+    await Promise.all(ups.map(async (u) => {
+      if (u.id == null) return
+      const ms = await listModels(u.id).catch(() => [])
+      for (const m of ms) {
+        const id = `${u.name}/${m.model_name}`
+        opts.push({ label: id, value: id })
+      }
+    }))
+    for (const a of aliases) opts.push({ label: `${a.name}（别名）`, value: a.name })
+    modelOptions.value = opts
+  } catch {
+    modelOptionsLoaded = false // 失败下次重试
+  }
+}
+
+const origin = computed(() => window.location.origin)
+// 客户端 base_url：OpenAI 兼容客户端填 <origin>/v1（SDK 自拼 /chat/completions），
+// Anthropic SDK 填根地址（自拼 /v1/messages）。
+const endpoints = computed(() => [
+  { label: 'OpenAI base_url', url: `${origin.value}/v1` },
+  { label: 'Anthropic base_url', url: origin.value },
+])
+
+const columns = computed<DataTableColumns<ExtKey>>(() => [
+  { title: '名称', key: 'label', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
+  {
+    title: 'Key',
+    key: 'key',
+    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px' }, [
+      h('code', { class: 'mono key-chip' }, row.key),
+      h(
+        NTooltip,
+        { trigger: 'hover' },
+        {
+          trigger: () =>
+            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyKey(row.key, e) }, {
+              icon: () => h(AppIcon, { name: 'copy', size: 13 }),
+            }),
+          default: () => '复制 Key',
+        },
+      ),
+    ]),
+  },
+  {
+    title: '状态',
+    key: 'enabled',
+    width: 80,
+    render: (row) => h(NTag, { type: row.enabled ? 'success' : 'default', bordered: false }, { default: () => row.enabled ? '启用' : '禁用' }),
+  },
+  {
+    title: '日 token 上限',
+    key: 'daily_token_limit',
+    width: 130,
+    render: (row) => row.daily_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
+  },
+  {
+    title: '月 token 上限',
+    key: 'monthly_token_limit',
+    width: 130,
+    render: (row) => row.monthly_token_limit > 0
+      ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
+      : h('span', { style: 'color: var(--text-4)' }, '不限'),
+  },
+  {
+    title: '模型限制',
+    key: 'allowed_models',
+    width: 110,
+    render: (row) => {
+      const list = row.allowed_models ?? []
+      if (list.length === 0) return h('span', { style: 'color: var(--text-4)' }, '全部')
+      return h(NTooltip, { trigger: 'hover' }, {
+        trigger: () => h('span', { class: 'mono' }, `${list.length} 个`),
+        default: () => h('div', { style: 'max-width: 360px; white-space: normal; line-height: 1.6' }, list.join('、')),
+      })
+    },
+  },
+  {
+    title: '今日 / 本月用量',
+    key: 'usage',
+    width: 200,
+    render: (row) => {
+      const u = usageByKey.value[row.id]
+      if (!u) return h('span', { style: 'color: var(--text-4)' }, '—')
+      const line = (label: string, used: number, limit: number) =>
+        h('div', { class: 'quota-line' }, [
+          h('span', { class: 'quota-text mono' }, `${label} ${formatInt(used)}${limit > 0 ? ' / ' + formatInt(limit) : ''}`),
+          limit > 0
+            ? h(NProgress, {
+                type: 'line',
+                percentage: Math.min(100, Math.round((used / limit) * 100)),
+                status: used >= limit ? 'error' : used / limit >= 0.8 ? 'warning' : 'success',
+                height: 5,
+                showIndicator: false,
+                borderRadius: '3px',
+              })
+            : null,
+        ])
+      return h('div', { class: 'quota-cell' }, [
+        line('日', u.daily_tokens, row.daily_token_limit),
+        line('月', u.monthly_tokens, row.monthly_token_limit),
+      ])
+    },
+  },
+  {
+    title: '备注',
+    key: 'remark',
+    width: 150,
+    ellipsis: { tooltip: true },
+    render: (row) => (row.remark
+      ? h('span', { style: 'color: var(--text-2)' }, row.remark)
+      : h('span', { style: 'color: var(--text-4)' }, '—')),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 260,
+    render(row) {
+      return h(NSpace, { size: 4 }, {
+        default: () => [
+          h(NButton, { size: 'small', onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOpencodeConfig(row.key, row.allowed_models, e) }, { default: () => 'opencode' }),
+              default: () => '复制 opencode 配置 JSON（含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOmpConfig(row.key, row.allowed_models, e) }, { default: () => 'OMP' }),
+              default: () => '复制 Oh My Pi 配置 YAML（含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyDshConfig(row.key, row.allowed_models, e) }, { default: () => 'dsh' }),
+              default: () => '复制 dsh 配置 YAML（含此密钥）',
+            },
+          ),
+          h(
+            NPopconfirm,
+            { onPositiveClick: () => { del(row.id) } },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', type: 'error', quaternary: true }, { default: () => '删除' }),
+              default: () => '确定删除此 key？删除后该 key 不可用。',
+            },
+          ),
+        ],
+      })
+    },
+  },
+])
+
+async function load() {
+  keys.value = await listKeys()
+  // load usage in parallel
+  const results = await Promise.all(keys.value.map(k => getKeyUsage(k.id).catch(() => null)))
+  usageByKey.value = {}
+  keys.value.forEach((k, i) => {
+    if (results[i]) usageByKey.value[k.id] = results[i] as UsageTotals
+  })
+}
+
+async function del(id: number) {
+  try {
+    await deleteKey(id)
+    await load()
+    message.success('已删除')
+  } catch {
+    message.error('删除失败')
+  }
+}
+
+// 导出用的模型清单（直连名 + 别名，口径与 /v1/models 一致）由
+// utils/exportModels 统一收集，opencode / OMP / dsh 三套导出器共用。
+// 受限 key 只导出白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
+async function exportModels(allowedModels?: string[] | null) {
+  return filterAllowedModels(await collectExportModels(), allowedModels)
+}
+
+// opencode custom provider config: aggregate every exportable model into
+// the models map so the copied JSON works out of the box.
+async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
+  for (const m of await exportModels(allowedModels)) {
+    models[m.id] = { name: m.id, limit: { context: m.contextLength, output: m.maxOutputLength } }
+  }
+  const cfg: Record<string, unknown> = {
+    $schema: 'https://opencode.ai/config.json',
+    provider: {
+      'any-llm': {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'any-llm',
+        options: {
+          baseURL: `${origin.value}/v1`,
+          apiKey,
+        },
+        models,
+      },
+    },
+  }
+  return JSON.stringify(cfg, null, 2)
+}
+
+async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  return buildOmpYaml({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
+  })
+}
+
+async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const json = await buildOpencodeConfig(apiKey, allowedModels)
+    await copyKey(json, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const yaml = await buildOmpConfig(apiKey, allowedModels)
+    await copyKey(yaml, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function buildDshConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  return buildDshYaml({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
+  })
+}
+
+async function copyDshConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const yaml = await buildDshConfig(apiKey, allowedModels)
+    await copyKey(yaml, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function copyKey(key: string, evt?: MouseEvent) {
+  // prefer the modern async clipboard API (HTTPS / localhost only)
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(key)
+      message.success('已复制到剪贴板')
+      return
+    } catch {
+      // permission denied or non-secure context — fall through
+    }
+  }
+  // legacy fallback for HTTP non-localhost:
+  // the temp textarea must live INSIDE the modal (otherwise naive-ui's focus
+  // trap steals focus and clears the selection before execCommand runs).
+  // We also intercept the copy event to force the correct data in, in case
+  // the selection is still lost.
+  const anchor = (evt?.currentTarget as HTMLElement | undefined) || (document.activeElement as HTMLElement) || document.body
+  let ok = false
+  try {
+    ok = execCopy(key, anchor)
+  } catch {
+    ok = false
+  }
+  if (ok) {
+    message.success('已复制到剪贴板')
+  } else {
+    message.error('复制失败，请手动选择复制')
+  }
+}
+
+function execCopy(text: string, anchor: HTMLElement): boolean {
+  // mount the textarea inside the same modal/card as the clicked button
+  // so the modal's focus trap does not steal focus from it.
+  const container = anchor.parentElement || document.body
+  const ta = document.createElement('textarea')
+  ta.setAttribute('readonly', '')
+  ta.value = text
+  ta.style.position = 'absolute'
+  ta.style.left = '-9999px'
+  ta.style.top = '0'
+  ta.style.width = '1px'
+  ta.style.height = '1px'
+  ta.style.opacity = '0'
+  container.appendChild(ta)
+
+  let ok = false
+  // safety net: force the clipboard payload even if the selection is cleared
+  const onCopy = (e: ClipboardEvent) => {
+    try {
+      e.preventDefault()
+      e.clipboardData?.setData('text/plain', text)
+      ok = true
+    } catch {
+      // ignore
+    }
+  }
+  document.addEventListener('copy', onCopy)
+  try {
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    document.execCommand('copy')
+  } finally {
+    document.removeEventListener('copy', onCopy)
+    try { container.removeChild(ta) } catch { /* already removed */ }
+  }
+  return ok
+}
+
+onMounted(load)
+</script>
+
+<template>
+  <div>
+    <header class="page-header">
+      <div>
+        <h1>API 密钥</h1>
+        <p>对外访问网关使用的 Key，请求时通过 Authorization: Bearer 携带</p>
+      </div>
+      <div class="page-header-side">
+        <n-button quaternary @click="showDoc = true">
+          <template #icon><AppIcon name="doc" :size="15" /></template>
+          使用文档
+        </n-button>
+        <n-button quaternary circle @click="load">
+          <template #icon><AppIcon name="refresh" :size="16" /></template>
+        </n-button>
+      </div>
+    </header>
+
+    <n-card title="访问地址" class="panel">
+      <p style="margin: 0 0 12px; color: var(--text-3); font-size: 13px">
+        复制以下 URL 作为客户端 base_url（OpenAI 兼容客户端用 <code class="mono code-chip">/v1</code> 后缀，Anthropic SDK 用根地址），模型名格式：<code class="mono code-chip">upstream-name/model-name</code>
+      </p>
+      <n-space vertical :size="10">
+        <n-input-group v-for="ep in endpoints" :key="ep.url">
+          <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center">{{ ep.label }}</n-tag>
+          <n-input :value="ep.url" readonly style="font-family: monospace" />
+          <n-button type="primary" @click="copyKey(ep.url, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制
+          </n-button>
+        </n-input-group>
+      </n-space>
+    </n-card>
+
+    <n-card title="密钥列表" class="panel">
+      <template #header-extra>
+        <n-button type="primary" size="small" @click="openCreate">
+          <template #icon><AppIcon name="plus" :size="14" /></template>
+          新增密钥
+        </n-button>
+      </template>
+      <n-data-table :bordered="false" :columns="columns" :data="keys" />
+    </n-card>
+
+    <n-modal :show="showCreateModal" @update:show="(s: boolean) => { showCreateModal = s }">
+      <n-card :title="createModalState === 'form' ? '新增密钥' : '密钥已生成'" :bordered="false" style="width:560px" role="dialog" aria-modal="true">
+        <template v-if="createModalState === 'form'">
+          <n-form label-placement="top">
+            <n-form-item label="名称">
+              <n-input v-model:value="createForm.label" placeholder="名称，如：我的应用" />
+            </n-form-item>
+            <n-form-item label="备注">
+              <n-input v-model:value="createForm.remark" placeholder="备注（可选）" />
+            </n-form-item>
+            <n-form-item label="单日 token 上限（0 = 不限）">
+              <n-input-number v-model:value="createForm.daily_token_limit" :min="0" :step="1000" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="单月 token 上限（0 = 不限）">
+              <n-input-number v-model:value="createForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
+            </n-form-item>
+            <n-form-item label="可用模型（留空 = 不限）">
+              <n-select
+                v-model:value="createForm.allowed_models"
+                :options="modelOptions"
+                multiple
+                filterable
+                tag
+                clearable
+                placeholder="留空则可用全部模型；可多选或手动输入"
+                max-tag-count="responsive"
+              />
+            </n-form-item>
+          </n-form>
+        </template>
+        <template v-else>
+          <n-alert type="info" style="margin-bottom: 12px">
+            密钥已生成，之后也可以随时在列表中查看和复制。
+          </n-alert>
+          <n-input-group>
+            <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
+            <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
+          </n-input-group>
+          <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 opencode 配置 JSON（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 Oh My Pi 配置 YAML（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyDshConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 dsh 配置 YAML（含此密钥）
+          </n-button>
+        </template>
+        <template #footer>
+          <div style="text-align: right">
+            <template v-if="createModalState === 'form'">
+              <n-button @click="showCreateModal = false" style="margin-right: 8px">取消</n-button>
+              <n-button type="primary" @click="saveCreate">保存</n-button>
+            </template>
+            <template v-else>
+              <n-button @click="showCreateModal = false" style="margin-right: 8px">关闭</n-button>
+              <n-button type="primary" @click="resetCreateForm">再新增</n-button>
+            </template>
+          </div>
+        </template>
+      </n-card>
+    </n-modal>
+
+    <n-modal :show="showEditModal" @update:show="(s: boolean) => { if (!s) showEditModal = false }">
+      <n-card title="编辑密钥" :bordered="false" style="width:500px">
+        <n-form label-placement="top">
+          <n-form-item label="名称">
+            <n-input v-model:value="editForm.label" />
+          </n-form-item>
+          <n-form-item label="备注">
+            <n-input v-model:value="editForm.remark" placeholder="备注（可选）" />
+          </n-form-item>
+          <n-form-item label="启用">
+            <n-switch v-model:value="editForm.enabled" />
+          </n-form-item>
+          <n-form-item label="单日 token 上限（0 = 不限）">
+            <n-input-number v-model:value="editForm.daily_token_limit" :min="0" :step="1000" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="单月 token 上限（0 = 不限）">
+            <n-input-number v-model:value="editForm.monthly_token_limit" :min="0" :step="10000" style="width: 100%" />
+          </n-form-item>
+          <n-form-item label="可用模型（留空 = 不限）">
+            <n-select
+              v-model:value="editForm.allowed_models"
+              :options="modelOptions"
+              multiple
+              filterable
+              tag
+              clearable
+              placeholder="留空则可用全部模型；可多选或手动输入"
+              max-tag-count="responsive"
+            />
+          </n-form-item>
+          <n-button type="primary" block @click="saveEdit">保存</n-button>
+        </n-form>
+      </n-card>
+    </n-modal>
+
+    <UsageDocDrawer v-model:show="showDoc" />
+  </div>
+</template>
+
+<style scoped>
+.key-chip {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.code-chip {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.quota-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+}
+.quota-line {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.quota-text {
+  font-size: 12px;
+  color: var(--text-3);
+}
+</style>

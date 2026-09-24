@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
@@ -34,10 +34,10 @@ func failUpstreamServer(t *testing.T, status int) *httptest.Server {
 	return srv
 }
 
-func setupAliasGateway(t *testing.T) (*Gateway, *model.ExtKey) {
+func setupAliasGateway(t *testing.T) (*Gateway, *store.ExtKey) {
 	t.Helper()
 	g, d := setupGateway(t)
-	k, _ := model.CreateExtKey(d, "test", 0, 0, nil)
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 	return g, k
 }
@@ -56,8 +56,8 @@ func TestAliasRouting(t *testing.T) {
 	srv := okUpstreamServer(t, "from-alias")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai"})
-	if _, err := model.CreateAlias(d, &model.ModelAlias{Name: "fixed-gpt", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}}); err != nil {
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "sk", Format: "openai"})
+	if _, err := store.CreateAlias(d, &store.ModelAlias{Name: "fixed-gpt", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,7 +69,7 @@ func TestAliasRouting(t *testing.T) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 	// 用量记录记实际上游模型
-	records, total, _ := model.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 1 || records[0].Model != "gpt-4o" || records[0].UpstreamName != "oai" || records[0].Status != "ok" {
 		t.Fatalf("records=%+v total=%d", records, total)
 	}
@@ -81,9 +81,9 @@ func TestAliasFailoverNonStream(t *testing.T) {
 	good := okUpstreamServer(t, "from-second")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
@@ -95,7 +95,7 @@ func TestAliasFailoverNonStream(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "from-second") {
 		t.Fatalf("body=%s", w.Body.String())
 	}
-	records, total, _ := model.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2 (error+ok)", total)
 	}
@@ -128,9 +128,9 @@ func TestAliasFailoverStream(t *testing.T) {
 
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
@@ -152,7 +152,7 @@ func TestAliasFailoverStream(t *testing.T) {
 	if sawErr {
 		t.Fatalf("stream contains error frame: %s", w.Body.String())
 	}
-	_, total, _ := model.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2", total)
 	}
@@ -164,9 +164,9 @@ func TestAliasAllCandidatesFail(t *testing.T) {
 	bad2 := failUpstreamServer(t, 429)
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "bad1", BaseURL: bad1.URL, APIKey: "sk", Format: "openai"})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "bad2", BaseURL: bad2.URL, APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad1", BaseURL: bad1.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad2", BaseURL: bad2.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
@@ -175,7 +175,7 @@ func TestAliasAllCandidatesFail(t *testing.T) {
 	if w.Code != 429 {
 		t.Fatalf("status=%d want 429 (last candidate), body=%s", w.Code, w.Body.String())
 	}
-	_, total, _ := model.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2", total)
 	}
@@ -185,9 +185,9 @@ func TestAliasAllCandidatesFail(t *testing.T) {
 func TestAliasNoAvailableBindings(t *testing.T) {
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
-	if err := model.DeleteUpstream(d, uid); err != nil {
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
+	if err := store.DeleteUpstream(d, uid); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,20 +205,20 @@ func TestAliasCandidateSkippedByUpstreamLimit(t *testing.T) {
 	good := okUpstreamServer(t, "from-second")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "limited", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai", DailyTokenLimit: 10})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "limited", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai", DailyTokenLimit: 10})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
-	model.InsertUsage(d, &model.UsageRecord{UpstreamID: &uid1, UpstreamName: "limited", Model: "m1", InFormat: "openai", UpFormat: "openai", TotalTokens: 10, Status: "ok"})
+	store.InsertUsage(d, &store.UsageRecord{UpstreamID: &uid1, UpstreamName: "limited", Model: "m1", InFormat: "openai", UpFormat: "openai", TotalTokens: 10, Status: "ok"})
 
 	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-second") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	// 限额跳过不产生 error usage：只有预置的 1 条 + 成功的 1 条
-	_, total, _ := model.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2 (pre-seeded + ok)", total)
 	}
@@ -229,15 +229,15 @@ func TestAliasCandidateDisabledFallback(t *testing.T) {
 	good := okUpstreamServer(t, "from-second")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid1, _ := model.CreateUpstream(d, &model.Upstream{Name: "off", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
-	uid2, _ := model.CreateUpstream(d, &model.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "off", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "good", BaseURL: good.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
 		{UpstreamID: uid1, ModelName: "m1"},
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
-	u, _ := model.GetUpstreamByID(d, uid1)
+	u, _ := store.GetUpstreamByID(d, uid1)
 	u.Enabled = false
-	if err := model.UpdateUpstream(d, u); err != nil {
+	if err := store.UpdateUpstream(d, u); err != nil {
 		t.Fatal(err)
 	}
 
@@ -246,7 +246,7 @@ func TestAliasCandidateDisabledFallback(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	// 禁用跳过不产生 usage：只有成功的 1 条
-	_, total, _ := model.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10)
 	if total != 1 {
 		t.Fatalf("usage records=%d want 1 (ok only, disabled candidate never dispatched)", total)
 	}
@@ -256,11 +256,11 @@ func TestAliasCandidateDisabledFallback(t *testing.T) {
 func TestAliasAllCandidatesDisabled(t *testing.T) {
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
-	u, _ := model.GetUpstreamByID(d, uid)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "http://127.0.0.1:1", APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
+	u, _ := store.GetUpstreamByID(d, uid)
 	u.Enabled = false
-	if err := model.UpdateUpstream(d, u); err != nil {
+	if err := store.UpdateUpstream(d, u); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,12 +276,12 @@ func TestAliasAllCandidatesDisabled(t *testing.T) {
 // /v1/models 包含有可用绑定的别名。
 func TestModelsEndpointIncludesAliases(t *testing.T) {
 	g, d := setupGateway(t)
-	uid, _ := model.CreateUpstream(d, &model.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
-	model.AddModel(d, uid, "gpt-4o", false, 0, 0)
-	model.CreateAlias(d, &model.ModelAlias{Name: "fixed-gpt", Bindings: []model.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "b", APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed-gpt", Bindings: []store.AliasBinding{{UpstreamID: uid, ModelName: "gpt-4o"}}})
 	// 无可用绑定的别名不出现
-	model.CreateAlias(d, &model.ModelAlias{Name: "empty-alias", Bindings: nil})
-	k, _ := model.CreateExtKey(d, "l", 0, 0, nil)
+	store.CreateAlias(d, &store.ModelAlias{Name: "empty-alias", Bindings: nil})
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+k.Key)
@@ -314,11 +314,11 @@ func TestAliasPrecedenceOverDirectFormat(t *testing.T) {
 	directSrv := okUpstreamServer(t, "from-direct")
 	g, k := setupAliasGateway(t)
 	d := g.db
-	uidA, _ := model.CreateUpstream(d, &model.Upstream{Name: "a", BaseURL: aliasSrv.URL, APIKey: "sk", Format: "openai"})
-	uidB, _ := model.CreateUpstream(d, &model.Upstream{Name: "b", BaseURL: directSrv.URL, APIKey: "sk", Format: "openai"})
-	model.AddModel(d, uidB, "m", false, 0, 0)
+	uidA, _ := store.CreateUpstream(d, &store.Upstream{Name: "a", BaseURL: aliasSrv.URL, APIKey: "sk", Format: "openai"})
+	uidB, _ := store.CreateUpstream(d, &store.Upstream{Name: "b", BaseURL: directSrv.URL, APIKey: "sk", Format: "openai"})
+	store.AddModel(d, uidB, store.UpstreamModel{ModelName: "m"})
 	// 别名名称带 /，遮蔽直连路由 "b/m"
-	model.CreateAlias(d, &model.ModelAlias{Name: "b/m", Bindings: []model.AliasBinding{{UpstreamID: uidA, ModelName: "x"}}})
+	store.CreateAlias(d, &store.ModelAlias{Name: "b/m", Bindings: []store.AliasBinding{{UpstreamID: uidA, ModelName: "x"}}})
 
 	w := aliasRequest(t, g, k.Key, `{"model":"b/m","messages":[{"role":"user","content":"hi"}]}`)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-alias") {

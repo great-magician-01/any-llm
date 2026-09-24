@@ -4,6 +4,9 @@ export interface UsageSummary {
   group_key: string; request_count: number; total_tokens: number
   prompt_tokens: number; completion_tokens: number; ok_count: number; error_count: number
   avg_tokens_per_sec: number
+  // 仅 group_by=key 时存在：同名 key（软删后重建）会产生相同的 group_key，
+  // 靠它区分行/回链密钥
+  ext_key_id?: number | null
 }
 
 export interface UsageRecord {

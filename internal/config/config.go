@@ -47,12 +47,13 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{
-		Host:              envStr("ANY_LLM_HOST", "0.0.0.0"),
-		Port:              envInt("ANY_LLM_PORT", 6718),
-		DBType:            envStr("DB_TYPE", "sqlite"),
-		DBPath:            envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
-		DBHost:            envStr("DB_HOST", "localhost"),
-		DBPort:            envInt("DB_PORT", 5432),
+		Host:   envStr("ANY_LLM_HOST", "0.0.0.0"),
+		Port:   envInt("ANY_LLM_PORT", 6718),
+		DBType: envStr("DB_TYPE", "sqlite"),
+		DBPath: envStr("ANY_LLM_DB_PATH", "./any-llm.db"),
+		DBHost: envStr("DB_HOST", "localhost"),
+		// DB_PORT 的默认值取决于 DB_TYPE：PG 是 5432、MySQL 是 3306。
+		DBPort:            envInt("DB_PORT", defaultDBPort(os.Getenv("DB_TYPE"))),
 		DBUser:            envStr("DB_USER", "postgres"),
 		DBPassword:        envStr("DB_PASSWORD", ""),
 		DBName:            envStr("DB_NAME", "amanuensis"),
@@ -144,7 +145,18 @@ func normalizeDBType(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "postgres", "postgresql", "pg":
 		return "postgres"
+	case "mysql", "mariadb":
+		return "mysql"
 	default:
 		return "sqlite"
 	}
+}
+
+// defaultDBPort 返回该数据库类型的默认端口。DB_PORT 未显式设置时才用它：
+// 5432 是 PG 的，MySQL 默认 3306，两者不同，不能共用一个默认值。
+func defaultDBPort(dbType string) int {
+	if normalizeDBType(dbType) == "mysql" {
+		return 3306
+	}
+	return 5432
 }

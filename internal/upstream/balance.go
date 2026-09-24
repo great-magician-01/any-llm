@@ -11,13 +11,14 @@ import (
 	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 // Supported balance/quota vendors, identified by the upstream's base-URL host.
 const (
 	VendorDeepSeek   = "deepseek"
 	VendorKimiCoding = "kimi-coding"
+	VendorStepFun    = "stepfun"
 )
 
 // balanceVendorHosts maps a base-URL hostname to its balance/quota vendor.
@@ -26,11 +27,14 @@ const (
 var balanceVendorHosts = map[string]string{
 	"api.deepseek.com": VendorDeepSeek,
 	"api.kimi.com":     VendorKimiCoding,
+	// stepfun.com 是国内站、stepfun.ai 是国际站，同一套账户 API。
+	"api.stepfun.com": VendorStepFun,
+	"api.stepfun.ai":  VendorStepFun,
 }
 
 // BalanceVendor reports which vendor-specific balance/quota API an upstream
 // supports, by the host of its base URL. "" means unsupported.
-func BalanceVendor(u *model.Upstream) string {
+func BalanceVendor(u *store.Upstream) string {
 	parsed, err := url.Parse(u.BaseURL)
 	if err != nil {
 		return ""
@@ -42,7 +46,7 @@ func BalanceVendor(u *model.Upstream) string {
 // origin (scheme://host) plus a fixed path. endpointURL is not used: it
 // inserts /v1 for anthropic-format upstreams, while these vendor APIs have
 // their own path rules (DeepSeek's balance endpoint has no /v1 prefix).
-func balanceURL(u *model.Upstream, vendor string) (string, error) {
+func balanceURL(u *store.Upstream, vendor string) (string, error) {
 	parsed, err := url.Parse(u.BaseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse base url: %w", err)
@@ -53,6 +57,8 @@ func balanceURL(u *model.Upstream, vendor string) (string, error) {
 		return origin + "/user/balance", nil
 	case VendorKimiCoding:
 		return origin + "/coding/v1/usages", nil
+	case VendorStepFun:
+		return origin + "/v1/accounts", nil
 	}
 	return "", fmt.Errorf("unsupported vendor: %s", vendor)
 }
@@ -61,7 +67,7 @@ func balanceURL(u *model.Upstream, vendor string) (string, error) {
 // vendor id plus a normalized JSON payload (kind=balance|quota). The vendor
 // is derived from the upstream's base-URL host; unsupported upstreams return
 // an error.
-func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstream) (string, json.RawMessage, error) {
+func FetchBalance(ctx context.Context, httpClient *http.Client, u *store.Upstream) (string, json.RawMessage, error) {
 	vendor := BalanceVendor(u)
 	if vendor == "" {
 		return "", nil, fmt.Errorf("balance fetch not supported for upstream %q", u.Name)
@@ -83,6 +89,8 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstrea
 		payload, err = normalizeDeepSeekBalance(body)
 	case VendorKimiCoding:
 		payload, err = normalizeKimiCodingUsage(body)
+	case VendorStepFun:
+		payload, err = normalizeStepFunAccount(body)
 	}
 	if err != nil {
 		logger.Error("fetch balance: normalize failed", "vendor", vendor, "upstream", u.Name, "err", err)
@@ -91,7 +99,7 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *model.Upstrea
 	return vendor, payload, nil
 }
 
-func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, u *model.Upstream) ([]byte, error) {
+func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, u *store.Upstream) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		logger.Error("fetch balance: create request", "url", url, "err", err)
@@ -177,6 +185,51 @@ func normalizeDeepSeekBalance(body []byte) (json.RawMessage, error) {
 		return nil, fmt.Errorf("encode balance payload: %w", err)
 	}
 	return payload, nil
+}
+
+// normalizeStepFunAccount converts GET /v1/accounts into the balance payload.
+// The wire amounts are JSON numbers (unlike DeepSeek's strings); json.Number
+// keeps the raw literal so no float precision is lost in the stored snapshot.
+// 充值金额映射 topped_up，赠送金额映射 granted。is_available 厂商不给，按账户
+// 语义推导：postpaid 先用后付视为可用，prepaid 看余额是否大于零。
+func normalizeStepFunAccount(body []byte) (json.RawMessage, error) {
+	var resp struct {
+		Type                string      `json:"type"` // prepaid | postpaid
+		Balance             json.Number `json:"balance"`
+		TotalCashBalance    json.Number `json:"total_cash_balance"`
+		TotalVoucherBalance json.Number `json:"total_voucher_balance"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode stepfun account: %w", err)
+	}
+	available := resp.Type == "postpaid"
+	if bal, err := resp.Balance.Float64(); err == nil && bal > 0 {
+		available = true
+	}
+	out := balancePayload{
+		Kind:        "balance",
+		IsAvailable: available,
+		Balances: []balanceEntry{{
+			Currency: "CNY",
+			Total:    numberOrZero(resp.Balance),
+			Granted:  numberOrZero(resp.TotalVoucherBalance),
+			ToppedUp: numberOrZero(resp.TotalCashBalance),
+		}},
+	}
+	payload, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode balance payload: %w", err)
+	}
+	return payload, nil
+}
+
+// numberOrZero renders a wire amount literal, mapping an absent field to "0"
+// so the UI never shows a bare currency symbol.
+func numberOrZero(n json.Number) string {
+	if n == "" {
+		return "0"
+	}
+	return n.String()
 }
 
 // normalizeKimiCodingUsage converts GET /coding/v1/usages into the quota

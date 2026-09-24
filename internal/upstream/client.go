@@ -13,7 +13,7 @@ import (
 	"sync"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 	"github.com/great-magician-01/any-llm/internal/translate/anthropic"
 	"github.com/great-magician-01/any-llm/internal/translate/openai"
@@ -55,7 +55,7 @@ func (r *Result) setUsage(u translate.Usage) {
 
 func (c *Client) HTTP() *http.Client { return c.http }
 
-func (c *Client) Call(ctx context.Context, u *model.Upstream, irReq *translate.Request, clientHeaders http.Header) (*Result, error) {
+func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.Request, clientHeaders http.Header) (*Result, error) {
 	var body []byte
 	var err error
 	var path, contentType string
@@ -307,7 +307,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 // /v1, or containing a /v1/ segment on a versioned proxy path) is left as-is.
 // openai/responses base URLs are expected to include the version prefix
 // themselves, matching the OpenAI SDK convention.
-func endpointURL(u *model.Upstream, path string) string {
+func endpointURL(u *store.Upstream, path string) string {
 	base := strings.TrimRight(u.BaseURL, "/")
 	if u.Format == "anthropic" && !pathHasV1Segment(base) {
 		base += "/v1"

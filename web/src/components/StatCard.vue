@@ -42,7 +42,7 @@ withDefaults(
 }
 .stat-card:hover {
   border-color: rgba(91, 140, 255, 0.35);
-  box-shadow: 0 8px 24px rgba(2, 6, 18, 0.5);
+  box-shadow: var(--shadow-hover);
   transform: translateY(-1px);
 }
 .stat-icon {
@@ -78,6 +78,32 @@ withDefaults(
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.1);
   box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.22);
+}
+/* 浅色主题：图标色整体加深，否则白底上对比度不够 */
+:root[data-theme='light'] .stat-icon.accent-blue {
+  color: #3b6fe0;
+  background: rgba(91, 140, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(91, 140, 255, 0.22);
+}
+:root[data-theme='light'] .stat-icon.accent-cyan {
+  color: #0e7490;
+  background: rgba(34, 211, 238, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.2);
+}
+:root[data-theme='light'] .stat-icon.accent-violet {
+  color: #7c3aed;
+  background: rgba(139, 92, 246, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.22);
+}
+:root[data-theme='light'] .stat-icon.accent-green {
+  color: #059669;
+  background: rgba(52, 211, 153, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.2);
+}
+:root[data-theme='light'] .stat-icon.accent-amber {
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.24);
 }
 .stat-body {
   min-width: 0;

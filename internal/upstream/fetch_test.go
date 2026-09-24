@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 )
 
 func TestFetchModels_OpenAI(t *testing.T) {
@@ -21,7 +21,7 @@ func TestFetchModels_OpenAI(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := &model.Upstream{BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
+	u := &store.Upstream{BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	models, err := FetchModels(context.Background(), http.DefaultClient, u)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestFetchModels_Anthropic(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := &model.Upstream{BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"}
+	u := &store.Upstream{BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"}
 	models, err := FetchModels(context.Background(), http.DefaultClient, u)
 	if err != nil {
 		t.Fatal(err)

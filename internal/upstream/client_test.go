@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/great-magician-01/any-llm/internal/model"
+	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/translate"
 )
 
@@ -27,7 +27,7 @@ func TestCall_NonStreamOpenAI(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(http.DefaultClient)
-	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
+	u := &store.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: false,
 		Messages:  []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 100}
@@ -63,7 +63,7 @@ func TestCall_NonStreamAnthropic(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(http.DefaultClient)
-	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"}
+	u := &store.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"}
 	irReq := &translate.Request{Model: "claude", Stream: false, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
 	res, err := c.Call(context.Background(), u, irReq, nil)
@@ -95,7 +95,7 @@ func TestCall_StreamOpenAI(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(http.DefaultClient)
-	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
+	u := &store.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: true, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
 	res, err := c.Call(context.Background(), u, irReq, nil)
@@ -130,7 +130,7 @@ func TestCall_InjectsStreamOptionsForOpenAI(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(http.DefaultClient)
-	u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
+	u := &store.Upstream{Name: "test", BaseURL: srv.URL, APIKey: "sk-test", Format: "openai"}
 	irReq := &translate.Request{Model: "gpt-4o", Stream: true, MaxTokens: 100,
 		Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
 	_, err := c.Call(context.Background(), u, irReq, nil)
@@ -216,7 +216,7 @@ func TestCall_ForwardsClientHeaders(t *testing.T) {
 			if tc.format == "anthropic" {
 				apiKey = "sk-ant"
 			}
-			u := &model.Upstream{Name: "test", BaseURL: srv.URL, APIKey: apiKey, Format: tc.format}
+			u := &store.Upstream{Name: "test", BaseURL: srv.URL, APIKey: apiKey, Format: tc.format}
 			irReq := &translate.Request{Model: "m", Stream: false, MaxTokens: 10,
 				Messages: []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}}
 			if _, err := c.Call(context.Background(), u, irReq, tc.client); err != nil {
@@ -256,7 +256,7 @@ func TestCallResponsesNonStream(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.Client())
-	u := &model.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
+	u := &store.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
 	res, err := c.Call(context.Background(), u, &translate.Request{Model: "m", Stream: false}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestCallResponsesStream(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.Client())
-	u := &model.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
+	u := &store.Upstream{Name: "r", BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"}
 	res, err := c.Call(context.Background(), u, &translate.Request{Model: "m", Stream: true}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestFetchModelsResponses(t *testing.T) {
 		fmt.Fprint(w, `{"object":"list","data":[{"id":"m1"}]}`)
 	}))
 	defer srv.Close()
-	got, err := FetchModels(context.Background(), srv.Client(), &model.Upstream{BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"})
+	got, err := FetchModels(context.Background(), srv.Client(), &store.Upstream{BaseURL: srv.URL, APIKey: "sk-test", Format: "responses"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestEndpointURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			u := &model.Upstream{BaseURL: tc.base, Format: tc.format}
+			u := &store.Upstream{BaseURL: tc.base, Format: tc.format}
 			if got := endpointURL(u, tc.path); got != tc.wantURL {
 				t.Fatalf("endpointURL=%q want %q", got, tc.wantURL)
 			}

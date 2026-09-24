@@ -8,6 +8,8 @@ export interface ConfigUpstreamModel {
   manual: boolean
   context_length: number
   max_output_length: number
+  /** 旧版导出文件可能没有该字段；导入侧按「否」处理。 */
+  multimodal?: boolean
 }
 
 export interface ConfigUpstream {
@@ -15,9 +17,14 @@ export interface ConfigUpstream {
   base_url: string
   api_key: string
   format: string
+  /** 选填备注；缺省保持现状，空串表示清除 */
+  remark?: string
   enabled?: boolean
+  /** 有效期截止时刻；缺省保持现状，null 表示清除（恢复永久有效） */
+  expires_at?: string | null
   daily_token_limit?: number
   monthly_token_limit?: number
+  max_concurrent?: number
   models?: ConfigUpstreamModel[]
 }
 
