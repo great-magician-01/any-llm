@@ -67,7 +67,7 @@ docker run -d --name any-llm \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ANY_LLM_HOST` | `0.0.0.0` | 监听地址 |
-| `ANY_LLM_PORT` | `6718` | 监听端口（注意：Dockerfile 的 `EXPOSE 8080` 仅作声明，不影响实际端口） |
+| `ANY_LLM_PORT` | `6718` | 监听端口（与 Dockerfile 的 `EXPOSE` 一致；`EXPOSE` 仅作声明，改这个值要同步改端口映射） |
 | `DB_TYPE` | `sqlite` | 数据库类型：`sqlite`（默认）/ `postgres` / `mysql` |
 | `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite 文件路径，容器里建议放到挂载卷下 |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SCHEMA` | — | `DB_TYPE=postgres` / `mysql` 时的连接配置（`DB_SCHEMA` 仅 PG 有效） |
@@ -156,8 +156,8 @@ volumes:
 **Q：下载的 artifact 是 zip？**
 GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压后里面就是 `.tar`。镜像导出阶段保证是未压缩 tar（`docker save` 输出，未经 gzip）。
 
-**Q：为什么 `EXPOSE 8080` 但访问要 6718？**
-`EXPOSE` 只是声明性信息；应用实际监听端口由 `ANY_LLM_PORT` 决定，默认 6718。映射 `8080:6718` 也可以从 8080 访问。
+**Q：改了 `ANY_LLM_PORT` 之后访问不到？**
+`EXPOSE` 只是声明性信息（镜像里声明的是默认的 6718），应用实际监听端口由 `ANY_LLM_PORT` 决定。改了它必须同步改端口映射，例如 `ANY_LLM_PORT=9000` 就映射 `9000:9000`；反过来映射 `8080:6718` 也可以从 8080 访问。
 
 **Q：容器重启后登录失效？**
 会话密钥被随机重新生成了。把 `ANY_LLM_SESSION_SECRET_FILE` 指向挂载卷（compose 文件已处理），或显式设置 `ANY_LLM_SESSION_SECRET`。

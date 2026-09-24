@@ -7,7 +7,7 @@ services:
     container_name: any-llm
     restart: unless-stopped
     ports:
-      # 应用实际监听 6718（Dockerfile 里的 EXPOSE 8080 仅是声明）
+      # 应用实际监听 6718（与 Dockerfile 的 EXPOSE 一致）
       - "6718:6718"
     volumes:
       # 数据库与会话密钥持久化到 named volume

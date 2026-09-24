@@ -20,5 +20,6 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o any-llm ./cmd/any-llm/
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates tzdata
 COPY --from=backend-builder /app/any-llm /usr/local/bin/any-llm
-EXPOSE 8080
+# Metadata only: the app listens on ANY_LLM_PORT (default 6718).
+EXPOSE 6718
 CMD ["any-llm"]
