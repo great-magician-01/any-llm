@@ -22,4 +22,8 @@ RUN apk --no-cache add ca-certificates tzdata
 COPY --from=backend-builder /app/any-llm /usr/local/bin/any-llm
 # Metadata only: the app listens on ANY_LLM_PORT (default 6718).
 EXPOSE 6718
+# Keep the container clock in local time: timestamps, log rotation and the daily
+# quota windows are all server-local, and a container without TZ is plain UTC.
+# Override at runtime with e.g. `-e TZ=UTC`.
+ENV TZ=Asia/Shanghai
 CMD ["any-llm"]
