@@ -12,14 +12,17 @@ import { connectivityView, type ConnectivityView } from '@/utils/connectivity'
 import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
 import { useUpstreamList } from '@/composables/useUpstreamList'
+import { useNarrowScreen, ACTIONS_COL_WIDTH } from '@/composables/useNarrowScreen'
 import AppIcon from '@/components/AppIcon.vue'
 
 const message = useMessage()
 // 列表 + 启用状态过滤 + 余额快照：两套皮肤共用（含请求序号守卫与切档只重查
 // 列表），见 composables/useUpstreamList.ts
 const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, toggleEnabled } = useUpstreamList()
+// 窄屏时操作列收窄、按钮换行（两套皮肤共用一个断点，见 useNarrowScreen）
+const { narrow } = useNarrowScreen()
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
@@ -158,6 +161,8 @@ async function save() {
     // 有效期由独立的选择器 ref 持有，提交前转成 ISO 覆写——这样清空选择器时
     // 会显式发出 null（后端据此清除有效期），而不是把字段整个省掉。
     form.value.expires_at = expiryToISO(expiryPicker.value)
+    // 备注同样在提交前归一：去掉首尾空白，没填就是空串（后端不 trim，与 keys 一致）
+    form.value.remark = (form.value.remark ?? '').trim()
     const created = !editing.value?.id
     const createdEnabled = form.value.enabled
     if (!created) {
@@ -182,7 +187,7 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
@@ -334,7 +339,12 @@ const historyColumns: DataTableColumns<BalanceSnapshot> = [
   { title: '内容', key: 'payload', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, balanceSummary(row) ?? '-') },
 ]
 
-const columns: DataTableColumns<Upstream> = [
+// 操作列宽随窄屏收窄，5 个按钮于是换行成两行（宽屏仍是一行）。本页没有
+// scroll-x（列宽自适应容器），故不需要 classic 页那份由列宽求和的 scrollX。
+const actionsWidth = computed(() => (narrow.value ? ACTIONS_COL_WIDTH.narrow : ACTIONS_COL_WIDTH.wide))
+
+// columns 改为 computed：窄屏切换只重建列配置，不逐像素重算
+const columns = computed<DataTableColumns<Upstream>>(() => [
   { type: 'expand', expandable: () => true, renderExpand: (row) => {
     const id = row.id as number
     const models = modelsByUpstream.value[id] || []
@@ -410,6 +420,16 @@ const columns: DataTableColumns<Upstream> = [
     ])
   }},
   { title: '名称', key: 'name', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  // 备注紧跟名称：窄屏首屏就能看到（不用横向滚动），空值显示「—」
+  {
+    title: '备注',
+    key: 'remark',
+    width: 150,
+    ellipsis: { tooltip: true },
+    render: (row) => (row.remark
+      ? h('span', { style: 'color: var(--text-2)' }, row.remark)
+      : h('span', { style: 'color: var(--text-4)' }, '—')),
+  },
   { title: '状态', key: 'enabled', width: 80, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   {
@@ -479,7 +499,9 @@ const columns: DataTableColumns<Upstream> = [
       ? h('span', { class: 'mono' }, formatInt(row.max_concurrent))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  { title: '操作', key: 'actions', width: 380, render: (row) => h(NSpace, { size: 8 }, {
+  // 操作列宽随窄屏收窄（见 actionsWidth），NSpace 允许换行——窄屏下 5 个按钮
+  // 自然排成两行，宽屏则仍是一行
+  { title: '操作', key: 'actions', width: actionsWidth.value, render: (row) => h(NSpace, { size: 8, wrap: true }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -508,7 +530,7 @@ const columns: DataTableColumns<Upstream> = [
       }),
     ],
   })},
-]
+])
 
 // 打开页面时后台静默刷新所有受支持 upstream 的余额/额度，完成后更新对应行；
 // 失败不打扰用户（厂商接口超时/不支持时保持显示已有快照）
@@ -593,6 +615,7 @@ onMounted(() => {
             </div>
           </n-form-item>
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
+          <n-form-item label="备注"><n-input v-model:value="form.remark" placeholder="备注（可选）" /></n-form-item>
           <n-form-item label="Base URL"><n-input v-model:value="form.base_url" /></n-form-item>
           <n-form-item label="API Key">
             <n-input

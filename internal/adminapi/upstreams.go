@@ -41,6 +41,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		BaseURL           string  `json:"base_url"`
 		APIKey            string  `json:"api_key"`
 		Format            string  `json:"format"`
+		Remark            string  `json:"remark"`
 		Enabled           *bool   `json:"enabled"`
 		ExpiresAt         optTime `json:"expires_at"`
 		DailyTokenLimit   int     `json:"daily_token_limit"`
@@ -72,7 +73,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.MaxConcurrent != nil {
 		maxConcurrent = *req.MaxConcurrent
 	}
-	u := &store.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format,
+	u := &store.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format, Remark: req.Remark,
 		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit, MaxConcurrent: maxConcurrent}
 	if req.ExpiresAt.set {
 		u.ExpiresAt = req.ExpiresAt.value()
@@ -145,10 +146,13 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	var req struct {
-		Name              string  `json:"name"`
-		BaseURL           string  `json:"base_url"`
-		APIKey            string  `json:"api_key"`
-		Format            string  `json:"format"`
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
+		// 指针区分「没给」与「给了空串」：只带 enabled 的 PATCH（如列表页开关）
+		// 不得顺手清空备注；显式空串才是清空。
+		Remark            *string `json:"remark"`
 		Enabled           *bool   `json:"enabled"`
 		ExpiresAt         optTime `json:"expires_at"`
 		DailyTokenLimit   *int    `json:"daily_token_limit"`
@@ -204,6 +208,9 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 		if req.Format != "" {
 			u.Format = req.Format
+		}
+		if req.Remark != nil {
+			u.Remark = *req.Remark
 		}
 		if req.DailyTokenLimit != nil {
 			u.DailyTokenLimit = *req.DailyTokenLimit

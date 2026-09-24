@@ -317,6 +317,11 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if expiresAt.Valid {
 		t.Fatalf("legacy row expires_at=%v, want NULL", expiresAt.Time)
 	}
+	// remark 同样由 extraCols 补列：老行回填空串，且要活过表重建
+	var upRemark string
+	if err := got.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
+		t.Fatalf("upstream remark backfill: v=%q err=%v", upRemark, err)
+	}
 	// 补上的列真的能用：写一个到期时刻再读回
 	if _, err := got.Exec(`UPDATE upstreams SET expires_at=? WHERE name='u1'`, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("write expires_at: %v", err)

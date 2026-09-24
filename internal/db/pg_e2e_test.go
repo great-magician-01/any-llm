@@ -862,6 +862,12 @@ CREATE TABLE conversation_records (
 		t.Fatalf("ext key cols: label=%q remark=%q err=%v", keyLabel, keyRemark, err)
 	}
 
+	// upstreams.remark 同样由 extraCols 补列：老行回填空串
+	var upRemark string
+	if err := d.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
+		t.Fatalf("upstream remark backfill: %q err=%v", upRemark, err)
+	}
+
 	// CHECK 已移除：可插入 responses
 	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u2','http://y','k2','responses')`); err != nil {
 		t.Fatalf("CHECK not dropped: %v", err)

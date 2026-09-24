@@ -2,6 +2,8 @@ import client from './client'
 
 export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
+  /** 选填备注，仅管理端元数据（列表展示/配置导出用），网关路由与转发不读它 */
+  remark?: string
   enabled: boolean
   daily_token_limit: number; monthly_token_limit: number
   max_concurrent: number

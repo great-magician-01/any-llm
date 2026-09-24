@@ -58,6 +58,8 @@ func TestSchemaPostgresMatchesHistoricalShape(t *testing.T) {
 		"id BIGSERIAL PRIMARY KEY",
 		"created_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP",
 		"expires_at TIMESTAMP(0)",
+		// remark 是后加的列（LateAdd）：老库靠 ALTER 补，新库就在这里带默认值。
+		"remark TEXT NOT NULL DEFAULT ''",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("PG upstreams DDL missing %q:\n%s", want, got)
@@ -104,6 +106,21 @@ func TestSchemaMySQLRendersInnoDBShape(t *testing.T) {
 	// key 是 MySQL 保留字，必须被反引号包住。
 	if strings.Contains(ddl, " key ") {
 		t.Errorf("MySQL DDL has unquoted reserved word `key`:\n%s", ddl)
+	}
+}
+
+// TestSchemaMySQLUpstreamRemarkIsText 盯住 upstreams.remark 在 MySQL 上的形态：
+// 不建索引 → 保持 TEXT（不是 VARCHAR，不引入任意长度上限），而 TEXT 不接受裸
+// 字面量默认值（错误 1101），必须写成表达式形式。谁给它补上 Len 或去掉括号，
+// 这里就会挂。
+func TestSchemaMySQLUpstreamRemarkIsText(t *testing.T) {
+	tbl, _ := schemaTableByName("upstreams")
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(ddl, "`remark` TEXT NOT NULL DEFAULT ('')") {
+		t.Errorf("upstreams.remark must be TEXT with a parenthesized default on MySQL:\n%s", ddl)
+	}
+	if strings.Contains(ddl, "`remark` VARCHAR") {
+		t.Errorf("upstreams.remark must not become VARCHAR on MySQL:\n%s", ddl)
 	}
 }
 
