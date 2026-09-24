@@ -35,9 +35,10 @@ ENV ANY_LLM_PORT=6718 \
     DB_TYPE=postgres \
     DB_HOST=localhost \
     DB_PORT=5432 \
-    DB_USER=postgres \
-    DB_NAME=amanuensis \
-    DB_SCHEMA=public
+    DB_USER=chat_user \
+    DB_NAME=chat_db \
+    DB_SCHEMA=any_llm \
+    ANY_LLM_SESSION_SECRET=a_very_strong_random_string_here
 
 # Metadata only: the app listens on ANY_LLM_PORT (default 6718).
 EXPOSE 6718

@@ -70,7 +70,7 @@ docker run -d --name any-llm \
 
 所有配置通过环境变量设置（镜像内没有 `.env` 文件；本地开发时程序会读工作目录的 `.env`，已存在的环境变量优先）。
 
-镜像的最终 stage 用 `ENV` 预置了一整套默认值（照 `.env.example` 的值，数据库为 PostgreSQL）——下表的「默认值」列就是镜像里的值，`-e KEY=...` 可逐个覆盖。
+镜像的最终 stage 用 `ENV` 预置了一整套默认值（照 `.env.example` 的值，数据库改为 PostgreSQL，并指向部署用的库与 schema）——下表的「默认值」列就是镜像里的值，`-e KEY=...` 可逐个覆盖。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -78,9 +78,9 @@ docker run -d --name any-llm \
 | `ANY_LLM_PORT` | `6718` | 监听端口（与 Dockerfile 的 `EXPOSE` 一致；`EXPOSE` 仅作声明，改这个值要同步改端口映射） |
 | `DB_TYPE` | `postgres`（镜像预置）／`sqlite`（代码默认） | 数据库类型：`sqlite` / `postgres` / `mysql` |
 | `ANY_LLM_DB_PATH` | `./any-llm.db` | SQLite 文件路径，容器里建议放到挂载卷下 |
-| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SCHEMA` | `localhost` / `5432` / `postgres` / 空 / `amanuensis` / `public` | `DB_TYPE=postgres` / `mysql` 时的连接配置（`DB_SCHEMA` 仅 PG 有效）。`DB_PASSWORD` 刻意不预置（镜像 ENV 用 `docker inspect` 就能看到），用 `-e DB_PASSWORD=...` 传入 |
+| `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `DB_SCHEMA` | `localhost` / `5432` / `chat_user` / 空 / `chat_db` / `any_llm` | `DB_TYPE=postgres` / `mysql` 时的连接配置（`DB_SCHEMA` 仅 PG 有效）。`DB_PASSWORD` 刻意不预置（镜像 ENV 用 `docker inspect` 就能看到），用 `-e DB_PASSWORD=...` 传入；换成你自己的实例用 `-e` 覆盖上面几个值（容器里的 `localhost` 是容器自身） |
 | `ANY_LLM_MASTER_PASSWORD` | `admin` | 管理界面登录密码，**建议务必修改** |
-| `ANY_LLM_SESSION_SECRET` | 空 | 会话密钥；为空时自动生成并持久化到 `ANY_LLM_SESSION_SECRET_FILE` |
+| `ANY_LLM_SESSION_SECRET` | 镜像预置固定值 | admin 会话 cookie 的 HMAC 签名密钥。镜像里预置了一个固定值，也就是**所有用这份镜像的部署共用同一把密钥**，且它明文躺在仓库里 —— 对外提供服务的部署建议用 `-e ANY_LLM_SESSION_SECRET=$(openssl rand -hex 32)` 换成各自的随机值；覆盖为空串则自动生成并持久化到 `ANY_LLM_SESSION_SECRET_FILE` |
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成密钥的存放文件（容器里放到挂载卷下，否则重启登录失效） |
 | `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志文件路径；容器里建议指向挂载卷，如 `/data/logs/any-llm.log`（logger 会按日期自动建子目录，同时输出到 stdout） |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -172,7 +172,7 @@ GitHub 打包 artifact 时会统一套一层 zip，这是 GitHub 行为；解压
 CI 产出的 tag 是唯一的（`any-llm:<日期>-<短 sha>`），而 compose 的 `image` 字段写的是 `any-llm:latest`。本地没有这个 tag 时，compose 看到 `build: .` 会走本地构建 —— 慢，而且构建出的不一定是你下载的那份代码。先 `docker tag any-llm:<tag> any-llm:latest`，或把 compose 的 `image` 改成带 tag 的名字。
 
 **Q：容器重启后登录失效？**
-会话密钥被随机重新生成了。把 `ANY_LLM_SESSION_SECRET_FILE` 指向挂载卷（compose 文件已处理），或显式设置 `ANY_LLM_SESSION_SECRET`。
+会话密钥被随机重新生成了。把 `ANY_LLM_SESSION_SECRET_FILE` 指向挂载卷（compose 文件已处理），或显式设置 `ANY_LLM_SESSION_SECRET`。镜像预置了固定密钥，所以直接用镜像启动不会遇到这个；把 `ANY_LLM_SESSION_SECRET` 覆盖成空串才会（那时才需要上面的办法）。
 
 **Q：如何重新构建镜像？**
 推一个新的提交到 `docker` 分支，或在 Actions 页面手动触发（Run workflow）。
