@@ -2,6 +2,8 @@
 
 通用 LLM API 网关，将多个上游模型服务统一为 OpenAI / Anthropic / Responses 兼容接口。单二进制部署，内置管理界面。
 
+![alt text](docs\image.png)
+
 ## 特性
 
 - **统一网关**：对外提供 OpenAI（`/v1/chat/completions`）、Anthropic（`/v1/messages`）、Responses（`/v1/responses`）兼容 API，流式与非流式均支持
