@@ -99,8 +99,9 @@ export function balanceSummary(s: BalanceSnapshot | undefined): string | null {
   return parts.length ? parts.join(' · ') : null
 }
 
-/** 单元格 tooltip：每个窗口的完整重置时间 + 抓取时间 */
-export function balanceTooltip(s: BalanceSnapshot): string {
+/** 单元格/看板行 tooltip：每个窗口的完整重置时间 + 抓取时间。
+ * action 是末行的动作提示（默认上游页单元格的「点击查看历史」）。 */
+export function balanceTooltip(s: BalanceSnapshot, action = '点击查看历史'): string {
   const lines: string[] = []
   const p = parsePayload(s)
   if (p?.kind === 'quota') {
@@ -114,6 +115,6 @@ export function balanceTooltip(s: BalanceSnapshot): string {
   } else if (s.vendor === 'kimi-coding') {
     lines.push('5h 窗口本次未返回，通常表示当前无活跃的 5 小时用量窗口')
   }
-  lines.push(`抓取于 ${formatTime(s.created_at)}`, '点击查看历史')
+  lines.push(`抓取于 ${formatTime(s.created_at)}`, action)
   return lines.join('\n')
 }
