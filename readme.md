@@ -2,7 +2,7 @@
 
 通用 LLM API 网关，将多个上游模型服务统一为 OpenAI / Anthropic / Responses 兼容接口。单二进制部署，内置管理界面。
 
-![alt text](docs\image.png)
+![alt text](docs/image.png)
 
 ## 特性
 
