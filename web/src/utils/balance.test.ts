@@ -86,6 +86,13 @@ describe('balanceTooltip', () => {
     expect(t).toContain(`抓取于 ${formatTime(s.created_at)}`)
     expect(t).toContain('5h 窗口本次未返回')
   })
+
+  it('末行动作提示可替换（概览看板跳上游页，不是开历史弹窗）', () => {
+    const s = snap({ kind: 'balance', is_available: true, balances: [{ currency: 'CNY', total: '1.00', granted: '0.00', topped_up: '1.00' }] }, 'deepseek')
+    const t = balanceTooltip(s, '点击查看上游')
+    expect(t).toContain('点击查看上游')
+    expect(t).not.toContain('点击查看历史')
+  })
 })
 
 describe('formatFetchedAt', () => {

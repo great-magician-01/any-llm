@@ -5,11 +5,13 @@ import { useMessage } from 'naive-ui'
 import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '@/api/usage'
 import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
+import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageCalendar from '@/components/UsageCalendar.vue'
 import UpstreamUsagePanel from '@/components/UpstreamUsagePanel.vue'
+import BalanceBoard from '@/components/BalanceBoard.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -22,6 +24,7 @@ const topModels = ref<UsageSummary[]>([])
 const daily = ref<UsageDayStat[]>([])
 const upstreamRows = ref<Upstream[]>([])
 const usageByUpstream = ref<Record<number, UsageTotals>>({})
+const balancesByUpstream = ref<Record<number, BalanceSnapshot>>({})
 const upstreamCount = ref(0)
 const modelCount = ref(0)
 const keyCount = ref(0)
@@ -54,7 +57,7 @@ function monthStart(): string {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [todayList, monthList, allList, ups, ks, dailyStats] = await Promise.all([
+    const [todayList, monthList, allList, ups, ks, dailyStats, snaps] = await Promise.all([
       fetchSummary('model', dayStart()),
       fetchSummary('model', monthStart()),
       fetchSummary('model'),
@@ -62,6 +65,8 @@ async function load(silent = false) {
       listKeys(),
       // 日历热力图要铺满 53 周，窗口略大于一年（后端上限 370 天）
       fetchDaily(370),
+      // 余额快照接口失败不阻塞概览其余数据（同上游管理页的做法）
+      listLatestBalances().catch(() => [] as BalanceSnapshot[]),
     ])
     today.value = sum(todayList)
     month.value = sum(monthList)
@@ -83,6 +88,9 @@ async function load(silent = false) {
       if (u.id != null && r) uMap[u.id] = r
     })
     usageByUpstream.value = uMap
+    const bMap: Record<number, BalanceSnapshot> = {}
+    for (const s of snaps) bMap[s.upstream_id] = s
+    balancesByUpstream.value = bMap
   } catch (e: any) {
     if (!silent) message.error('加载概览失败：' + (e?.message || String(e)))
   } finally {
@@ -218,6 +226,7 @@ onUnmounted(() => clearInterval(timer))
       </div>
 
       <UpstreamUsagePanel :upstreams="upstreamRows" :usage="usageByUpstream" />
+      <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" to="upstreams" />
     </div>
   </div>
 </template>
