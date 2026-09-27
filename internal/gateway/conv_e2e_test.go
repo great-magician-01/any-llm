@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -17,6 +18,47 @@ import (
 	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
+
+// 对话归档的 e2e 套件，按方言参数化：SQLite 上归档整体关闭（网关层门控），所以
+// 真正落库的只有 PostgreSQL 与 MySQL，而两者的分表实现差别很大——PG 用
+// BIGSERIAL 共享序列，MySQL 用 id_sequences 计数器表 + LAST_INSERT_ID 显式传 id，
+// 分表发现也分别走 pg_tables 与 information_schema。这些差异必须真库才能验。
+//
+// 每个用例对每个可用方言各跑一遍（DSN 未配置的方言在**子测试粒度**跳过，另一个
+// 方言照跑）。隔离方式：PG 建独立 schema（走 search_path），MySQL 建独立 database
+// ——MySQL 的 database 就是 schema。
+
+type convDialect struct {
+	name string
+	env  string
+}
+
+var convDialects = []convDialect{
+	{name: "postgres", env: "DB_TEST_PG_DSN"},
+	{name: "mysql", env: "DB_TEST_MYSQL_DSN"},
+}
+
+// forEachConvDialect 把用例体跑在每个方言上（子测试名 = 方言名）。
+func forEachConvDialect(t *testing.T, body func(t *testing.T, dl convDialect)) {
+	t.Helper()
+	for _, dl := range convDialects {
+		dl := dl
+		t.Run(dl.name, func(t *testing.T) { body(t, dl) })
+	}
+}
+
+// convTestDB 按方言建隔离库并跑迁移，返回连接（含对话分表注册缓存重载）。
+func convTestDB(t *testing.T, dl convDialect) *sql.DB {
+	t.Helper()
+	switch dl.name {
+	case "postgres":
+		return pgConvTestDB(t)
+	case "mysql":
+		return mysqlConvTestDB(t)
+	}
+	t.Fatalf("unknown conv dialect %q", dl.name)
+	return nil
+}
 
 // pgConvTestDB 连接 DB_TEST_PG_DSN，在独立 schema 里跑 PG 迁移（含
 // conversation_records），测试结束 drop schema。未配置 DSN 时跳过。
@@ -63,10 +105,70 @@ func pgConvTestDB(t *testing.T) *sql.DB {
 	return d
 }
 
-// setupPGGateway 基于 PG 建 Gateway（带真实 writer，走 DoAsync 路径）。
-func setupPGGateway(t *testing.T) (*Gateway, *sql.DB, *db.Writer) {
+// mysqlConvTestDB 连接 DB_TEST_MYSQL_DSN，建一个唯一命名的 database（与表级
+// 一致的 utf8mb4_bin）、跑迁移、重载分表注册缓存，测试结束 drop database。
+// 未配置 DSN 时跳过。
+//
+// 清理顺序靠 t.Cleanup 的后进先出：drop 用控制连接（先注册），业务连接后注册，
+// 于是先关业务连接再 drop——否则 mysqld 还占着库，DROP 会失败。
+func mysqlConvTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	d := pgConvTestDB(t)
+	dsn := os.Getenv("DB_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("set DB_TEST_MYSQL_DSN to run mysql e2e tests")
+	}
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	name := fmt.Sprintf("any_llm_conv_test_%d", time.Now().UnixNano())
+	ctrl, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatalf("open control conn: %v", err)
+	}
+	if err := ctrl.Ping(); err != nil {
+		ctrl.Close()
+		t.Fatalf("ping control conn: %v", err)
+	}
+	// 字符集/排序规则钉死成与表级一致，避免服务器默认值（utf8mb4_0900_ai_ci 是
+	// 大小写不敏感的）让唯一性与 = 语义与 PG/SQLite 产生偏差。
+	if _, err := ctrl.Exec(fmt.Sprintf(
+		"CREATE DATABASE %s DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", name)); err != nil {
+		ctrl.Close()
+		t.Fatalf("create database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := ctrl.Exec(fmt.Sprintf("DROP DATABASE %s", name)); err != nil {
+			t.Errorf("drop database %s: %v", name, err)
+		}
+		ctrl.Close()
+	})
+
+	cfg.DBName = name
+	d, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatalf("open mysql: %v", err)
+	}
+	if err := d.Ping(); err != nil {
+		d.Close()
+		t.Fatalf("ping: %v", err)
+	}
+	if err := db.MigrateForTest(d); err != nil {
+		d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := store.LoadConvShards(d); err != nil {
+		d.Close()
+		t.Fatalf("load conversation shards: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+// setupConvGateway 基于指定方言建 Gateway（带真实 writer，走 DoAsync 路径）。
+func setupConvGateway(t *testing.T, dl convDialect) (*Gateway, *sql.DB, *db.Writer) {
+	t.Helper()
+	d := convTestDB(t, dl)
 	w := db.NewWriter(d, 512)
 	w.Start()
 	t.Cleanup(w.Stop)
@@ -80,7 +182,13 @@ func flushConv(w *db.Writer) {
 	_ = w.DoSync(func(d *sql.DB) error { return nil })
 }
 
-func TestPGConvNonStream(t *testing.T) {
+func TestConvE2E_NonStream(t *testing.T) {
+	forEachConvDialect(t, convNonStreamBody)
+}
+
+// convNonStreamBody：非流式请求也必须完整归档（harness 识别、原始入站体、
+// 发给客户端的原始响应、IR、token、ext_key_id）。
+func convNonStreamBody(t *testing.T, dl convDialect) {
 	mockBody := `{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -88,7 +196,7 @@ func TestPGConvNonStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g, d, w := setupPGGateway(t)
+	g, d, w := setupConvGateway(t, dl)
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
@@ -140,8 +248,8 @@ func TestPGConvNonStream(t *testing.T) {
 	if string(respRaw) != mockBody {
 		t.Errorf("response_raw mismatch:\n got %s\nwant %s", respRaw, mockBody)
 	}
-	// 注意：jsonb 经 PG 输出时格式为 `"Model": "gpt-4o"`（冒号后带空格），
-	// 断言不依赖紧凑格式。
+	// 注意：jsonb 经 PG 输出时格式为 `"Model": "gpt-4o"`（冒号后带空格），MySQL
+	// 的 JSON 列是紧凑格式，所以断言不依赖空白。
 	if !strings.Contains(reqIR, `"Model"`) || !strings.Contains(reqIR, `"gpt-4o"`) {
 		t.Errorf("request_ir missing model: %s", reqIR)
 	}
@@ -153,7 +261,13 @@ func TestPGConvNonStream(t *testing.T) {
 	}
 }
 
-func TestPGConvStream(t *testing.T) {
+func TestConvE2E_Stream(t *testing.T) {
+	forEachConvDialect(t, convStreamBody)
+}
+
+// convStreamBody：流式归档要把思维链（含真签名）、文本块以及发给客户端的原始
+// SSE 帧都存下来。
+func convStreamBody(t *testing.T, dl convDialect) {
 	// Anthropic 上游流：text + thinking(含真签名) + tool_use。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -177,7 +291,7 @@ func TestPGConvStream(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g, d, w := setupPGGateway(t)
+	g, d, w := setupConvGateway(t, dl)
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk-ant", Format: "anthropic"})
 	store.AddModel(d, uid, store.UpstreamModel{ModelName: "claude-3-5"})
 	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
@@ -225,10 +339,23 @@ func TestPGConvStream(t *testing.T) {
 	}
 }
 
-// TestPGConvShardedReadWithLegacy 验证应用层分表的读取合并：存量库的
-// conversation_records（历史分表，含旧数据）+ 当月分表（新写入）一起参与
-// 列表分页与详情查询，顺序新→旧、翻页跨表拼接正确。
-func TestPGConvShardedReadWithLegacy(t *testing.T) {
+func TestConvE2E_ShardedReadWithLegacy(t *testing.T) {
+	forEachConvDialect(t, convShardedReadBody)
+}
+
+// convShardedReadBody 验证应用层分表的读取合并：存量库的 conversation_records
+// （历史分表，含旧数据）+ 当月分表（新写入）一起参与列表分页与详情查询，顺序
+// 新→旧、翻页跨表拼接正确。
+//
+// 只跑 PG：`conversation_records` 这张**初始 schema 的表**不在 canonical schema
+// 里（schema.go 只定义月分表 DDL，旧表原地保留），而 MySQL 从来没有过旧库
+// （AGENTS.md: "No legacy MySQL databases exist"），硬造一张 MySQL 版旧表等于
+// 发明一套不存在的语义。MySQL 侧的分表语义由本文件其余用例 + store 的
+// conversation e2e（月份分表创建/发现/翻页/id 计数器）覆盖。
+func convShardedReadBody(t *testing.T, dl convDialect) {
+	if dl.name != "postgres" {
+		t.Skip("历史 conversation_records 只存在于 PG：MySQL 没有旧 schema")
+	}
 	mockBody := `{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -236,7 +363,7 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g, d, w := setupPGGateway(t)
+	g, d, w := setupConvGateway(t, dl)
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
@@ -328,14 +455,20 @@ func TestPGConvShardedReadWithLegacy(t *testing.T) {
 	}
 }
 
-func TestPGConvUpstreamError(t *testing.T) {
+func TestConvE2E_UpstreamError(t *testing.T) {
+	forEachConvDialect(t, convUpstreamErrorBody)
+}
+
+// convUpstreamErrorBody：上游失败也要归档（status=error、0 token），否则运维
+// 看不到失败请求的现场。
+func convUpstreamErrorBody(t *testing.T, dl convDialect) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error":{"message":"boom","type":"server_error"}}`))
 	}))
 	defer srv.Close()
 
-	g, d, w := setupPGGateway(t)
+	g, d, w := setupConvGateway(t, dl)
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
 	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
 	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
