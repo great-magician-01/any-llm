@@ -50,7 +50,15 @@ router.beforeEach((to, _from) => {
   const loginName = isGlass ? 'glass-login' : 'login'
   const homeName = isGlass ? 'glass-dashboard' : 'dashboard'
   if (to.name !== loginName && !hasSession) {
-    return { name: loginName }
+    // 深链（含 query/hash）不能丢：带上 ?redirect= 让登录后回到用户本来要去的
+    // 页面。目标是本主题落地页时不必带——主题根路径在守卫之前就被重定向规则
+    // 解析成了 dashboard，带上只会让 URL 变脏。
+    const homePath = isGlass ? '/glass/dashboard' : '/dashboard'
+    const rootPath = isGlass ? '/glass' : '/'
+    if (to.fullPath === homePath || to.fullPath === rootPath) {
+      return { name: loginName }
+    }
+    return { name: loginName, query: { redirect: to.fullPath } }
   }
   if (to.name === loginName && hasSession) {
     return { name: homeName }

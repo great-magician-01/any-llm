@@ -5,8 +5,7 @@
  *   - `/` 落到 dashboard（不是空白页）；
  *   - afterEach 按路由前缀给 body 加/去 glass-mode（毛玻璃的 teleport 浮层靠它）；
  *   - 两套主题前缀下的业务页面集合一一对应（加页面只加一边 = 回归）；
- *   - 未登录深链的当前契约：只跳登录页、不保留原目标（这是已知 UX 缺陷，
- *     用断言固定现状，改实现时这条会红，逼着一起改）。
+ *   - 未登录深链必须把原目标带进 `?redirect=`（登录后要回得去），主题根路径除外。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
 import router from './router'
@@ -103,23 +102,38 @@ describe('router 双主题前缀 parity', () => {
 })
 
 describe('router 未登录深链', () => {
-  // 规则（当前契约，非理想）：未登录深链只跳登录页，原目标被丢弃——登录后用户
-  // 回不到他想去的页面。断言锁住现状，改动这里必须同步更新本用例与报告。
-  it('未登录访问深链只跳登录页，不保留 redirect 目标（已知 UX 缺陷）', async () => {
+  // 规则：未登录深链不能丢目标——守卫把 fullPath（含 query）写进 ?redirect=，
+  // 登录页消费后跳回去。深链分享、会话过期回来都靠这条。
+  it('未登录访问深链时把原目标带进 ?redirect=', async () => {
     await router.push('/usage?range=7d')
 
     expect(router.currentRoute.value.name).toBe('login')
-    expect(router.currentRoute.value.fullPath).toBe('/login')
+    expect(router.currentRoute.value.query).toEqual({ redirect: '/usage?range=7d' })
+  })
+
+  // 规则：目标是本主题的落地页时不该在 URL 上挂没意义的 redirect
+  // （根路径在守卫之前就被重定向规则解析成了 dashboard）
+  it('未登录访问主题根路径/落地页时不带 redirect', async () => {
+    await router.push('/keys') // 先挪开，否则 push('/') 会被当作重复导航跳过
+    await router.push('/')
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.query).toEqual({})
+
+    await router.push('/dashboard')
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.query).toEqual({})
+
+    await router.push('/glass/dashboard')
+    expect(router.currentRoute.value.name).toBe('glass-login')
     expect(router.currentRoute.value.query).toEqual({})
   })
 
-  // 规则：玻璃深链同样只跳玻璃登录页（不能把人扔到经典主题的登录页）
-  it('未登录访问毛玻璃深链同样只跳玻璃登录页', async () => {
+  // 规则：玻璃深链同样只跳玻璃登录页（不能把人扔到经典主题的登录页），且带原目标
+  it('未登录访问毛玻璃深链跳玻璃登录页并带原目标', async () => {
     await router.push('/glass/usage')
 
     expect(router.currentRoute.value.name).toBe('glass-login')
-    expect(router.currentRoute.value.fullPath).toBe('/glass/login')
-    expect(router.currentRoute.value.query).toEqual({})
+    expect(router.currentRoute.value.query).toEqual({ redirect: '/glass/usage' })
   })
 
   // 规则：有会话时深链（含 query）要原样直达，不能被守卫改写
