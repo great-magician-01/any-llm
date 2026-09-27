@@ -121,7 +121,9 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		errBody, err := io.ReadAll(resp.Body)
+		// 错误 body 也要有读上限：厂商的错误页可能有几 MB，整体读进内存再原样
+		// 回给客户端毫无意义（fetch.go / balance.go 同样用 1 MiB 上限 + 512 截断日志）。
+		errBody, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBody))
 		if err != nil {
 			logger.Warn("upstream error: failed to read error body", "url", url, "status", resp.StatusCode, "err", err)
 		}
@@ -246,16 +248,12 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				})
 			} else if ev.Type == "message_delta" {
 				prev := result.Usage()
-				result.setUsage(translate.Usage{
-					InputTokens:         prev.InputTokens,
-					OutputTokens:        ev.OutputTokens,
-					CacheReadTokens:     ev.CacheReadTokens,
-					CacheCreationTokens: ev.CacheCreationTokens,
-					ReasoningTokens:     ev.ReasoningTokens,
-				})
 				// Anthropic message_delta carries only output_tokens; input_tokens
-				// arrived in message_start. Propagate them onto the event so
-				// cross-format encoders (e.g. OpenAI usage chunk) see both values.
+				// and cache_* arrived in message_start. 先把 message_start 的值回填到
+				// 事件上（跨格式编码器要读它们），再用同一份值更新聚合 usage——
+				// 直接用事件里的零值覆盖会让 Result.Usage() 丢掉 cache token，
+				// 而网关正是用它落 usage_records.cache_read/creation_tokens
+				// （客户端从事件算出来的 usage 又是对的，两边会不一致）。
 				if ev.InputTokens == 0 {
 					ev.InputTokens = prev.InputTokens
 				}
@@ -265,6 +263,16 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				if ev.CacheCreationTokens == 0 {
 					ev.CacheCreationTokens = prev.CacheCreationTokens
 				}
+				if ev.ReasoningTokens == 0 {
+					ev.ReasoningTokens = prev.ReasoningTokens
+				}
+				result.setUsage(translate.Usage{
+					InputTokens:         ev.InputTokens,
+					OutputTokens:        ev.OutputTokens,
+					CacheReadTokens:     ev.CacheReadTokens,
+					CacheCreationTokens: ev.CacheCreationTokens,
+					ReasoningTokens:     ev.ReasoningTokens,
+				})
 			}
 			select {
 			case ch <- ev:
@@ -382,6 +390,10 @@ func (e *UpstreamError) parseError() struct {
 	_ = json.Unmarshal(e.Body, &parsed)
 	return parsed.Error
 }
+
+// maxUpstreamErrorBody 限制上游错误响应体的读取上限（1 MiB，与 fetch.go /
+// balance.go 一致）。错误页动辄几 MB，无上限读进内存再回给客户端没有任何收益。
+const maxUpstreamErrorBody = 1 << 20
 
 func truncateUpstream(s string, n int) string {
 	if len(s) <= n {
