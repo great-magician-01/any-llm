@@ -63,8 +63,11 @@ func Load() (*Config, error) {
 		SessionSecretFile: envStr("ANY_LLM_SESSION_SECRET_FILE", "./.session-secret"),
 		SessionTTL:        envDuration("ANY_LLM_SESSION_TTL", 24*time.Hour),
 		BalanceInterval:   envDuration("ANY_LLM_BALANCE_INTERVAL", 10*time.Minute),
-		LogFile:           envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
-		LogLevel:          logLevel,
+		// LOG_FILE 用 allow-empty 语义：显式设成空串表示关闭文件日志（见
+		// AGENTS.md 的配置表）。用 envStr 会让空串回落到默认路径，于是"关闭
+		// 文件日志"这个已文档化的行为根本没法实现。
+		LogFile:  envAllowEmpty("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
+		LogLevel: logLevel,
 	}
 	cfg.DBType = normalizeDBType(cfg.DBType)
 	if cfg.MasterPassword == "admin" {
@@ -109,6 +112,15 @@ func loadOrCreateSecret(path string) (string, error) {
 
 func envStr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// envAllowEmpty 与 envStr 的区别只有一处：变量**存在但为空**时返回空串而不是
+// 默认值。用于那些"空串有独立含义"的设置（目前只有 ANY_LLM_LOG_FILE= 关闭文件日志）。
+func envAllowEmpty(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return def
