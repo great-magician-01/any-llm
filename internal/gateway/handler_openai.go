@@ -338,24 +338,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 		logger.Error("upstream call failed after stream header sent",
 			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "status", status, "err", msg, "in_format", inFormat)
-		if inFormat == "anthropic" {
-			payload, _ := json.Marshal(map[string]any{
-				"type":  "error",
-				"error": map[string]any{"type": errType, "message": msg},
-			})
-			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
-		} else if inFormat == "responses" {
-			payload, _ := json.Marshal(map[string]any{
-				"type":  "error",
-				"error": map[string]any{"type": errType, "message": msg},
-			})
-			w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
-		} else {
-			payload, _ := json.Marshal(map[string]any{
-				"error": map[string]any{"message": msg, "type": errType},
-			})
-			w.Write([]byte("data: " + string(payload) + "\n\n"))
-		}
+		writeStreamErrorFrame(w, inFormat, msg, errType)
 		flusher.Flush()
 		logger.Info("completion done",
 			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "stream", true,
@@ -384,28 +367,24 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 
 	if result.Response != nil {
-		// 非流式 JSON 应答：客户端拿到的响应 id 必须与会话 key 一致，
-		// 否则后续 previous_response_id 续接会 400。
+		// 上游无视 stream:true、直接回了非流式 JSON：把完整响应展开成 IR 流事件
+		// 再走同一条流式编码路径，客户端拿到的仍是**合法的 SSE 流**（带真实内容与
+		// usage）。直接写裸 JSON 不行——严格 SDK 只认 data:/event: 帧，裸 JSON 会被
+		// 当成无法解析的一行丢掉，客户端最终什么都拿不到。
+		// 客户端看到的响应 id 必须与会话 key 一致，否则 previous_response_id 续接会 400。
 		if sess != nil {
 			result.Response.ID = sess.respID
 		}
-		var out []byte
-		var encErr error
-		switch inFormat {
-		case "anthropic":
-			out, encErr = anthropic.EncodeResponse(result.Response)
-		case "responses":
-			out, encErr = responses.EncodeResponse(result.Response)
-		default:
-			out, encErr = openai.EncodeResponse(result.Response)
+		for _, ev := range translate.ResponseStreamEvents(result.Response) {
+			frames, err := encoder.Encode(ev)
+			if err != nil {
+				logger.Warn("stream non-stream response encode skipped", "in_format", inFormat, "type", ev.Type, "err", err)
+				continue
+			}
+			for _, f := range frames {
+				w.Write(f)
+			}
 		}
-		if encErr != nil {
-			logger.Error("stream non-stream response encode failed", "in_format", inFormat, "err", encErr)
-			g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, true, time.Since(winStart), "error")
-			rec.finish("error", result.Response.Usage, result.Response)
-			return
-		}
-		w.Write(out)
 		flusher.Flush()
 		usage := result.Usage()
 		g.recordUsage(key, u, realModel, inFormat, usage, true, time.Since(winStart), "ok")
@@ -424,6 +403,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	logger.Info("entering post-call stream loop", "elapsed_ms", time.Since(streamStart).Milliseconds())
 	blockStarted := make(map[int]bool)
 	clientGonePost := false
+	// upstreamSignalledErr 表示上游在流中间发过 error 事件（Anthropic 的
+	// event: error / Responses 的 response.failed）：已经给客户端写过带内错误帧，
+	// 此后不能再补结束帧，usage 必须记 error。
+	upstreamSignalledErr := false
 	for {
 		select {
 		case ev, ok := <-result.Stream:
@@ -436,6 +419,19 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 				rec.acc.Add(ev)
 			}
 			logger.FileOnly().Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(streamStart).Milliseconds())
+			// 上游在流中间报错：三个出站编码器都没有 error 分支——openai /
+			// responses 出站会把这个事件整个丢掉，anthropic 出站只会发出一个没有
+			// error 明细的空壳帧；两条路都让客户端拿不到可用的错误信息与结束信号，
+			// usage 还会被记成 ok。这里复用「全部候选失败」的带内错误帧，按客户端
+			// 格式补一帧并结束本请求。
+			if ev.Type == "error" {
+				logger.Warn("upstream stream error event, ending stream",
+					"upstream", u.Name, "model", realModel, "in_format", inFormat, "elapsed_ms", time.Since(streamStart).Milliseconds())
+				writeStreamErrorFrame(w, inFormat, "upstream stream error", "upstream_error")
+				flusher.Flush()
+				upstreamSignalledErr = true
+				goto done
+			}
 			// Synthesize content_block_start if upstream omitted it (e.g. deepseek).
 			// Without this, Anthropic SDK aborts on receiving content_block_delta
 			// for an index that never had content_block_start.
@@ -484,8 +480,9 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 done:
 	// 让 responses 编码器补发 response.completed（上游若没发 message_stop），
-	// 成功后把累积输出写入会话存储。
-	if !clientGonePost {
+	// 成功后把累积输出写入会话存储。上游已发 error 事件时跳过 Flush：一次失败的
+	// 流不能被补成「正常完成」。
+	if !clientGonePost && !upstreamSignalledErr {
 		if enc, ok := encoder.(interface {
 			Flush() [][]byte
 			Content() []translate.ContentBlock
@@ -506,7 +503,7 @@ done:
 
 	usage := result.Usage()
 	status := "ok"
-	if clientGonePost {
+	if clientGonePost || upstreamSignalledErr {
 		status = "error"
 	} else if err := result.StreamErr(); err != nil {
 		status = "error"
@@ -538,6 +535,25 @@ done:
 		"duration_ms", callDur.Milliseconds(),
 		"status", status,
 	)
+}
+
+// writeStreamErrorFrame 在 200 头已经 flush 之后，按客户端格式写一个「带内」
+// 错误帧（此时不可能再回 HTTP 错误码）。openai 出站用 data: {"error":{...}}，
+// anthropic / responses 出站用规范的 event: error + data。两条触发路径共用：
+// 全部候选失败，以及上游在流中间发 error 事件。
+func writeStreamErrorFrame(w http.ResponseWriter, inFormat, message, errType string) {
+	if inFormat == "openai" {
+		payload, _ := json.Marshal(map[string]any{
+			"error": map[string]any{"message": message, "type": errType},
+		})
+		w.Write([]byte("data: " + string(payload) + "\n\n"))
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": errType, "message": message},
+	})
+	w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
 }
 
 func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {

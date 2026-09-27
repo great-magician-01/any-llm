@@ -137,6 +137,34 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 
 	result := &Result{}
 
+	// 上游无视 stream:true、直接以 JSON 应答（部分兼容层会这样）时，按非流式解码
+	// 并填 result.Response，让网关走「完整响应」分支把内容转给客户端。否则流式
+	// 解析器会把整个 JSON 当成一行 SSE 丢掉，客户端拿到一个空的 200 流。
+	// 判据只认明确的 JSON Content-Type：缺失或非标准头的上游仍走流式解析，不能
+	// 因为头不规范就把真正的 SSE 流缓冲成 JSON。
+	if irReq.Stream && isJSONContentType(resp.Header.Get("Content-Type")) {
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		var irResp *translate.Response
+		switch u.Format {
+		case "openai":
+			irResp, err = openai.DecodeResponse(body)
+		case "anthropic":
+			irResp, err = anthropic.DecodeResponse(body)
+		case "responses":
+			irResp, err = responses.DecodeResponse(body)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+		result.Response = irResp
+		result.setUsage(irResp.Usage)
+		return result, nil
+	}
+
 	if !irReq.Stream {
 		defer resp.Body.Close()
 		respBody, err := io.ReadAll(resp.Body)
@@ -394,6 +422,13 @@ func (e *UpstreamError) parseError() struct {
 // maxUpstreamErrorBody 限制上游错误响应体的读取上限（1 MiB，与 fetch.go /
 // balance.go 一致）。错误页动辄几 MB，无上限读进内存再回给客户端没有任何收益。
 const maxUpstreamErrorBody = 1 << 20
+
+// isJSONContentType 报告上游是否明确以 JSON 应答（application/json、
+// application/problem+json 等）。只用于「流式请求被非流式应答」的识别。
+func isJSONContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "application/json") || strings.Contains(ct, "+json")
+}
 
 func truncateUpstream(s string, n int) string {
 	if len(s) <= n {
