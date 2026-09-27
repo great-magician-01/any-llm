@@ -129,6 +129,21 @@ func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, erro
 	return out, rows.Err()
 }
 
+// TokenWindows 返回 now 所在的本地日窗口 [dayStart, dayEnd) 与本地月窗口
+// [monthStart, monthEnd)。它同时被网关的配额检查（key 与 upstream 两侧）和管理端
+// 的用量展示使用——公式只留这一份，避免三处各写一遍。
+//
+// 端点用 AddDate 而不是 Add(24h)：夏令时切换日不是 24 小时。固定 24h 会让拨快日
+// 的窗口多出一小时（次日 00:00–01:00 的用量被算进今天），拨慢日少一小时
+// （当天 23:00–24:00 既不算今天也不算明天——那一小时的用量对日限额完全免费）。
+func TokenWindows(now time.Time) (dayStart, dayEnd, monthStart, monthEnd time.Time) {
+	dayStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd = dayStart.AddDate(0, 0, 1)
+	monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	monthEnd = monthStart.AddDate(0, 1, 0)
+	return dayStart, dayEnd, monthStart, monthEnd
+}
+
 // SumTokens returns the total tokens consumed in the half-open time window
 // [from, to) for the given ext key or upstream. Pass a non-nil extKeyID to
 // aggregate by ext key, or a non-nil upstreamID to aggregate by upstream.

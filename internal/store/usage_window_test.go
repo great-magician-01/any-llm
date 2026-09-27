@@ -16,16 +16,12 @@ import (
 // 而 store.SumTokens 的契约是**半开区间 [from, to)**。两侧合起来的业务规则是：
 //   - 昨天的用量不计入今天的日窗口，但（只要昨天还在本月）计入本月月窗口；
 //   - 窗口边界「含起点、不含终点」：今天 0 点算今天，下月 1 日 0 点不算本月；
-//   - 日窗口宽度固定 24 小时（dayStart.Add(24h)），在夏令时切换日会与「本地
-//     午夜到本地午夜」差 1 小时——见 TestSumTokensDayWindowDSTSkew。
-
-// uwWindows 复刻网关/管理端的窗口公式。生产代码用 time.Local；这里用
-// now.Location()，让 DST 用例把 time.Local 换成换时区后仍然一致。
-func uwWindows(now time.Time) (dayStart, dayEnd, monthStart, monthEnd time.Time) {
-	dayStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-	return dayStart, dayStart.Add(24 * time.Hour), monthStart, monthStart.AddDate(0, 1, 0)
-}
+//   - 日窗口的终点是**次日本地 0 点**（store.TokenWindows 用 AddDate(0,0,1)），
+//     所以夏令时切换日（23/25 小时）也覆盖完整的一天——见
+//     TestSumTokensDayWindowDSTSkew。
+//
+// 窗口公式只有一份（store.TokenWindows，网关配额与管理端展示共用），这里直接
+// 调用它，不做复刻：复刻的副本无法在公式变化时报警。
 
 // 固定日期（2026-03-15）的日/月窗口边界：上月最后一天、本月第一天、昨天、
 // 今天 0 点、今天末刻、次日 0 点、本月最后一天、下月 1 日 0 点。
@@ -38,7 +34,7 @@ func TestSumTokensWindowMonthBoundaries(t *testing.T) {
 	}
 
 	ref := time.Date(2026, 3, 15, 12, 0, 0, 0, time.Local)
-	dayStart, dayEnd, monthStart, monthEnd := uwWindows(ref)
+	dayStart, dayEnd, monthStart, monthEnd := TokenWindows(ref)
 	if got := dayStart.Format("2006-01-02 15:04"); got != "2026-03-15 00:00" {
 		t.Fatalf("dayStart=%s", got)
 	}
@@ -135,7 +131,7 @@ func TestSumTokensWindowTodayVersusYesterday(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			dayStart, dayEnd, monthStart, monthEnd := uwWindows(ref.now)
+			dayStart, dayEnd, monthStart, monthEnd := TokenWindows(ref.now)
 			// 两条记录相隔 24 小时，任何一天跑都不会撞在同一时刻（月首那天
 			// 「昨天」属于上月，规则退化为「两个窗口都不计」，下面显式分支）。
 			todayNoon := dayStart.Add(12 * time.Hour)
@@ -199,10 +195,13 @@ func TestSumTokensWindowTodayVersusYesterday(t *testing.T) {
 	}
 }
 
-// 夏令时切换日的窗口行为（记录现状，不是期望的修正）：
-// 生产公式把日窗口宽度固定为 24h（dayStart.Add(24h)），而不是「到次日本地 0 点」。
-// 于是拨快那天窗口多出 1 小时（次日 00:00–01:00 的用量算进「今天」），拨慢那天
-// 少 1 小时（当天 23:00–24:00 的用量既不算今天也不算明天）。
+// 夏令时切换日的窗口行为（回归位）：日窗口是「本地午夜到次日本地午夜」，
+// 而不是固定 24 小时。固定 24h 会让拨快日的窗口多出一小时（次日 00:00–01:00
+// 的用量被算进「今天」），拨慢日少一小时（当天 23:00–24:00 既不算今天也不算
+// 明天 —— 那一小时的用量对日限额完全免费，可被用来绕过日限额）。
+//
+// 之前窗口公式在网关/管理端各写一遍、store 里只能复刻一份来测，所以这条
+// 缺陷在三处同时存在且无人发现；现在三处都走 store.TokenWindows。
 func TestSumTokensDayWindowDSTSkew(t *testing.T) {
 	old := time.Local
 	loc, err := time.LoadLocation("America/New_York")
@@ -225,57 +224,62 @@ func TestSumTokensDayWindowDSTSkew(t *testing.T) {
 		}
 	}
 
-	// --- 拨快日：2026-03-08 美东 02:00 → 03:00 ---
+	// --- 拨快日：2026-03-08 美东 02:00 → 03:00（这一天只有 23 小时）---
 	spring := time.Date(2026, 3, 8, 12, 0, 0, 0, time.Local)
-	dayStart, dayEnd, _, _ := uwWindows(spring)
+	dayStart, dayEnd, _, _ := TokenWindows(spring)
 	if got := dayStart.Format("2006-01-02 15:04 -0700"); got != "2026-03-08 00:00 -0500" {
 		t.Fatalf("拨快日 dayStart=%s", got)
 	}
-	if got := dayEnd.Format("2006-01-02 15:04 -0700"); got != "2026-03-09 01:00 -0400" {
-		t.Fatalf("拨快日 dayEnd=%s，期望次日 01:00（dayStart.Add(24h) 的结果）", got)
-	}
-	if nextMidnight := time.Date(2026, 3, 9, 0, 0, 0, 0, time.Local); dayEnd.Equal(nextMidnight) {
-		t.Fatal("dayEnd 落在次日 0 点：公式或时区数据与预期不符")
+	if got := dayEnd.Format("2006-01-02 15:04 -0700"); got != "2026-03-09 00:00 -0400" {
+		t.Fatalf("拨快日 dayEnd=%s，期望次日本地 0 点", got)
 	}
 	insert(time.Date(2026, 3, 8, 12, 0, 0, 0, time.Local), 5)  // 日窗口内
 	insert(time.Date(2026, 3, 8, 23, 30, 0, 0, time.Local), 7) // 日窗口内
-	insert(time.Date(2026, 3, 9, 0, 30, 0, 0, time.Local), 11) // 次日 0:30：本地已是「明天」，但仍在 24h 窗口内
-	insert(time.Date(2026, 3, 9, 1, 30, 0, 0, time.Local), 13) // 窗口外
+	insert(time.Date(2026, 3, 9, 0, 30, 0, 0, time.Local), 11) // 已是次日：不在今天窗口内
+	insert(time.Date(2026, 3, 9, 1, 30, 0, 0, time.Local), 13) // 更是在窗口外
 	got, err := SumTokens(d, &k.ID, nil, dayStart, dayEnd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 23 {
-		t.Fatalf("拨快日日窗口 sum=%d，期望 23（5+7+11）：固定 24h 窗口会多算次日 00:00–01:00", got)
+	if got != 12 {
+		t.Fatalf("拨快日日窗口 sum=%d，期望 12（5+7）：窗口终点是次日本地 0 点，不能多算次日 00:00–01:00", got)
+	}
+	// 次日 0:30 的用量属于次日窗口（窗口之间不重不漏）。
+	nextStart, nextEnd, _, _ := TokenWindows(time.Date(2026, 3, 9, 12, 0, 0, 0, time.Local))
+	got, err = SumTokens(d, &k.ID, nil, nextStart, nextEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 24 {
+		t.Fatalf("次日窗口 sum=%d，期望 24（11+13）", got)
 	}
 
-	// --- 拨慢日：2026-11-01 美东 02:00 → 01:00 ---
+	// --- 拨慢日：2026-11-01 美东 02:00 → 01:00（这一天有 25 小时）---
 	fall := time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local)
-	fStart, fEnd, _, _ := uwWindows(fall)
+	fStart, fEnd, _, _ := TokenWindows(fall)
 	if got := fStart.Format("2006-01-02 15:04 -0700"); got != "2026-11-01 00:00 -0400" {
 		t.Fatalf("拨慢日 dayStart=%s", got)
 	}
-	if got := fEnd.Format("2006-01-02 15:04 -0700"); got != "2026-11-01 23:00 -0500" {
-		t.Fatalf("拨慢日 dayEnd=%s，期望当天 23:00", got)
+	if got := fEnd.Format("2006-01-02 15:04 -0700"); got != "2026-11-02 00:00 -0500" {
+		t.Fatalf("拨慢日 dayEnd=%s，期望次日本地 0 点（不是当天 23:00）", got)
 	}
 	insert(time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local), 100)
 	insert(time.Date(2026, 11, 1, 22, 30, 0, 0, time.Local), 200)
-	// 本地 23:30 仍是「今天」，但窗口已在 23:00 结束 → 少算一小时
-	insert(time.Date(2026, 11, 1, 23, 30, 0, 0, time.Local), 400)
+	insert(time.Date(2026, 11, 1, 23, 30, 0, 0, time.Local), 400) // 本地仍是当天，必须计入
 	got, err = SumTokens(d, &k.ID, nil, fStart, fEnd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 300 {
-		t.Fatalf("拨慢日日窗口 sum=%d，期望 300（100+200）：固定 24h 窗口会漏掉当天 23:00–24:00", got)
+	if got != 700 {
+		t.Fatalf("拨慢日日窗口 sum=%d，期望 700（100+200+400）：不能漏掉当天 23:00–24:00（那一小时曾对日限额完全免费）", got)
 	}
-	// 这一小时的用量在「明天」的窗口里也不会出现（明天从次日 0 点开始）
-	nextDay := fStart.AddDate(0, 0, 1)
-	got, err = SumTokens(d, &k.ID, nil, nextDay, nextDay.Add(24*time.Hour))
+	// 那 25 小时被今天完整覆盖，次日窗口必须为空（不重不漏）。
+	nextStart, nextEnd, _, _ = TokenWindows(time.Date(2026, 11, 2, 12, 0, 0, 0, time.Local))
+	got, err = SumTokens(d, &k.ID, nil, nextStart, nextEnd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != 0 {
-		t.Fatalf("次日窗口 sum=%d，期望 0：拨慢日 23:00–24:00 的用量两头都不算", got)
+		t.Fatalf("次日窗口 sum=%d，期望 0：拨慢日的 23:00–24:00 必须落在当天窗口里", got)
 	}
 }

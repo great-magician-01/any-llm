@@ -301,11 +301,7 @@ func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *sto
 // quotas. A limit of 0 means unbounded. Returns a *limitError when exceeded,
 // or a wrapped error on DB failure.
 func (g *Gateway) checkKeyLimits(k *store.ExtKey) error {
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	dayEnd := dayStart.Add(24 * time.Hour)
-	monthEnd := monthStart.AddDate(0, 1, 0)
+	dayStart, dayEnd, monthStart, monthEnd := store.TokenWindows(time.Now())
 
 	if k.DailyTokenLimit > 0 {
 		used, err := store.SumTokens(g.db, &k.ID, nil, dayStart, dayEnd)
@@ -334,11 +330,7 @@ func (g *Gateway) checkKeyLimits(k *store.ExtKey) error {
 // token quotas. A limit of 0 means unbounded. Returns a *limitError when
 // exceeded, or a wrapped error on DB failure.
 func (g *Gateway) checkUpstreamLimits(u *store.Upstream) error {
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	dayEnd := dayStart.Add(24 * time.Hour)
-	monthEnd := monthStart.AddDate(0, 1, 0)
+	dayStart, dayEnd, monthStart, monthEnd := store.TokenWindows(time.Now())
 
 	if u.DailyTokenLimit > 0 {
 		used, err := store.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)

@@ -63,11 +63,7 @@ func (a *API) usageUpstreamTotals(w http.ResponseWriter, r *http.Request, id int
 }
 
 func writeUsageTotals(w http.ResponseWriter, a *API, extKeyID, upstreamID *int64) {
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	dayEnd := dayStart.Add(24 * time.Hour)
-	monthEnd := monthStart.AddDate(0, 1, 0)
+	dayStart, dayEnd, monthStart, monthEnd := store.TokenWindows(time.Now())
 	daily, err := store.SumTokens(a.db, extKeyID, upstreamID, dayStart, dayEnd)
 	if err != nil {
 		logger.Error("admin: usage daily totals failed", "ext_key_id", extKeyID, "upstream_id", upstreamID, "err", err)
