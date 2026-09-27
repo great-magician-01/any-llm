@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
-	"strings"
 	"syscall"
 	"time"
 
@@ -127,38 +125,9 @@ func run() int {
 		logger.Error("frontend fs failed", "err", err)
 		return 1
 	}
-	spa := http.FileServer(http.FS(frontendFS))
 
-	mux := http.NewServeMux()
-	mux.Handle("/v1/", gateway.LoggingMiddleware(gw, "gateway"))
-	mux.Handle("/api/admin/", gateway.LoggingMiddleware(adminHandler, "admin"))
-	// Go 1.22+: "/" only matches the exact root path; use /{$} for
-	// that and /{pathname...} as the catch-all.
-	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-		r.URL.Path = "/"
-		spa.ServeHTTP(w, r)
-	})
-	mux.HandleFunc("/{pathname...}", func(w http.ResponseWriter, r *http.Request) {
-		rel := r.PathValue("pathname")
-		if rel != "" {
-			if f, err := frontendFS.Open(rel); err == nil {
-				f.Close()
-				if strings.HasPrefix(rel, "assets/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				}
-				spa.ServeHTTP(w, r)
-				return
-			}
-			if path.Ext(rel) != "" {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-		r.URL.Path = "/"
-		spa.ServeHTTP(w, r)
-	})
+	// 路由组装见 mux.go（newMux 单独成函数以便测试 SPA 的缓存与回退契约）。
+	mux := newMux(frontendFS, gw, adminHandler)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
