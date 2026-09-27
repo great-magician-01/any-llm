@@ -159,14 +159,7 @@ func run() int {
 	}
 
 	logger.Info("shutdown signal received, draining connections", "timeout", shutdownTimeout.String())
-	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		// Shutdown only fails when the drain deadline passes (e.g. long-lived
-		// streams still open); force-close and exit cleanly.
-		logger.Warn("graceful drain timed out, force-closing connections", "err", err)
-		_ = srv.Close()
-	}
+	drainAndClose(srv, shutdownTimeout)
 	logger.Info("server stopped")
 	return 0
 }
