@@ -11,7 +11,8 @@ export function yamlScalar(v: string): string {
     !/^\s/.test(v) && // 无前导空白
     !/\s$/.test(v) && // 无尾部空白
     !/[\x00-\x1f\x7f]/.test(v) && // 无控制字符/换行
-    !/[:#] /.test(v) // 无 ': ' / ' #'（行内映射/注释）
+    !/[:#] /.test(v) && // 无 ': ' / '# '（行内映射）
+    !/\s#/.test(v) // 无「空白 + #」：YAML 从这里起当行内注释，值会被悄悄截断
   if (plain) return v
   return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"'
 }
