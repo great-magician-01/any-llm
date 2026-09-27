@@ -80,6 +80,11 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 			evt.RawUsage = raw.Usage
 		}
 		return evt, nil
+	case "error":
+		// 上游过载/超时会发 event: error。必须作为 error 事件透传，否则客户端
+		// 拿到的是一个没有错误帧、也没有 message_stop 的截断流（responses
+		// 解码器早已这么做，这里是漏掉的对称实现）。
+		return &translate.StreamEvent{Type: "error"}, nil
 	case "message_stop":
 		return &translate.StreamEvent{Type: "message_stop"}, nil
 	}
@@ -274,6 +279,12 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 		var tp rawTextPart
 		_ = json.Unmarshal(raw, &tp)
 		return &translate.ContentBlock{Type: "text", Text: tp.Text}, nil
+	case "image":
+		// 流式 content_block_start 也要认图片，否则图片块落到 default 被当成
+		// 未知块塞进 Extra（source 丢失）。
+		var ip rawImagePart
+		_ = json.Unmarshal(raw, &ip)
+		return &translate.ContentBlock{Type: "image", Image: anthropicImage(ip.Source)}, nil
 	case "thinking":
 		var tb struct {
 			Type      string `json:"type"`

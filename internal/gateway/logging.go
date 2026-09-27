@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 )
@@ -73,5 +74,11 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "...(truncated, total=" + strconv.Itoa(len(s)) + ")"
+	// 不要在 UTF-8 字符中间截断：这里截的是上游错误消息（errors.go 用 500），
+	// 中文/emoji 很常见，按字节切会往日志里写入非法 UTF-8，日志采集端会报错。
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...(truncated, total=" + strconv.Itoa(len(s)) + ")"
 }

@@ -17,6 +17,8 @@ any-llm.db-wal
 # Frontend
 web/node_modules/
 web/dist/
+# vitest --coverage 输出
+web/coverage/
 
 # Embedded frontend dist (auto-copied on build)
 cmd/any-llm/web/dist/

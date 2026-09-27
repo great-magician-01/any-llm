@@ -117,7 +117,7 @@ func decodeParts(parts []rawPart) ([]translate.ContentBlock, error) {
 		case "input_text":
 			blocks = append(blocks, translate.ContentBlock{Type: "text", Text: p.Text})
 		case "input_image":
-			blocks = append(blocks, translate.ContentBlock{Type: "image", Image: &translate.Image{URL: p.ImageURL}})
+			blocks = append(blocks, translate.ContentBlock{Type: "image", Image: translate.NewImage(p.ImageURL)})
 		default:
 			return nil, fmt.Errorf("responses decode request: unsupported content part type %q", p.Type)
 		}

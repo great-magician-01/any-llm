@@ -121,7 +121,9 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
-		errBody, err := io.ReadAll(resp.Body)
+		// 错误 body 也要有读上限：厂商的错误页可能有几 MB，整体读进内存再原样
+		// 回给客户端毫无意义（fetch.go / balance.go 同样用 1 MiB 上限 + 512 截断日志）。
+		errBody, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBody))
 		if err != nil {
 			logger.Warn("upstream error: failed to read error body", "url", url, "status", resp.StatusCode, "err", err)
 		}
@@ -134,6 +136,34 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 	}
 
 	result := &Result{}
+
+	// 上游无视 stream:true、直接以 JSON 应答（部分兼容层会这样）时，按非流式解码
+	// 并填 result.Response，让网关走「完整响应」分支把内容转给客户端。否则流式
+	// 解析器会把整个 JSON 当成一行 SSE 丢掉，客户端拿到一个空的 200 流。
+	// 判据只认明确的 JSON Content-Type：缺失或非标准头的上游仍走流式解析，不能
+	// 因为头不规范就把真正的 SSE 流缓冲成 JSON。
+	if irReq.Stream && isJSONContentType(resp.Header.Get("Content-Type")) {
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		var irResp *translate.Response
+		switch u.Format {
+		case "openai":
+			irResp, err = openai.DecodeResponse(body)
+		case "anthropic":
+			irResp, err = anthropic.DecodeResponse(body)
+		case "responses":
+			irResp, err = responses.DecodeResponse(body)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decode response: %w", err)
+		}
+		result.Response = irResp
+		result.setUsage(irResp.Usage)
+		return result, nil
+	}
 
 	if !irReq.Stream {
 		defer resp.Body.Close()
@@ -246,16 +276,12 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				})
 			} else if ev.Type == "message_delta" {
 				prev := result.Usage()
-				result.setUsage(translate.Usage{
-					InputTokens:         prev.InputTokens,
-					OutputTokens:        ev.OutputTokens,
-					CacheReadTokens:     ev.CacheReadTokens,
-					CacheCreationTokens: ev.CacheCreationTokens,
-					ReasoningTokens:     ev.ReasoningTokens,
-				})
 				// Anthropic message_delta carries only output_tokens; input_tokens
-				// arrived in message_start. Propagate them onto the event so
-				// cross-format encoders (e.g. OpenAI usage chunk) see both values.
+				// and cache_* arrived in message_start. 先把 message_start 的值回填到
+				// 事件上（跨格式编码器要读它们），再用同一份值更新聚合 usage——
+				// 直接用事件里的零值覆盖会让 Result.Usage() 丢掉 cache token，
+				// 而网关正是用它落 usage_records.cache_read/creation_tokens
+				// （客户端从事件算出来的 usage 又是对的，两边会不一致）。
 				if ev.InputTokens == 0 {
 					ev.InputTokens = prev.InputTokens
 				}
@@ -265,6 +291,16 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				if ev.CacheCreationTokens == 0 {
 					ev.CacheCreationTokens = prev.CacheCreationTokens
 				}
+				if ev.ReasoningTokens == 0 {
+					ev.ReasoningTokens = prev.ReasoningTokens
+				}
+				result.setUsage(translate.Usage{
+					InputTokens:         ev.InputTokens,
+					OutputTokens:        ev.OutputTokens,
+					CacheReadTokens:     ev.CacheReadTokens,
+					CacheCreationTokens: ev.CacheCreationTokens,
+					ReasoningTokens:     ev.ReasoningTokens,
+				})
 			}
 			select {
 			case ch <- ev:
@@ -381,6 +417,17 @@ func (e *UpstreamError) parseError() struct {
 	}
 	_ = json.Unmarshal(e.Body, &parsed)
 	return parsed.Error
+}
+
+// maxUpstreamErrorBody 限制上游错误响应体的读取上限（1 MiB，与 fetch.go /
+// balance.go 一致）。错误页动辄几 MB，无上限读进内存再回给客户端没有任何收益。
+const maxUpstreamErrorBody = 1 << 20
+
+// isJSONContentType 报告上游是否明确以 JSON 应答（application/json、
+// application/problem+json 等）。只用于「流式请求被非流式应答」的识别。
+func isJSONContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "application/json") || strings.Contains(ct, "+json")
 }
 
 func truncateUpstream(s string, n int) string {

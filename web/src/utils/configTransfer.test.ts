@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { configFileName, parseConfigFile, describeConfigFile, describeImportResult } from './configTransfer'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from './configTransfer'
 import type { ConfigFile, ImportResult } from '../api/config'
 
 describe('configFileName', () => {
@@ -34,6 +34,14 @@ describe('parseConfigFile', () => {
   it('缺省版本视为 v1 接受（手写文件）', () => {
     expect(() => parseConfigFile('{"upstreams":[],"aliases":[]}')).not.toThrow()
   })
+
+  it('拒绝数组 / null / 基本类型（合法 JSON 但不是配置对象）', () => {
+    // 手选错文件（比如选了个 JSON 数组）时必须给出和「结构不符」同一句人话
+    expect(() => parseConfigFile('[]')).toThrow('配置文件格式不正确')
+    expect(() => parseConfigFile('null')).toThrow('配置文件格式不正确')
+    expect(() => parseConfigFile('123')).toThrow('配置文件格式不正确')
+    expect(() => parseConfigFile('"x"')).toThrow('配置文件格式不正确')
+  })
 })
 
 describe('describeConfigFile', () => {
@@ -61,5 +69,57 @@ describe('describeImportResult', () => {
     expect(s).toContain('覆盖 3')
     expect(s).toContain('跳过 1')
     expect(s).toContain('丢弃绑定 2')
+  })
+})
+
+/**
+ * downloadJSON 守的规则：导出的是给人看/手改的 JSON（缩进 2 空格）、文件名带时间戳、
+ * 触发浏览器下载后立刻回收 object URL（不回收就是一次导出泄漏一个 blob）。
+ */
+describe('downloadJSON', () => {
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+
+  afterEach(() => {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    vi.restoreAllMocks()
+  })
+
+  it('用 pretty JSON 建 blob 并触发下载，结束后回收 URL', async () => {
+    const blobs: Blob[] = []
+    const createObjectURL = vi.fn((b: Blob) => {
+      blobs.push(b)
+      return 'blob:any-llm-config'
+    })
+    const revokeObjectURL = vi.fn()
+    URL.createObjectURL = createObjectURL as unknown as typeof URL.createObjectURL
+    URL.revokeObjectURL = revokeObjectURL
+
+    const clicked: HTMLAnchorElement[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push(this)
+    })
+
+    const payload = { version: 1, upstreams: [{ name: 'a' }], aliases: [] }
+    downloadJSON(payload, 'any-llm-config-20260902-030405.json')
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(blobs[0].type).toBe('application/json')
+    // 缩进 2 空格：导出文件是给人看/手改的
+    expect(await blobs[0].text()).toBe(JSON.stringify(payload, null, 2))
+    expect(clicked).toHaveLength(1)
+    expect(clicked[0].download).toBe('any-llm-config-20260902-030405.json')
+    expect(clicked[0].href).toContain('blob:any-llm-config')
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:any-llm-config')
+  })
+
+  it('没有可序列化内容时也不抛错（导出空配置）', () => {
+    // 新装实例没有上游/别名，导出空配置也必须能下载
+    URL.createObjectURL = vi.fn(() => 'blob:empty') as unknown as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn()
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    expect(() => downloadJSON({ version: 1, upstreams: [], aliases: [] }, 'x.json')).not.toThrow()
   })
 })

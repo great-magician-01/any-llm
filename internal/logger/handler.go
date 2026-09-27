@@ -88,6 +88,12 @@ func (h *handler) Handle(_ context.Context, r slog.Record) error {
 		appendAttr(&attrBuf, a)
 	}
 	r.Attrs(func(a slog.Attr) bool {
+		// WithGroup 必须给后续的记录属性也加前缀（slog 的约定）：
+		// logger.WithGroup("g").Info("m", "k", "v") 的 k 要写成 g.k，
+		// 否则分组只对 With(...) 生效，日志字段名会自相矛盾。
+		if h.group != "" {
+			a.Key = h.group + "." + a.Key
+		}
 		appendAttr(&attrBuf, a)
 		return true
 	})
