@@ -139,7 +139,7 @@ func blockToOpenAIPart(b translate.ContentBlock) map[string]any {
 	case "text":
 		return map[string]any{"type": "text", "text": b.Text}
 	case "image":
-		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": b.Image.URL}}
+		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": b.Image.SourceURL()}}
 	}
 	return map[string]any{"type": "text", "text": ""}
 }

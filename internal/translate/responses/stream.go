@@ -239,20 +239,38 @@ type StreamEncoder struct {
 	thinkBuf   map[int]string
 	toolMeta   map[int]*translate.ToolUse // IR block index -> call_id/name
 	items      map[int]map[string]any     // output_index -> 最终 item（completed 用）
+	// indexRemap 把 IR 块索引重排为 0 起连续的输出索引。OpenAI 上游的
+	// 「纯工具调用」轮次会让首个 tool_use 落在 IR index 1（index 0 的文本块
+	// 从未打开），而 Responses 协议的 output_index 就是 response.output 数组
+	// 的下标 —— 直接透传会让客户端看到「数组里只有一个 item，但 output_index=1」。
+	indexRemap map[int]int
+	nextIdx    int
+}
+
+// remapIndex 返回 IR 块索引对应的输出索引，首次见到时分配下一个连续槽位。
+func (e *StreamEncoder) remapIndex(irIdx int) int {
+	if out, ok := e.indexRemap[irIdx]; ok {
+		return out
+	}
+	out := e.nextIdx
+	e.indexRemap[irIdx] = out
+	e.nextIdx++
+	return out
 }
 
 func NewStreamEncoder(model, id string) *StreamEncoder {
 	return &StreamEncoder{
-		model:     model,
-		id:        id,
-		created:   time.Now().Unix(),
-		blockKind: map[int]string{},
-		itemIDs:   map[int]string{},
-		textBuf:   map[int]string{},
-		toolArgs:  map[int]string{},
-		thinkBuf:  map[int]string{},
-		toolMeta:  map[int]*translate.ToolUse{},
-		items:     map[int]map[string]any{},
+		model:      model,
+		id:         id,
+		created:    time.Now().Unix(),
+		blockKind:  map[int]string{},
+		itemIDs:    map[int]string{},
+		textBuf:    map[int]string{},
+		toolArgs:   map[int]string{},
+		indexRemap: map[int]int{},
+		thinkBuf:   map[int]string{},
+		toolMeta:   map[int]*translate.ToolUse{},
+		items:      map[int]map[string]any{},
 	}
 }
 
@@ -278,7 +296,7 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		if evt.Block == nil {
 			return nil, nil
 		}
-		idx := evt.Index
+		idx := e.remapIndex(evt.Index)
 		switch evt.Block.Type {
 		case "text":
 			e.blockKind[idx] = "text"
@@ -340,7 +358,7 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		if evt.Delta == nil {
 			return nil, nil
 		}
-		idx := evt.Index
+		idx := e.remapIndex(evt.Index)
 		switch evt.Delta.Type {
 		case "text_delta":
 			// ensureItemStarted 返回合成的 added/part 帧，必须排在 delta 之前
@@ -374,7 +392,7 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		return nil, nil
 
 	case "content_block_stop":
-		idx := evt.Index
+		idx := e.remapIndex(evt.Index)
 		switch e.blockKind[idx] {
 		case "text":
 			text := e.textBuf[idx]
@@ -424,6 +442,13 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 
 	case "message_delta":
 		e.usageOut = evt.OutputTokens
+		// OpenAI 与 Responses 上游的提示 token 只随最后一个 usage-only chunk /
+		// completed 事件到达（即这里的 message_delta）——Anthropic 上游才会在
+		// message_start 里给出。不在这里读，OpenAI→Responses 的流式
+		// response.completed.usage.input_tokens 会恒为 0。
+		if evt.InputTokens > 0 {
+			e.usageIn = evt.InputTokens
+		}
 		if evt.CacheReadTokens > 0 {
 			e.cacheRead = evt.CacheReadTokens
 		}
