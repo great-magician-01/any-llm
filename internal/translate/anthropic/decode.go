@@ -251,6 +251,9 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 		return nil, err
 	}
 	resp.Content = blocks
+	if len(rr.SafeguardResults) > 0 {
+		resp.Extra = map[string]any{"safeguard_results": json.RawMessage(rr.SafeguardResults)}
+	}
 	return resp, nil
 }
 

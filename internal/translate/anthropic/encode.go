@@ -230,6 +230,13 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 			"cache_read_input_tokens":     resp.Usage.CacheReadTokens,
 		},
 	}
+	// Same-format pass-through of fields we don't model in IR (e.g.
+	// Claude Code's server-side classifier verdicts in `safeguard_results`).
+	for k, v := range resp.Extra {
+		if _, exists := out[k]; !exists {
+			out[k] = v
+		}
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic encode response: %w", err)

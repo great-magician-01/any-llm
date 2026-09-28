@@ -79,6 +79,18 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 			evt.CacheCreationTokens = u.CacheCreationInputTokens
 			evt.RawUsage = raw.Usage
 		}
+		// Preserve raw delta fields we don't model (e.g. Claude Code's
+		// `safeguard_results`) so they survive the same-format round trip.
+		if len(raw.Delta) > 0 {
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(raw.Delta, &m); err == nil {
+				delete(m, "stop_reason")
+				delete(m, "stop_sequence")
+				if len(m) > 0 {
+					evt.DeltaExtras = m
+				}
+			}
+		}
 		return evt, nil
 	case "error":
 		// 上游过载/超时会发 event: error。必须作为 error 事件透传，否则客户端
@@ -155,6 +167,13 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 		d := map[string]any{
 			"stop_reason":   mapStopReasonToAnthropic(evt.StopReason),
 			"stop_sequence": nil,
+		}
+		// Merge raw delta fields we didn't model (e.g. Claude Code's
+		// `safeguard_results`) back into the delta object.
+		for k, v := range evt.DeltaExtras {
+			if _, exists := d[k]; !exists {
+				d[k] = v
+			}
 		}
 		payload["delta"] = d
 		if len(evt.RawUsage) > 0 {
