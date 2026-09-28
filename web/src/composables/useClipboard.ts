@@ -2,17 +2,30 @@ import { useMessage } from 'naive-ui'
 
 /**
  * 复制文本到剪贴板并弹出反馈。优先 navigator.clipboard（仅 HTTPS / localhost 可用），
- * 失败时退化到 execCommand。两个 Keys 皮肤和使用文档抽屉共用这一份。
+ * 失败时退化到 execCommand。使用文档抽屉和两套概览页共用这一份
+ * （两个 Keys 皮肤仍各有一份等价的本地实现，待后续合并）。
+ *
+ * msgs 允许调用方覆盖提示文案：复制的内容本身就是用户需要的信息时（如 Base URL），
+ * 失败提示要把原文带上，用户才知道该手动复制什么。
  */
+export interface CopyMessages {
+  /** 成功提示，默认「已复制到剪贴板」 */
+  success?: string
+  /** 失败提示，默认「复制失败，请手动选择复制」 */
+  fail?: string
+}
+
 export function useClipboard() {
   const message = useMessage()
 
-  async function copyText(text: string, evt?: MouseEvent) {
+  async function copyText(text: string, evt?: MouseEvent, msgs: CopyMessages = {}) {
+    const successText = msgs.success ?? '已复制到剪贴板'
+    const failText = msgs.fail ?? '复制失败，请手动选择复制'
     // prefer the modern async clipboard API (HTTPS / localhost only)
     if (navigator.clipboard?.writeText) {
       try {
         await navigator.clipboard.writeText(text)
-        message.success('已复制到剪贴板')
+        message.success(successText)
         return
       } catch {
         // permission denied or non-secure context — fall through
@@ -31,9 +44,9 @@ export function useClipboard() {
       ok = false
     }
     if (ok) {
-      message.success('已复制到剪贴板')
+      message.success(successText)
     } else {
-      message.error('复制失败，请手动选择复制')
+      message.error(failText)
     }
   }
 
