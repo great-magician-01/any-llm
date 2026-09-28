@@ -188,6 +188,10 @@ type StreamEvent struct {
 	ReasoningTokens     int             // OpenAI reasoning tokens (message_delta)
 	RawMessage          json.RawMessage // message_start: raw `message` object from same-format upstream (pass-through)
 	RawUsage            json.RawMessage // message_delta: raw `usage` object from same-format upstream (pass-through)
+	// DeltaExtras carries raw fields from an upstream `message_delta.delta`
+	// object that IR does not model (e.g. Claude Code's `safeguard_results`).
+	// They are merged back verbatim on encode for same-format pass-through.
+	DeltaExtras map[string]json.RawMessage
 }
 
 type Delta struct {

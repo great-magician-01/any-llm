@@ -1,5 +1,7 @@
 package translate
 
+import "encoding/json"
+
 // ResponseStreamEvents 把一条完整的非流式响应展开成与流式解码器同构的 IR 事件
 // 序列：message_start → 每个 content block 的 start/delta/stop → message_delta
 // （带 usage 与 stop_reason）→ message_stop。
@@ -63,6 +65,15 @@ func ResponseStreamEvents(r *Response) []*StreamEvent {
 		CacheCreationTokens: r.Usage.CacheCreationTokens,
 		ReasoningTokens:     r.Usage.ReasoningTokens,
 	})
+	// Same-format pass-through: carry fields like `safeguard_results` from
+	// the non-stream response into the synthesized message_delta.
+	if len(r.Extra) > 0 {
+		if sr, ok := r.Extra["safeguard_results"]; ok {
+			if raw, ok := sr.(json.RawMessage); ok {
+				evs[len(evs)-1].DeltaExtras = map[string]json.RawMessage{"safeguard_results": raw}
+			}
+		}
+	}
 	evs = append(evs, &StreamEvent{Type: "message_stop"})
 	return evs
 }

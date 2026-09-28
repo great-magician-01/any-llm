@@ -76,6 +76,10 @@ type rawResponse struct {
 	Content    []json.RawMessage `json:"content"`
 	StopReason string            `json:"stop_reason"`
 	Usage      rawUsage          `json:"usage"`
+	// SafeguardResults carries Claude Code's server-side classifier verdicts
+	// (the `safeguard_results` top-level field). We don't parse it, we just
+	// preserve the raw JSON so the gateway can pass it back to the client.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 type rawUsage struct {
