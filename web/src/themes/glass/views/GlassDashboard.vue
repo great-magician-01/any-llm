@@ -7,6 +7,7 @@ import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from
 import { listKeys } from '@/api/keys'
 import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
+import { useClipboard } from '@/composables/useClipboard'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageCalendar from '@/components/UsageCalendar.vue'
@@ -15,6 +16,7 @@ import BalanceBoard from '@/components/BalanceBoard.vue'
 
 const router = useRouter()
 const message = useMessage()
+const { copyText } = useClipboard()
 
 const loading = ref(false)
 const today = ref({ requests: 0, tokens: 0, ok: 0, error: 0 })
@@ -102,14 +104,14 @@ const todayRate = computed(() => formatPercent(today.value.ok, today.value.reque
 const maxModelTokens = computed(() => topModels.value[0]?.total_tokens || 1)
 
 const origin = computed(() => window.location.origin)
-async function copyBaseUrl() {
+async function copyBaseUrl(evt?: MouseEvent) {
   const text = origin.value + '/v1'
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success('已复制：' + text)
-  } catch {
-    message.warning('复制失败，请手动复制：' + text)
-  }
+  // 走共享的 useClipboard：HTTP 非 localhost 部署（常见的内网/局域网访问）下
+  // 浏览器剪贴板 API 不可用，必须退回 execCommand 才能真正复制成功
+  await copyText(text, evt, {
+    success: '已复制：' + text,
+    fail: '复制失败，请手动复制：' + text,
+  })
 }
 
 let timer: ReturnType<typeof setInterval> | undefined
@@ -213,7 +215,7 @@ onUnmounted(() => clearInterval(timer))
               <template #icon><AppIcon name="key" :size="15" /></template>
               签发密钥
             </n-button>
-            <n-button block class="quick-btn" @click="copyBaseUrl">
+            <n-button block class="quick-btn" @click="copyBaseUrl($event)">
               <template #icon><AppIcon name="copy" :size="15" /></template>
               复制 Base URL
             </n-button>

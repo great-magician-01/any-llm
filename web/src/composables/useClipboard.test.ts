@@ -154,4 +154,32 @@ describe('useClipboard', () => {
     expect(lastMessage()).toBe('已复制到剪贴板')
     expect(document.querySelector('textarea')).toBeNull()
   })
+
+  // 规则：复制的内容本身就是用户要的信息时（如 Base URL），调用方可以用 msgs
+  // 覆盖两条提示——成功提示带上原文让用户确认，失败提示带上原文用户才知道
+  // 手动复制什么（概览页「复制 Base URL」在局域网 HTTP 下就走这条路）
+  it('msgs 覆盖成功提示文案', async () => {
+    const writeText = vi.fn(async () => {})
+    setClipboard({ writeText })
+
+    await useClipboard().copyText('http://192.168.0.105:6718/v1', undefined, {
+      success: '已复制：http://192.168.0.105:6718/v1',
+      fail: '复制失败，请手动复制：http://192.168.0.105:6718/v1',
+    })
+
+    expect(messageCalls).toEqual([{ level: 'success', text: '已复制：http://192.168.0.105:6718/v1' }])
+  })
+
+  // 规则：回退路径失败时用 msgs.fail（同样要带上原文），且只弹一条提示
+  it('回退失败时用 msgs.fail 提示，并带上待复制的原文', async () => {
+    const exec = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true, writable: true })
+
+    await useClipboard().copyText('http://192.168.0.105:6718/v1', undefined, {
+      success: '已复制：http://192.168.0.105:6718/v1',
+      fail: '复制失败，请手动复制：http://192.168.0.105:6718/v1',
+    })
+
+    expect(messageCalls).toEqual([{ level: 'error', text: '复制失败，请手动复制：http://192.168.0.105:6718/v1' }])
+  })
 })
