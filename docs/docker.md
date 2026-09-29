@@ -46,11 +46,12 @@ docker compose logs -f
 
 启动后访问 `http://localhost:6718`。
 
-`docker-compose.yml` 做了三件事：
+`docker-compose.yml` 起两个服务：
 
-- 端口映射 `6718:6718`（**应用实际监听 6718**）
-- 数据持久化：SQLite 数据库、会话密钥和日志存放在 named volume `any-llm-data`（挂载到容器 `/data`），容器重建不丢数据
-- 日志写入挂载卷 `/data/logs`（logger 同时输出到 stdout，`docker compose logs` 也能看）
+- `any-llm`：端口映射 `6718:6718`（**应用实际监听 6718**）；会话密钥和日志存放在 named volume `any-llm-data`，日志同时输出到 stdout（`docker compose logs` 也能看）
+- `postgres`：与镜像默认的 `DB_TYPE=postgres` 配套的 PostgreSQL 17，数据在 named volume `any-llm-pg`；带健康检查，应用等它就绪后才启动
+
+两个服务共用同一个 `DB_PASSWORD`（在 `.env` 里设置，缺省仅适合本机使用）。想改回 SQLite：把应用服务的 `DB_TYPE` 设为 `sqlite`（`ANY_LLM_DB_PATH` 生效），并删掉 `postgres` 服务段即可。
 
 ## 3. docker run 直接运行
 
@@ -86,7 +87,9 @@ docker run -d --name any-llm \
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `TZ` | `Asia/Shanghai` | 不是应用变量，而是镜像的 `ENV` 默认值；日志按日轮转建目录、日/月额度窗口都按容器本地时间算，运行时可用 `-e TZ=UTC` 等覆盖 |
 
-## 5. 使用 PostgreSQL（可选）
+## 5. 使用外部 PostgreSQL（可选）
+
+仓库自带的 `docker-compose.yml` 已经内置了一个 PostgreSQL 服务，无需任何配置即是 PG 部署。本节适用于让应用连接**你已有的** PostgreSQL 实例：
 
 ```yaml
 services:

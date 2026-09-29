@@ -12,16 +12,50 @@ services:
       # 应用实际监听 6718（与 Dockerfile 的 EXPOSE 一致）
       - "6718:6718"
     volumes:
-      # 数据库与会话密钥持久化到 named volume
+      # 会话密钥与日志持久化到 named volume（数据库在 postgres 服务的卷里）
       - any-llm-data:/data
     environment:
       ANY_LLM_PORT: "6718"
+      # 镜像默认 DB_TYPE=postgres：库由下方 postgres 服务提供，凭据两侧必须一致。
+      # 改回 SQLite：把 DB_TYPE 设为 sqlite（ANY_LLM_DB_PATH 生效，postgres 服务
+      # 可整段删掉）。
+      DB_TYPE: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: any_llm
+      DB_NAME: any_llm
+      DB_SCHEMA: any_llm
+      # 在 .env 里设置，例如 DB_PASSWORD=your-db-password
+      DB_PASSWORD: ${DB_PASSWORD:-anyllm-local-only}
+      # 仅 DB_TYPE=sqlite 时生效
       ANY_LLM_DB_PATH: /data/any-llm.db
       ANY_LLM_SESSION_SECRET_FILE: /data/.session-secret
       # 日志写入挂载卷（logger 同时输出到 stdout，docker compose logs -f 也能看）
       ANY_LLM_LOG_FILE: /data/logs/any-llm.log
       # 在 .env 里设置，例如 ANY_LLM_MASTER_PASSWORD=your-password
       ANY_LLM_MASTER_PASSWORD: ${ANY_LLM_MASTER_PASSWORD:-admin}
+    depends_on:
+      # 等 PG 通过健康检查再起应用，避免应用在 PG 初始化期间崩退重启
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: any-llm-postgres
+    restart: unless-stopped
+    environment:
+      # 必须与上面 any-llm 服务的 DB_USER / DB_NAME / DB_PASSWORD 一致
+      POSTGRES_USER: any_llm
+      POSTGRES_DB: any_llm
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-anyllm-local-only}
+    volumes:
+      - any-llm-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U any_llm -d any_llm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   any-llm-data:
+  any-llm-pg:

@@ -46,10 +46,13 @@ go build -o any-llm ./cmd/any-llm/
 docker build -t any-llm .
 
 # 运行（数据库、日志和会话密钥持久化到宿主机）
+# 镜像默认 DB_TYPE=postgres（配套 compose 里的 PG 服务）；裸 `docker run`
+# 没有可用的 PG，这里显式用 SQLite。
 docker run -d \
   -p 6718:6718 \
   -v $PWD/data:/data \
   -e ANY_LLM_PORT=6718 \
+  -e DB_TYPE=sqlite \
   -e ANY_LLM_DB_PATH=/data/any-llm.db \
   -e ANY_LLM_LOG_FILE=/data/logs/any-llm.log \
   -e ANY_LLM_MASTER_PASSWORD=your-password \
