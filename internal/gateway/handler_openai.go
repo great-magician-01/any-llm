@@ -425,9 +425,22 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			// usage 还会被记成 ok。这里复用「全部候选失败」的带内错误帧，按客户端
 			// 格式补一帧并结束本请求。
 			if ev.Type == "error" {
+				// 透传上游的错误细节（同格式下类型原样保留，如 overloaded_error）；
+				// 细节缺失或跨格式时回退通用值——客户端拿到的至少是一句人话，
+				// 而不是无法诊断的常量。
+				msg := ev.ErrMessage
+				if msg == "" {
+					msg = "upstream stream error"
+				}
+				errType := "upstream_error"
+				if ev.ErrType != "" && u.Format == inFormat {
+					errType = ev.ErrType
+				}
 				logger.Warn("upstream stream error event, ending stream",
-					"upstream", u.Name, "model", realModel, "in_format", inFormat, "elapsed_ms", time.Since(streamStart).Milliseconds())
-				writeStreamErrorFrame(w, inFormat, "upstream stream error", "upstream_error")
+					"upstream", u.Name, "model", realModel, "in_format", inFormat,
+					"upstream_error_type", ev.ErrType, "upstream_error_message", ev.ErrMessage,
+					"elapsed_ms", time.Since(streamStart).Milliseconds())
+				writeStreamErrorFrame(w, inFormat, msg, errType)
 				flusher.Flush()
 				upstreamSignalledErr = true
 				goto done
@@ -538,22 +551,31 @@ done:
 }
 
 // writeStreamErrorFrame 在 200 头已经 flush 之后，按客户端格式写一个「带内」
-// 错误帧（此时不可能再回 HTTP 错误码）。openai 出站用 data: {"error":{...}}，
-// anthropic / responses 出站用规范的 event: error + data。两条触发路径共用：
-// 全部候选失败，以及上游在流中间发 error 事件。
+// 错误帧（此时不可能再回 HTTP 错误码）。openai 出站用 data: {"error":{...}}；
+// anthropic 出站用规范的嵌套 error 对象；responses 出站用该协议规范的扁平
+// code/message（嵌套的 Anthropic 形状会让 responses SDK 解析不出错误明细）。
+// 不写任何结束帧：失败的流不能带完成标记（message_stop / [DONE] /
+// response.completed 都会让客户端误判为正常完成）。
+// 两条触发路径共用：全部候选失败，以及上游在流中间发 error 事件。
 func writeStreamErrorFrame(w http.ResponseWriter, inFormat, message, errType string) {
-	if inFormat == "openai" {
+	switch inFormat {
+	case "responses":
+		payload, _ := json.Marshal(map[string]any{
+			"type": "error", "code": errType, "message": message,
+		})
+		w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
+	case "anthropic":
+		payload, _ := json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": errType, "message": message},
+		})
+		w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
+	default:
 		payload, _ := json.Marshal(map[string]any{
 			"error": map[string]any{"message": message, "type": errType},
 		})
 		w.Write([]byte("data: " + string(payload) + "\n\n"))
-		return
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"type":  "error",
-		"error": map[string]any{"type": errType, "message": message},
-	})
-	w.Write([]byte("event: error\ndata: " + string(payload) + "\n\n"))
 }
 
 func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {

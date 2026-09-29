@@ -18,6 +18,9 @@ type rawStreamEvent struct {
 	OutputIndex int            `json:"output_index,omitempty"`
 	Delta       string         `json:"delta,omitempty"`
 	Arguments   string         `json:"arguments,omitempty"`
+	// error 事件的扁平错误字段（{"type":"error","code":...,"message":...}）。
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type StreamDecoder struct {
@@ -180,7 +183,17 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 		}, nil
 
 	case "response.failed", "response.errored", "error":
-		return []*translate.StreamEvent{{Type: "error"}}, nil
+		// 流内错误必须透传细节：response.failed 的错误在 response.error
+		// （code/message），error 事件则是顶层扁平字段。丢了细节客户端只能
+		// 拿到一句无法诊断的通用文案。
+		evt := &translate.StreamEvent{Type: "error"}
+		if ev.Response != nil && ev.Response.Error != nil {
+			evt.ErrType, evt.ErrMessage = ev.Response.Error.Code, ev.Response.Error.Message
+		}
+		if evt.ErrMessage == "" && (ev.Code != "" || ev.Message != "") {
+			evt.ErrType, evt.ErrMessage = ev.Code, ev.Message
+		}
+		return []*translate.StreamEvent{evt}, nil
 	}
 	return nil, nil
 }
