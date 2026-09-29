@@ -144,9 +144,15 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 	// 因为头不规范就把真正的 SSE 流缓冲成 JSON。
 	if irReq.Stream && isJSONContentType(resp.Header.Get("Content-Type")) {
 		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
+		// 这条分支把整段响应缓冲进内存（流式路径原本只按行扫描），必须有读
+		// 上限，否则一个失控/恶意的兼容上游能用超大 body 把网关内存打爆。
+		// 非流式分支是历史口径（完整响应本就要整体读入），不在此收敛。
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxNonStreamJSONBody+1))
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
+		}
+		if len(body) > maxNonStreamJSONBody {
+			return nil, fmt.Errorf("non-stream JSON response exceeds %d bytes", maxNonStreamJSONBody)
 		}
 		var irResp *translate.Response
 		switch u.Format {
@@ -156,6 +162,10 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 			irResp, err = anthropic.DecodeResponse(body)
 		case "responses":
 			irResp, err = responses.DecodeResponse(body)
+		default:
+			// 正常到不了这里（Call 开头的 format switch 已拦），但库里若混进
+			// 未知 format 的行，必须响亮报错而不是 nil deref。
+			return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
@@ -422,6 +432,12 @@ func (e *UpstreamError) parseError() struct {
 // maxUpstreamErrorBody 限制上游错误响应体的读取上限（1 MiB，与 fetch.go /
 // balance.go 一致）。错误页动辄几 MB，无上限读进内存再回给客户端没有任何收益。
 const maxUpstreamErrorBody = 1 << 20
+
+// maxNonStreamJSONBody 限制「流式请求被上游以非流式 JSON 应答」时整段响应的
+// 读取上限（8 MiB）。这条路径把完整响应缓冲进内存：取 8 MiB 是因为 IR 不建模
+// 的超大载荷（如内联 base64 图片）本来也活不过翻译层，而长文本完成体
+// （百万 token 级）远低于这个量级。
+const maxNonStreamJSONBody = 8 << 20
 
 // isJSONContentType 报告上游是否明确以 JSON 应答（application/json、
 // application/problem+json 等）。只用于「流式请求被非流式应答」的识别。

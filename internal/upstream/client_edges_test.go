@@ -703,3 +703,41 @@ func TestCallBiz_UnknownFormat(t *testing.T) {
 		t.Fatalf("error = %v, want unknown upstream format", err)
 	}
 }
+
+// 业务规则：流式请求被上游以非流式 JSON 应答（Content-Type: application/json）
+// 时，Call 按非流式解码并填 result.Response（网关再展开成合法 SSE 流）；
+// 但这条路径把整段 body 缓冲进内存，超过 maxNonStreamJSONBody 必须响亮报错，
+// 不能无上限读（流式路径原本只按行扫描，内存有界）。
+func TestCallBiz_StreamJSONFallbackBodyCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 超过上限的字节流（内容是否合法 JSON 无所谓，上限判断在解码之前）
+		_, _ = w.Write([]byte(strings.Repeat("a", maxNonStreamJSONBody+1)))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.Client())
+	_, err := c.Call(context.Background(), bizUpstream(srv.URL, "openai", "k"), bizTextReq(true), nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err=%v, want body-cap error", err)
+	}
+}
+
+// 同上分支的正面路径：合法 JSON 正常解码出内容与 usage。
+func TestCallBiz_StreamJSONFallbackDecodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.Client())
+	res, err := c.Call(context.Background(), bizUpstream(srv.URL, "openai", "k"), bizTextReq(true), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Response == nil || len(res.Response.Content) == 0 || res.Response.Content[0].Text != "hello" {
+		t.Fatalf("response=%+v", res.Response)
+	}
+	if u := res.Usage(); u.InputTokens != 3 || u.OutputTokens != 5 {
+		t.Fatalf("usage=%+v want 3/5", u)
+	}
+}
