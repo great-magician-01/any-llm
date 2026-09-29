@@ -261,6 +261,13 @@ func blockToRaw(b translate.ContentBlock) map[string]any {
 		return m
 	case "redacted_thinking":
 		return map[string]any{"type": "redacted_thinking", "data": b.Data}
+	case "image":
+		// 图片块没有 delta 形态，source 全在 start 帧里：缺这个分支时图片块
+		// 落到 default（Extra 为空）被编成 {"type":"image"} 空壳，source 丢失。
+		if b.Image == nil {
+			return map[string]any{"type": "image"}
+		}
+		return map[string]any{"type": "image", "source": anthropicImageSource(b.Image)}
 	case "tool_use":
 		if b.ToolUse == nil {
 			// Synthesized block (upstream omitted content_block_start): only
