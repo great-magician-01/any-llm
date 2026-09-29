@@ -39,7 +39,21 @@ func BalanceVendor(u *store.Upstream) string {
 	if err != nil {
 		return ""
 	}
-	return balanceVendorHosts[strings.ToLower(parsed.Hostname())]
+	vendor := balanceVendorHosts[strings.ToLower(parsed.Hostname())]
+	// Step Plan 订阅通道（base URL 第一段为 step_plan）计费走套餐 Credit
+	// 月池，与按量付费钱包是相互独立的体系，且月池用量没有可用 API key
+	// 的查询接口。/v1/accounts 拿到的是钱包余额，对它展示纯属误导。
+	if vendor == VendorStepFun && firstPathSegment(parsed.Path) == "step_plan" {
+		return ""
+	}
+	return vendor
+}
+
+// firstPathSegment returns the lowercased first segment of a URL path
+// ("/step_plan/v1" → "step_plan", "/v1" → "v1", "" → "").
+func firstPathSegment(path string) string {
+	seg, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	return strings.ToLower(seg)
 }
 
 // balanceURL builds the vendor endpoint URL from the upstream base URL's

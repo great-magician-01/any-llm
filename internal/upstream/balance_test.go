@@ -23,6 +23,12 @@ func TestBalanceVendor(t *testing.T) {
 		{"https://API.KIMI.COM", VendorKimiCoding},
 		{"https://api.stepfun.com/v1", VendorStepFun},
 		{"https://api.stepfun.ai/v1", VendorStepFun},
+		{"https://api.stepfun.com", VendorStepFun},
+		// Step Plan 订阅通道：月池 Credit 与按量付费钱包独立，不报余额
+		{"https://api.stepfun.com/step_plan", ""},
+		{"https://api.stepfun.com/step_plan/v1", ""},
+		{"https://api.stepfun.ai/step_plan", ""},
+		{"https://api.stepfun.com/Step_Plan/v1", ""},
 		{"https://api.openai.com/v1", ""},
 		{"not a url", ""},
 		{"", ""},
