@@ -174,7 +174,7 @@ type Usage struct {
 
 // StreamEvent is an Anthropic-style fine-grained streaming event.
 type StreamEvent struct {
-	Type                string          // message_start | content_block_start | content_block_delta | content_block_stop | message_delta | message_stop
+	Type                string          // message_start | content_block_start | content_block_delta | content_block_stop | message_delta | message_stop | ping | error
 	MessageID           string          // message_start
 	Model               string          // message_start
 	InputTokens         int             // message_start
@@ -192,6 +192,12 @@ type StreamEvent struct {
 	// object that IR does not model (e.g. Claude Code's `safeguard_results`).
 	// They are merged back verbatim on encode for same-format pass-through.
 	DeltaExtras map[string]json.RawMessage
+	// ErrType / ErrMessage 只在 Type == "error" 时有值：上游流内错误事件的原始
+	// type/code 与 message（Anthropic 的 event:error、Responses 的
+	// response.failed/error）。上游解码器填充；网关用它给客户端写带内错误帧，
+	// 为空时回退通用文案。
+	ErrType    string
+	ErrMessage string
 }
 
 type Delta struct {

@@ -460,7 +460,7 @@ func TestStreamAllCandidatesFailWritesInbandErrorFrame(t *testing.T) {
 			path:        "/v1/responses",
 			body:        `{"model":"fixed","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`,
 			event:       "error",
-			wantErrType: `"type":"rate_limit_error"`,
+			wantErrType: `"code":"rate_limit_error"`, // Responses 规范是扁平 code/message，不是嵌套 error 对象
 		},
 	}
 	for _, tc := range cases {
@@ -771,4 +771,72 @@ func TestAliasAllCandidatesExpired404(t *testing.T) {
 	if _, total, _ := store.UsageRecordsList(d, 1, 10); total != 0 {
 		t.Fatalf("usage records=%d want 0 (no candidate was dispatched)", total)
 	}
+}
+
+// 业务规则（本次为它补的生产修复）：上游流内错误事件的细节（type/message）
+// 必须透传给客户端——同格式时原生类型原样保留（anthropic↔anthropic 的
+// overloaded_error），responses 客户端拿到该协议规范的扁平 code/message。
+// 细节丢了客户端只剩一句 "upstream stream error"，无法区分上游过载与限流。
+func TestStreamMidStreamErrorDetailPassThrough(t *testing.T) {
+	// anthropic 上游中途发 event: error（ overloaded ）→ anthropic 客户端
+	t.Run("anthropic client gets upstream error detail", func(t *testing.T) {
+		srv := spSSEUpstream(t,
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"m\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+		)
+		g, d := setupGateway(t)
+		uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ant", BaseURL: srv.URL, APIKey: "sk", Format: "anthropic"})
+		store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+		k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
+		g.client = upstream.NewClient(http.DefaultClient)
+
+		req := httptest.NewRequest("POST", "/v1/messages",
+			strings.NewReader(`{"model":"ant/m","max_tokens":50,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+		req.Header.Set("x-api-key", k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, "event: error") ||
+			!strings.Contains(body, `"type":"overloaded_error"`) ||
+			!strings.Contains(body, `"message":"Overloaded"`) {
+			t.Fatalf("client error frame must carry the upstream detail: %q", body)
+		}
+	})
+
+	// responses 上游中途发 response.failed → responses 客户端（扁平形状）
+	t.Run("responses client gets flat error event", func(t *testing.T) {
+		srv := spSSEUpstream(t,
+			"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"m\",\"status\":\"in_progress\"}}\n\n",
+			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream overloaded\"}}}\n\n",
+		)
+		g, d := setupGateway(t)
+		uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "rsp", BaseURL: srv.URL, APIKey: "sk", Format: "responses"})
+		store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+		k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
+		g.client = upstream.NewClient(http.DefaultClient)
+
+		req := httptest.NewRequest("POST", "/v1/responses",
+			strings.NewReader(`{"model":"rsp/m","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, `"type":"error"`) ||
+			!strings.Contains(body, `"code":"server_error"`) ||
+			!strings.Contains(body, `"message":"upstream overloaded"`) {
+			t.Fatalf("responses error frame must be flat code/message with upstream detail: %q", body)
+		}
+		// 不得是 Anthropic 的嵌套 error 形状
+		if strings.Contains(body, `"error":{"type"`) {
+			t.Fatalf("responses client must not get the anthropic nested shape: %q", body)
+		}
+	})
 }

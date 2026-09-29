@@ -93,10 +93,20 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 		}
 		return evt, nil
 	case "error":
-		// 上游过载/超时会发 event: error。必须作为 error 事件透传，否则客户端
-		// 拿到的是一个没有错误帧、也没有 message_stop 的截断流（responses
-		// 解码器早已这么做，这里是漏掉的对称实现）。
-		return &translate.StreamEvent{Type: "error"}, nil
+		// 上游过载/超时会发 event: error。必须作为 error 事件透传（含原始
+		// type/message），否则客户端拿到的是一个没有错误帧、也没有
+		// message_stop 的截断流；细节丢了则只剩一句无法诊断的通用文案。
+		evt := &translate.StreamEvent{Type: "error"}
+		var e struct {
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &e); err == nil {
+			evt.ErrType, evt.ErrMessage = e.Error.Type, e.Error.Message
+		}
+		return evt, nil
 	case "message_stop":
 		return &translate.StreamEvent{Type: "message_stop"}, nil
 	}

@@ -22,6 +22,10 @@ func TestDecodeStreamEvent_Error(t *testing.T) {
 	if evt.Type != "error" {
 		t.Fatalf("type=%q want error", evt.Type)
 	}
+	// 上游的错误细节必须随事件透传（网关的带内错误帧要用它）。
+	if evt.ErrType != "overloaded_error" || evt.ErrMessage != "Overloaded" {
+		t.Fatalf("error detail lost: %+v", evt)
+	}
 }
 
 // TestDecodeStreamEvent_UnknownTypeIsIgnored 保证未知事件仍然被安静跳过
