@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -211,5 +212,36 @@ func TestLoad_SessionSecretFileUnwritable(t *testing.T) {
 	}
 	if cfg.SessionSecret == "" {
 		t.Fatal("session secret empty")
+	}
+}
+
+// 旧版 Docker 镜像曾把占位符 "a_very_strong_random_string_here" 预置为会话
+// 密钥——它明文躺在公开仓库里，用它签发的 admin 会话 cookie 任何人都能伪造。
+// Load 必须识别这个已知占位符并在 stderr 响亮告警（同时配置本身仍可用：
+// 告警而不是拒起，与默认 admin 密码的处理一致）。
+func TestLoad_PlaceholderSessionSecretWarns(t *testing.T) {
+	t.Setenv("ANY_LLM_SESSION_SECRET", "a_very_strong_random_string_here")
+	t.Setenv("ANY_LLM_SESSION_SECRET_FILE", filepath.Join(t.TempDir(), "session-secret"))
+
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	cfg, loadErr := Load()
+	_ = w.Close()
+	os.Stderr = orig
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if cfg.SessionSecret != "a_very_strong_random_string_here" {
+		t.Fatalf("secret should pass through (warn, not reject): %q", cfg.SessionSecret)
+	}
+	var buf [4096]byte
+	n, _ := r.Read(buf[:])
+	out := string(buf[:n])
+	if !strings.Contains(out, "forge admin sessions") {
+		t.Fatalf("expected placeholder warning on stderr, got %q", out)
 	}
 }
