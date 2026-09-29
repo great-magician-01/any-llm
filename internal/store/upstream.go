@@ -255,10 +255,18 @@ func UpdateModel(d *sql.DB, upstreamID int64, m UpstreamModel) error {
 }
 
 // DeleteModel 软删除：模型立即从列表与网关路由中消失，行保留供历史关联。
-func DeleteModel(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE id=? AND is_active = 1`), id)
+// WHERE 同时限定 upstream_id：路径里的上游 ID 与模型 ID 不匹配（或模型不存在/
+// 已软删）时删除 0 行，返回包装过的 sql.ErrNoRows，调用方据此回 404——不能凭
+// 模型 ID 跨上游裸删。与 UpdateModel 的「先查后写」不同，这里看 RowsAffected
+// 即可：删除必然把 is_active 从 1 改成 0，命中行一定变化，MySQL 的「按值变化
+// 计数」口径不影响这个判断。
+func DeleteModel(d *sql.DB, upstreamID, id int64) error {
+	res, err := d.Exec(db.Rebind(d, `UPDATE upstream_models SET is_active = 0 WHERE id=? AND upstream_id=? AND is_active = 1`), id, upstreamID)
 	if err != nil {
 		return fmt.Errorf("delete model: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("delete model %d: %w", id, sql.ErrNoRows)
 	}
 	return nil
 }
