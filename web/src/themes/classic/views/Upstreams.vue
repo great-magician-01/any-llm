@@ -231,7 +231,13 @@ async function addM(id: number) {
   const name = (newModelByUpstream.value[id] || '').trim()
   if (!name) return
   const opts = modelOptsFor(id)
-  await addModel(id, name, opts.context_length, opts.max_output_length, opts.multimodal)
+  try {
+    await addModel(id, name, opts.context_length, opts.max_output_length, opts.multimodal)
+  } catch (e) {
+    // 后端对已存在的同名模型回 409：必须把错误摆出来，否则按钮看似没反应
+    message.error('添加模型失败：' + errMsg(e))
+    return
+  }
   newModelByUpstream.value[id] = ''
   await loadModels(id)
   await load()

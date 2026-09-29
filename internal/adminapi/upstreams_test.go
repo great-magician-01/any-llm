@@ -963,7 +963,7 @@ func TestModelWriteErrorSemantics(t *testing.T) {
 		t.Fatalf("failed edits should not have touched the row: %+v", ms)
 	}
 	// 软删后同样 404
-	if err := store.DeleteModel(d, mid); err != nil {
+	if err := store.DeleteModel(d, uid, mid); err != nil {
 		t.Fatal(err)
 	}
 	if code := call("PUT", base+"/"+strconv.FormatInt(mid, 10), edit); code != 404 {
