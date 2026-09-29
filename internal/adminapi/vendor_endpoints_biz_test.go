@@ -183,6 +183,8 @@ func TestBalancesBiz_RefreshAllSkipsDisabledExpiredUnsupported(t *testing.T) {
 	}
 
 	bizNewUpstream(t, d, "unsupported", "https://api.openai.com/v1")
+	// Step Plan 订阅通道也算不支持：月池 Credit 与钱包余额独立，不发请求
+	bizNewUpstream(t, d, "step-plan", "https://api.stepfun.com/step_plan")
 
 	w := doAliasReq(t, a, "POST", "/api/admin/balances", nil)
 	if w.Code != 200 {
