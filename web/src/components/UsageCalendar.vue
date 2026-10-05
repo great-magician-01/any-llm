@@ -1,24 +1,34 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt } from '@/utils/format'
 import { buildCalendarGrid, type CalendarCell } from '@/utils/calendar'
 
 const props = defineProps<{ stats: UsageDayStat[] }>()
 
-const CELL = 11
-const GAP = 3
-const STEP = CELL + GAP
+// 格子尺寸随容器宽度自适应：宽屏放大铺满整行；低于 MIN_STEP 时保持
+// 最小尺寸并横向滚动（窄屏行为与原来一致）。格子与间距保持 11:3 的比例。
+const MIN_CELL = 11
+const MIN_GAP = 3
+const MIN_STEP = MIN_CELL + MIN_GAP
 const PAD_L = 24 // 左侧星期标签
 const PAD_T = 16 // 顶部月份标签
 
 const grid = computed(() => buildCalendarGrid(props.stats))
 const total = computed(() => props.stats.reduce((a, s) => a + s.total_tokens, 0))
-const svgWidth = computed(() => PAD_L + grid.value.cols * STEP - GAP + 2)
-const svgHeight = PAD_T + 7 * STEP - GAP + 2
+const step = computed(() => {
+  const avail = viewWidth.value - PAD_L - 2
+  if (avail <= 0 || !grid.value.cols) return MIN_STEP
+  return Math.max(MIN_STEP, Math.floor(avail / grid.value.cols))
+})
+const gap = computed(() => Math.max(MIN_GAP, Math.round((step.value * MIN_GAP) / MIN_STEP)))
+const cell = computed(() => step.value - gap.value)
+const cellRx = computed(() => Math.max(2, Math.round(cell.value * 0.23)))
+const svgWidth = computed(() => PAD_L + grid.value.cols * step.value - gap.value + 2)
+const svgHeight = computed(() => PAD_T + 7 * step.value - gap.value + 2)
 
-const cellX = (c: CalendarCell) => PAD_L + c.col * STEP
-const cellY = (c: CalendarCell) => PAD_T + c.row * STEP
+const cellX = (c: CalendarCell) => PAD_L + c.col * step.value
+const cellY = (c: CalendarCell) => PAD_T + c.row * step.value
 
 // 行 0 是周日；GitHub 惯例只标周一/周三/周五
 const weekdays = [
@@ -27,16 +37,25 @@ const weekdays = [
   { row: 5, t: '五' },
 ]
 
-// 窄屏网格横向滚动时，提示框在滚动容器外，要补偿 scrollLeft 才能跟住格子
+// 窄屏网格横向滚动时，提示框在滚动容器外，要补偿 scrollLeft 才能跟住格子；
+// 容器宽度用 ResizeObserver 跟踪（驱动格子自适应与提示框边界钳制）
 const scrollEl = ref<HTMLElement | null>(null)
 const scrollLeft = ref(0)
 const viewWidth = ref(0)
 function onScroll() {
   scrollLeft.value = scrollEl.value?.scrollLeft ?? 0
-  viewWidth.value = scrollEl.value?.clientWidth ?? 0
 }
+let resizeObs: ResizeObserver | null = null
 onMounted(() => {
   viewWidth.value = scrollEl.value?.clientWidth ?? 0
+  resizeObs = new ResizeObserver(() => {
+    viewWidth.value = scrollEl.value?.clientWidth ?? 0
+  })
+  if (scrollEl.value) resizeObs.observe(scrollEl.value)
+})
+onBeforeUnmount(() => {
+  resizeObs?.disconnect()
+  resizeObs = null
 })
 
 const hover = ref<CalendarCell | null>(null)
@@ -45,10 +64,10 @@ const tipStyle = computed(() => {
   const c = hover.value
   if (!c) return {}
   const view = viewWidth.value || svgWidth.value
-  const cx = cellX(c) + CELL / 2 - scrollLeft.value
+  const cx = cellX(c) + cell.value / 2 - scrollLeft.value
   const left = Math.min(Math.max(cx, 78), view - 78)
   if (c.row <= 2) {
-    return { left: `${left}px`, top: `${cellY(c) + CELL + 6}px`, transform: 'translateX(-50%)' }
+    return { left: `${left}px`, top: `${cellY(c) + cell.value + 6}px`, transform: 'translateX(-50%)' }
   }
   return { left: `${left}px`, top: `${cellY(c) - 6}px`, transform: 'translate(-50%, -100%)' }
 })
@@ -65,7 +84,7 @@ const tipStyle = computed(() => {
           <text
             v-for="m in grid.monthLabels"
             :key="'m' + m.col"
-            :x="PAD_L + m.col * STEP"
+            :x="PAD_L + m.col * step"
             y="10"
             class="cal-label"
           >{{ m.text }}</text>
@@ -73,7 +92,7 @@ const tipStyle = computed(() => {
             v-for="w in weekdays"
             :key="'w' + w.row"
             x="0"
-            :y="PAD_T + w.row * STEP + 9"
+            :y="PAD_T + w.row * step + cell - 2"
             class="cal-label"
           >{{ w.t }}</text>
           <rect
@@ -81,9 +100,9 @@ const tipStyle = computed(() => {
             :key="c.date"
             :x="cellX(c)"
             :y="cellY(c)"
-            :width="CELL"
-            :height="CELL"
-            rx="2.5"
+            :width="cell"
+            :height="cell"
+            :rx="cellRx"
             class="cell"
             :class="'lv' + c.level"
             @mouseenter="hover = c"
