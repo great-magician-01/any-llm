@@ -12,6 +12,7 @@ import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
+import ClaudeCodeExportDialog from '@/components/ClaudeCodeExportDialog.vue'
 
 const message = useMessage()
 const keys = ref<ExtKey[]>([])
@@ -152,7 +153,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 260,
+    width: 360,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
@@ -182,6 +183,15 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
               trigger: () =>
                 h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyDshConfig(row.key, row.allowed_models, e) }, { default: () => 'dsh' }),
               default: () => '复制 dsh 配置 YAML（含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: () => openClaudeCodeExport(row.key, row.allowed_models) }, { default: () => 'claude-code' }),
+              default: () => '导出 Claude Code 配置（含此密钥，可自定义模型槽位映射）',
             },
           ),
           h(
@@ -291,6 +301,17 @@ async function copyDshConfig(apiKey: string, allowedModels?: string[] | null, ev
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
+}
+
+// Claude Code 配置导出：打开映射弹窗（共享组件），选择各模型槽位后生成
+// 追加到 ~/.bashrc 的 export 段。
+const claudeCodeShow = ref(false)
+const claudeCodeKey = ref('')
+const claudeCodeAllowed = ref<string[] | null>(null)
+function openClaudeCodeExport(apiKey: string, allowedModels?: string[] | null) {
+  claudeCodeKey.value = apiKey
+  claudeCodeAllowed.value = allowedModels ?? null
+  claudeCodeShow.value = true
 }
 
 async function copyKey(key: string, evt?: MouseEvent) {
@@ -459,6 +480,10 @@ onMounted(load)
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 dsh 配置 YAML（含此密钥）
           </n-button>
+          <n-button block style="margin-top: 8px" @click="openClaudeCodeExport(newlyCreatedKey, createForm.allowed_models)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            导出 Claude Code 配置（含此密钥）
+          </n-button>
         </template>
         <template #footer>
           <div style="text-align: right">
@@ -510,6 +535,7 @@ onMounted(load)
       </n-card>
     </n-modal>
 
+    <ClaudeCodeExportDialog v-model:show="claudeCodeShow" :api-key="claudeCodeKey" :allowed-models="claudeCodeAllowed" />
     <UsageDocDrawer v-model:show="showDoc" />
   </div>
 </template>
