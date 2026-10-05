@@ -145,7 +145,7 @@ export ANTHROPIC_MODEL=upstream名称/模型名  # 可选，或模型别名`,
 
         <section class="doc-section">
           <h3>Claude Code</h3>
-          <p class="doc-note">设置以下环境变量后正常启动即可，模型用 <code class="mono">upstream名称/模型名</code> 或别名：</p>
+          <p class="doc-note">设置以下环境变量后正常启动即可，模型用 <code class="mono">upstream名称/模型名</code> 或别名。密钥列表每行的 <code class="mono">claude-code</code> 按钮可生成含该密钥的完整环境变量段（可自定义 fable / opus / sonnet / haiku / 主会话 / 子代理各槽位的模型映射与 <code class="mono">[1M]</code> 上下文标记，变量集与 cc-switch 一致），整段追加到 <code class="mono">~/.bashrc</code> 或 <code class="mono">~/.zshrc</code> 后 <code class="mono">source</code> 生效；新建密钥后的弹窗里也有同款入口。</p>
           <div class="code-block">
             <div class="code-head">
               <span>环境变量</span>
@@ -159,9 +159,9 @@ export ANTHROPIC_MODEL=upstream名称/模型名  # 可选，或模型别名`,
         </section>
 
         <section class="doc-section">
-          <h3>opencode / Oh My Pi / dsh</h3>
+          <h3>客户端配置一键导出</h3>
           <p class="doc-note">
-            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> / <code class="mono">dsh</code> 按钮会生成并复制含该密钥的完整配置（受限密钥只导出白名单内的模型），粘贴进对应客户端的配置文件即可；新建密钥后的弹窗里也提供同样的按钮。dsh 的文本包含 settings.yaml 与 .credentials.yaml 两段，按段头注释分别粘贴。
+            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> / <code class="mono">dsh</code> / <code class="mono">claude-code</code> 按钮会生成含该密钥的完整客户端配置（受限密钥只导出白名单内的模型），新建密钥后的弹窗里也提供同样的按钮。opencode / OMP / dsh 直接复制配置文本，粘贴进对应客户端的配置文件即可（dsh 的文本包含 settings.yaml 与 .credentials.yaml 两段，按段头注释分别粘贴）；claude-code 会先弹出模型槽位映射弹窗，确认后复制追加到 shell 配置文件的环境变量段。
           </p>
         </section>
 
