@@ -410,7 +410,7 @@ onMounted(load)
       </p>
       <n-space vertical :size="10">
         <n-input-group v-for="ep in endpoints" :key="ep.url">
-          <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center">{{ ep.label }}</n-tag>
+          <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center; height: auto; align-self: stretch">{{ ep.label }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
           <n-button type="primary" @click="copyKey(ep.url, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
