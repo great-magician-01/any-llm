@@ -20,6 +20,9 @@
 
   /* 图表浮层底色（BarChart/DonutChart 的 tooltip） */
   --tip-bg: rgba(10, 15, 26, 0.94);
+
+  /* 代码/工具调用块的底色（对话详情 IrContent 等），浅色主题在下方覆盖 */
+  --code-bg: rgba(2, 6, 18, 0.5);
 }
 
 /*
@@ -43,6 +46,7 @@
   --shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.1);
   --shadow-hover: 0 8px 24px rgba(15, 23, 42, 0.12);
   --tip-bg: rgba(255, 255, 255, 0.96);
+  --code-bg: rgba(15, 23, 42, 0.05);
 
   color-scheme: light;
 }
