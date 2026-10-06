@@ -162,7 +162,7 @@ function renderMd(text: string): string {
   margin: 6px 0 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(2, 6, 18, 0.5);
+  background: var(--code-bg);
   border: 1px solid var(--border-soft);
   font-size: 12.5px;
   line-height: 1.6;
@@ -200,7 +200,7 @@ function renderMd(text: string): string {
   margin: 8px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(2, 6, 18, 0.5);
+  background: var(--code-bg);
   border: 1px solid var(--border-soft);
   overflow-x: auto;
 }
