@@ -12,15 +12,17 @@ import { connectivityView, type ConnectivityView } from '@/utils/connectivity'
 import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
 import { useUpstreamList } from '@/composables/useUpstreamList'
-import { useNarrowScreen, ACTIONS_COL_WIDTH } from '@/composables/useNarrowScreen'
+import { useContainerWidth, fitColumns, fitScrollX, UPSTREAM_FIT_COLUMNS } from '@/composables/useTableFit'
 import AppIcon from '@/components/AppIcon.vue'
 
 const message = useMessage()
 // 列表 + 启用状态过滤 + 余额快照：两套皮肤共用（含请求序号守卫与切档只重查
 // 列表），见 composables/useUpstreamList.ts
 const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, toggleEnabled } = useUpstreamList()
-// 窄屏时操作列收窄、按钮换行（两套皮肤共用一个断点，见 useNarrowScreen）
-const { narrow } = useNarrowScreen()
+// 表格随容器宽度连续自适应：列宽按比例收窄、操作列按钮自动换行，
+// scroll-x 永不超过容器宽，任何屏宽都不出横向滚动条（见 useTableFit）
+const tableBox = ref<HTMLElement | null>(null)
+const { width: tableWidth } = useContainerWidth(tableBox)
 const showForm = ref(false)
 const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
@@ -345,31 +347,15 @@ const historyColumns: DataTableColumns<BalanceSnapshot> = [
   { title: '内容', key: 'payload', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, balanceSummary(row) ?? '-') },
 ]
 
-// 固定列宽集中一处：columns 与 scrollX 共用同一份。手写 scroll-x 漏改时，
-// fixed 布局下所有列会整体等比缩水——表格看着还能用，极难发现（加「备注」列
-// 就要 +150）。「地址」给的是 minWidth（吸收剩余空间），这里按它的最小值计。
-const COL_W = {
-  expand: 40,
-  name: 130,
-  status: 80,
-  expiry: 150,
-  remark: 150,
-  baseUrlMin: 180,
-  format: 110,
-  modelCount: 80,
-  balance: 180,
-  dailyLimit: 120,
-  monthlyLimit: 120,
-  maxConcurrent: 100,
-} as const
+// 列宽集中在一处 computed：容器变窄时按比例压缩（操作列压缩空间最大，按钮
+// 随之换行），列宽规格两套皮肤共用（UPSTREAM_FIT_COLUMNS）；scroll-x 取
+// min(列宽总和, 容器宽)，任何屏宽都不会出横向滚动条
+const colW = computed(() => fitColumns(tableWidth.value, UPSTREAM_FIT_COLUMNS))
+const scrollX = computed(() => fitScrollX(colW.value, tableWidth.value))
 
-// 操作列宽随窄屏收窄，5 个按钮于是换行成两行（宽屏仍是一行）
-const actionsWidth = computed(() => (narrow.value ? ACTIONS_COL_WIDTH.narrow : ACTIONS_COL_WIDTH.wide))
-const scrollX = computed(() => Object.values(COL_W).reduce((a, b) => a + b, 0) + actionsWidth.value)
-
-// columns 改为 computed：窄屏切换只重建列配置，不逐像素重算
+// columns 改为 computed：容器宽度变化只重建列配置，不逐像素重算
 const columns = computed<DataTableColumns<Upstream>>(() => [
-  { type: 'expand', expandable: () => true, renderExpand: (row) => {
+  { type: 'expand', width: colW.value.expand, expandable: () => true, renderExpand: (row) => {
     const id = row.id as number
     const models = modelsByUpstream.value[id] || []
     const opts = modelOptsFor(id)
@@ -443,25 +429,25 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
           ),
     ])
   }},
-  // 名称/地址之外的列宽固定；名称给定宽、地址给 minWidth 吸收剩余空间。
-  // 配合 scroll-x，窗口过窄时表格横向滚动而不是把无宽度的列压成 0。
-  { title: '名称', key: 'name', width: COL_W.name, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
-  // 备注紧跟名称：窄屏首屏就能看到（不用横向滚动），空值显示「—」
+  // 所有列宽都来自 colW（随容器宽度自适应）；文本列配 ellipsis + tooltip，
+  // 收窄时截断而不是把表格撑出横向滚动条
+  { title: '名称', key: 'name', width: colW.value.name, ellipsis: { tooltip: true }, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.name) },
+  // 备注紧跟名称：窄屏首屏就能看到，空值显示「—」
   {
     title: '备注',
     key: 'remark',
-    width: COL_W.remark,
+    width: colW.value.remark,
     ellipsis: { tooltip: true },
     render: (row) => (row.remark
       ? h('span', { style: 'color: var(--text-2)' }, row.remark)
       : h('span', { style: 'color: var(--text-4)' }, '—')),
   },
-  { title: '状态', key: 'enabled', width: COL_W.status, render: (row) => h(NSwitch, {
+  { title: '状态', key: 'enabled', width: colW.value.status, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   {
     title: '有效期至',
     key: 'expires_at',
-    width: COL_W.expiry,
+    width: colW.value.expiry,
     render: (row) => {
       const { text, tone } = expiryLabel(row)
       if (tone === 'error') return h(NTag, { type: 'error', bordered: false, size: 'small' }, { default: () => text })
@@ -469,23 +455,23 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
       return h('span', { style: 'font-size: 12.5px' }, text)
     },
   },
-  { title: '地址', key: 'base_url', minWidth: COL_W.baseUrlMin, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
+  { title: '地址', key: 'base_url', width: colW.value.baseUrl, ellipsis: { tooltip: true }, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.base_url) },
   {
     title: '格式',
     key: 'format',
-    width: 110,
+    width: colW.value.format,
     render: (row) => h(NTag, { type: row.format === 'openai' ? 'info' : 'warning', bordered: false, size: 'small' }, { default: () => row.format }),
   },
   {
     title: '模型数',
     key: 'model_count',
-    width: COL_W.modelCount,
+    width: colW.value.modelCount,
     render: (row) => h('span', { class: 'mono' }, formatInt(row.model_count ?? 0)),
   },
   {
     title: '余额/额度',
     key: 'balance',
-    width: COL_W.balance,
+    width: colW.value.balance,
     render: (row) => {
       const s = balancesByUpstream.value[row.id as number]
       const v = s ? balanceView(s) : null
@@ -504,7 +490,7 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: COL_W.dailyLimit,
+    width: colW.value.dailyLimit,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -512,7 +498,7 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: COL_W.monthlyLimit,
+    width: colW.value.monthlyLimit,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -520,14 +506,14 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
   {
     title: '并发上限',
     key: 'max_concurrent',
-    width: COL_W.maxConcurrent,
+    width: colW.value.maxConcurrent,
     render: (row) => row.max_concurrent > 0
       ? h('span', { class: 'mono' }, formatInt(row.max_concurrent))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
   },
-  // 操作列宽随窄屏收窄（见 actionsWidth），NSpace 允许换行——窄屏下 5 个按钮
-  // 自然排成两行，宽屏则仍是一行
-  { title: '操作', key: 'actions', width: actionsWidth.value, render: (row) => h(NSpace, { size: 8, wrap: true }, {
+  // 操作列宽来自 colW（压缩空间最大的一列），NSpace 允许换行——容器越窄
+  // 按钮换行越多，表格本身永不出现横向滚动条
+  { title: '操作', key: 'actions', width: colW.value.actions, render: (row) => h(NSpace, { size: 8, wrap: true }, {
     default: () => [
       h(NButton, { size: 'small', onClick: () => edit(row) }, { default: () => '编辑' }),
       h(NButton, {
@@ -592,7 +578,7 @@ onMounted(() => {
 
     <n-card title="上游列表" class="panel">
       <template #header-extra>
-        <n-space :size="8" :wrap="false" align="center">
+        <n-space :size="8" align="center">
           <n-radio-group :value="statusFilter" size="small" @update:value="setStatusFilter">
             <n-radio-button value="enabled">启用中</n-radio-button>
             <n-radio-button value="disabled">已禁用</n-radio-button>
@@ -612,15 +598,18 @@ onMounted(() => {
           </n-button>
         </n-space>
       </template>
-      <n-data-table
-        :bordered="false"
-        :columns="columns"
-        :data="upstreams"
-        :scroll-x="scrollX"
-        :row-key="(row: Upstream) => row.id"
-        :expanded-row-keys="expandedRowKeys"
-        @update:expanded-row-keys="onExpand"
-      />
+      <!-- tableBox 量出表格可用宽度，驱动各列自适应（见 useTableFit） -->
+      <div ref="tableBox">
+        <n-data-table
+          :bordered="false"
+          :columns="columns"
+          :data="upstreams"
+          :scroll-x="scrollX"
+          :row-key="(row: Upstream) => row.id"
+          :expanded-row-keys="expandedRowKeys"
+          @update:expanded-row-keys="onExpand"
+        />
+      </div>
     </n-card>
 
     <n-modal :show="showForm" @update:show="(show: boolean) => { if (!show) showForm = false }">
