@@ -2,7 +2,8 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { useMessage, NTag, NButton } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { fetchConversations, fetchConversation, type ConversationListItem, type ConversationDetail } from '@/api/conversations'
+import { fetchConversations, fetchConversation, type ConversationListItem, type ConversationDetail,
+  fetchConvSessions, fetchConvSession, type ConvSessionListItem, type ConvSessionDetail } from '@/api/conversations'
 import { formatCompact, formatInt, formatTime } from '@/utils/format'
 import { parseIR, type IRRequest, type IRResponse } from '@/utils/ir'
 import AppIcon from '@/components/AppIcon.vue'
@@ -94,6 +95,94 @@ function prettyRaw(json: string): string {
   }
 }
 
+/* ---- 会话聚合 tab ---- */
+const tab = ref<'requests' | 'sessions'>('requests')
+const sessRows = ref<ConvSessionListItem[]>([])
+const sessTotal = ref(0)
+const sessPage = ref(1)
+const sessLoaded = ref(false)
+
+async function loadSessions() {
+  try {
+    const r = await fetchConvSessions(sessPage.value, pageSize)
+    sessRows.value = r.data
+    sessTotal.value = r.total
+    if (r.disabled) disabled.value = true
+    sessLoaded.value = true
+  } catch (e: any) {
+    message.error('加载失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  }
+}
+
+function onTabChange(t: string | number) {
+  if (t === 'sessions' && !sessLoaded.value) loadSessions()
+}
+
+function refresh() {
+  if (tab.value === 'sessions') loadSessions()
+  else load()
+}
+
+const sessColumns: DataTableColumns<ConvSessionListItem> = [
+  { title: '会话 ID', key: 'session_id', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.session_id) },
+  {
+    title: 'Harness',
+    key: 'harness',
+    width: 110,
+    render: (row) =>
+      row.harness
+        ? h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => row.harness })
+        : h('span', { style: 'color: var(--text-4)' }, '—'),
+  },
+  { title: '模型', key: 'model', render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, row.model) },
+  { title: '轮数', key: 'turn_count', width: 70, render: (row) => h('span', { class: 'mono' }, String(row.turn_count)) },
+  { title: 'Tokens', key: 'total_tokens', width: 90, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600' }, formatCompact(row.total_tokens)) },
+  {
+    title: '状态',
+    key: 'status',
+    width: 90,
+    render: (row) => h(NTag, { size: 'small', bordered: false, type: row.status === 'ok' ? 'success' : 'error' }, { default: () => (row.status === 'ok' ? '成功' : '失败') }),
+  },
+  { title: '首轮时间', key: 'created_at', width: 165, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.created_at)) },
+  { title: '最后活跃', key: 'last_active_at', width: 165, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.last_active_at)) },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 70,
+    render: (row) => h(NButton, { text: true, type: 'primary', size: 'small', onClick: () => openSession(row) }, { default: () => '查看' }),
+  },
+]
+
+/* ---- 会话详情抽屉 ---- */
+const showSessDrawer = ref(false)
+const sessDetail = ref<ConvSessionDetail | null>(null)
+
+interface SessionMessage { Role: string; Content?: any[] }
+const sessMessages = computed<SessionMessage[]>(() => {
+  if (!sessDetail.value?.messages) return []
+  try {
+    const arr = JSON.parse(sessDetail.value.messages)
+    return Array.isArray(arr) ? arr : []
+  } catch {
+    return []
+  }
+})
+
+function markerText(m: SessionMessage): string {
+  return (m.Content?.[0] as any)?.Text || '历史已压缩'
+}
+
+async function openSession(row: ConvSessionListItem) {
+  showSessDrawer.value = true
+  sessDetail.value = null
+  try {
+    sessDetail.value = await fetchConvSession(row.id)
+  } catch (e: any) {
+    showSessDrawer.value = false
+    message.error('加载会话失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -105,7 +194,7 @@ onMounted(load)
         <p>查看归档的完整请求与响应内容（仅 PostgreSQL / MySQL 记录）</p>
       </div>
       <div class="page-header-side">
-        <n-button quaternary circle @click="load">
+        <n-button quaternary circle @click="refresh">
           <template #icon><AppIcon name="refresh" :size="16" /></template>
         </n-button>
       </div>
@@ -115,18 +204,36 @@ onMounted(load)
       <n-empty description="对话归档仅在使用 PostgreSQL 或 MySQL（DB_TYPE=postgres/mysql）时记录" />
     </n-card>
 
-    <n-card v-else title="对话明细" class="panel">
-      <template #header-extra>
-        <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
-      </template>
-      <n-data-table
-        :bordered="false"
-        :columns="columns"
-        :data="rows"
-        remote
-        :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
-      />
-    </n-card>
+    <n-tabs v-else v-model:value="tab" type="line" animated @update:value="onTabChange">
+      <n-tab-pane name="requests" tab="按请求">
+        <n-card title="对话明细" class="panel">
+          <template #header-extra>
+            <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
+          </template>
+          <n-data-table
+            :bordered="false"
+            :columns="columns"
+            :data="rows"
+            remote
+            :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
+          />
+        </n-card>
+      </n-tab-pane>
+      <n-tab-pane name="sessions" tab="按会话">
+        <n-card title="会话聚合" class="panel">
+          <template #header-extra>
+            <span class="toolbar-label">共 {{ formatInt(sessTotal) }} 个会话</span>
+          </template>
+          <n-data-table
+            :bordered="false"
+            :columns="sessColumns"
+            :data="sessRows"
+            remote
+            :pagination="{ page: sessPage, pageSize, itemCount: sessTotal, onChange: (p: number) => { sessPage = p; loadSessions() } }"
+          />
+        </n-card>
+      </n-tab-pane>
+    </n-tabs>
 
     <n-drawer v-model:show="showDrawer" :width="720" placement="right">
       <n-drawer-content :title="detail ? `对话详情 #${detail.id}` : '对话详情'" closable>
@@ -195,6 +302,57 @@ onMounted(load)
             <div class="raw-title mono">response_ir</div>
             <pre class="mono pre-wrap raw-block">{{ prettyRaw(detail.response_ir) }}</pre>
           </template>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
+
+    <n-drawer v-model:show="showSessDrawer" :width="720" placement="right">
+      <n-drawer-content :title="sessDetail ? `会话 ${sessDetail.session_id}` : '会话详情'" closable>
+        <div v-if="!sessDetail" class="loading-hint">加载中…</div>
+        <template v-else>
+          <n-descriptions :column="2" size="small" bordered>
+            <n-descriptions-item label="会话 ID" :span="2">
+              <span class="mono ua-text">{{ sessDetail.session_id }}</span>
+            </n-descriptions-item>
+            <n-descriptions-item label="模型">
+              <span class="mono">{{ sessDetail.model }}</span>
+            </n-descriptions-item>
+            <n-descriptions-item label="Harness">{{ sessDetail.harness || '—' }}</n-descriptions-item>
+            <n-descriptions-item label="格式">
+              <span class="mono">{{ sessDetail.in_format }}</span>
+            </n-descriptions-item>
+            <n-descriptions-item label="轮数">{{ sessDetail.turn_count }}</n-descriptions-item>
+            <n-descriptions-item label="首轮时间">
+              <span class="mono">{{ formatTime(sessDetail.created_at) }}</span>
+            </n-descriptions-item>
+            <n-descriptions-item label="最后活跃">
+              <span class="mono">{{ formatTime(sessDetail.last_active_at) }}</span>
+            </n-descriptions-item>
+            <n-descriptions-item label="Tokens" :span="2">
+              <span class="mono">
+                输入 {{ formatInt(sessDetail.prompt_tokens) }} · 输出 {{ formatInt(sessDetail.completion_tokens) }} · 合计 {{ formatInt(sessDetail.total_tokens) }}
+              </span>
+              <span v-if="sessDetail.cache_read_tokens || sessDetail.cache_creation_tokens || sessDetail.reasoning_tokens" class="mono tokens-extra">
+                （缓存读 {{ formatInt(sessDetail.cache_read_tokens) }} · 缓存写 {{ formatInt(sessDetail.cache_creation_tokens) }} · 推理 {{ formatInt(sessDetail.reasoning_tokens) }}）
+              </span>
+            </n-descriptions-item>
+            <n-descriptions-item label="状态">
+              <n-tag size="small" :bordered="false" :type="sessDetail.status === 'ok' ? 'success' : 'error'">
+                {{ sessDetail.status === 'ok' ? '成功' : '失败' }}
+              </n-tag>
+            </n-descriptions-item>
+          </n-descriptions>
+
+          <div v-if="sessMessages.length" class="msg-list">
+            <template v-for="(m, i) in sessMessages" :key="i">
+              <div v-if="m.Role === '_marker'" class="msg-marker">{{ markerText(m) }}</div>
+              <div v-else class="msg" :class="m.Role">
+                <div class="msg-role">{{ m.Role === 'user' ? '用户' : '助手' }}</div>
+                <IrContent :blocks="m.Content ?? []" :role="m.Role === 'user' ? 'user' : 'assistant'" />
+              </div>
+            </template>
+          </div>
+          <div v-else class="empty-hint">会话内容为空或解析失败</div>
         </template>
       </n-drawer-content>
     </n-drawer>
@@ -272,6 +430,15 @@ onMounted(load)
 }
 .msg.assistant .msg-role {
   color: var(--brand-hover);
+}
+.msg-marker {
+  margin: 4px 0;
+  padding: 6px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-4);
+  border-top: 1px dashed var(--border-soft);
+  border-bottom: 1px dashed var(--border-soft);
 }
 .msg-role.reply {
   color: var(--brand-2);

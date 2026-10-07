@@ -77,3 +77,15 @@ export function parseIR<T>(json: string): T | null {
     return null
   }
 }
+
+/**
+ * 把 IR 图片块还原成可直接用作 <img> src 的地址：
+ * URL 形态（OpenAI image_url，含已是 data URL 的）原样返回；
+ * base64 形态（Anthropic source）组装成 data URL；都为空返回空串。
+ */
+export function imageSrc(img: IRImage | null | undefined): string {
+  if (!img) return ''
+  if (img.URL) return img.URL
+  if (img.Base64) return `data:${img.MediaType || 'image/png'};base64,${img.Base64}`
+  return ''
+}

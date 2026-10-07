@@ -6,7 +6,7 @@
  * 字段判断（这里把这一点也固定下来，免得有人误以为它会兜底）。
  */
 import { describe, expect, it } from 'vitest'
-import { parseIR, type IRRequest, type IRResponse } from './ir'
+import { imageSrc, parseIR, type IRRequest, type IRResponse } from './ir'
 
 describe('parseIR', () => {
   it('空串与纯空白返回 null（未归档 / 无内容）', () => {
@@ -49,5 +49,35 @@ describe('parseIR', () => {
     // 注意 0 是 falsy，但入参是非空字符串，所以照样返回 0（不是 null）
     expect(parseIR<number>('0')).toBe(0)
     expect(parseIR<string>('"x"')).toBe('x')
+  })
+})
+
+describe('imageSrc', () => {
+  it('URL 形态原样返回（含已是 data URL 的）', () => {
+    expect(imageSrc({ URL: 'https://example.com/a.png', Base64: '', MediaType: '' }))
+      .toBe('https://example.com/a.png')
+    const dataURL = 'data:image/webp;base64,AAAA'
+    expect(imageSrc({ URL: dataURL, Base64: '', MediaType: '' })).toBe(dataURL)
+  })
+
+  it('base64 形态组装成 data URL，MediaType 原样带上', () => {
+    expect(imageSrc({ URL: '', Base64: 'QUJD', MediaType: 'image/jpeg' }))
+      .toBe('data:image/jpeg;base64,QUJD')
+  })
+
+  it('base64 缺 MediaType 时回退 image/png', () => {
+    expect(imageSrc({ URL: '', Base64: 'QUJD', MediaType: '' }))
+      .toBe('data:image/png;base64,QUJD')
+  })
+
+  it('URL 优先于 Base64', () => {
+    expect(imageSrc({ URL: 'https://example.com/a.png', Base64: 'QUJD', MediaType: 'image/png' }))
+      .toBe('https://example.com/a.png')
+  })
+
+  it('空值 / 两个字段都为空返回空串', () => {
+    expect(imageSrc(null)).toBe('')
+    expect(imageSrc(undefined)).toBe('')
+    expect(imageSrc({ URL: '', Base64: '', MediaType: '' })).toBe('')
   })
 })

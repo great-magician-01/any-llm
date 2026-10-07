@@ -403,6 +403,65 @@ func TestConversationShardDDLDialects(t *testing.T) {
 	}
 }
 
+// TestSessionShardDDLDialects 覆盖会话聚合分表 DDL 的三方言渲染：
+// PG 的共享序列默认值与独立索引、MySQL 的显式 id 与内联索引（含
+// session_id 唯一键）、SQLite 拒绝。
+func TestSessionShardDDLDialects(t *testing.T) {
+	const seq = "conversation_sessions_id_seq"
+	const name = "conversation_sessions_2026_10"
+
+	pg, err := SessionShardDDL(DialectPostgres, name, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgDDL := joinDDL(pg)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS conversation_sessions_2026_10 (",
+		"id BIGINT NOT NULL DEFAULT nextval('conversation_sessions_id_seq') PRIMARY KEY",
+		"session_id TEXT NOT NULL",
+		"messages TEXT NOT NULL DEFAULT '[]'",
+		"last_active_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_sess_2026_10_sid ON conversation_sessions_2026_10(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_sess_2026_10_lastresp ON conversation_sessions_2026_10(last_response_id)",
+		"CREATE INDEX IF NOT EXISTS idx_sess_2026_10_active ON conversation_sessions_2026_10(last_active_at)",
+	} {
+		if !strings.Contains(pgDDL, want) {
+			t.Errorf("PG session shard DDL missing %q:\n%s", want, pgDDL)
+		}
+	}
+
+	my, err := SessionShardDDL(DialectMySQL, name, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(my) != 1 {
+		t.Fatalf("MySQL session shard DDL should be one statement (indexes inline), got %d", len(my))
+	}
+	myDDL := my[0]
+	for _, want := range []string{
+		"`id` BIGINT NOT NULL PRIMARY KEY",
+		"`session_id` VARCHAR(255) NOT NULL",
+		"`last_response_id` VARCHAR(255)",
+		"`messages` LONGTEXT NOT NULL",
+		"UNIQUE KEY `idx_sess_2026_10_sid` (`session_id`)",
+		"KEY `idx_sess_2026_10_lastresp` (`last_response_id`)",
+		"KEY `idx_sess_2026_10_active` (`last_active_at`)",
+		") DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+	} {
+		if !strings.Contains(myDDL, want) {
+			t.Errorf("MySQL session shard DDL missing %q:\n%s", want, myDDL)
+		}
+	}
+	// MySQL 没有序列：id 由 id_sequences 计数器显式分配。
+	if strings.Contains(myDDL, "nextval") || strings.Contains(myDDL, "AUTO_INCREMENT") {
+		t.Errorf("MySQL session shard DDL must not use a sequence:\n%s", myDDL)
+	}
+
+	if _, err := SessionShardDDL(DialectSQLite, name, seq); err == nil {
+		t.Error("SQLite must reject session shard DDL (no sharding on sqlite)")
+	}
+}
+
 // TestConversationShardColsMatchSchema 盯住插入列清单与 schema 定义一致：
 // store.insertConversationInto 直接用它拼装 INSERT。
 func TestConversationShardColsMatchSchema(t *testing.T) {

@@ -20,7 +20,7 @@ func TestConversationDisabledOnSQLite(t *testing.T) {
 	if snap != nil {
 		t.Fatalf("snapshotRequestIR on SQLite = %q, want nil (PG-only)", snap)
 	}
-	rec := g.newConvCtx(req, nil, nil, "gpt-4o", "openai", snap, false, []byte("{}"))
+	rec := g.newConvCtx(req, nil, nil, "gpt-4o", "openai", snap, false, []byte("{}"), convInfo{})
 	if rec != nil {
 		t.Fatalf("newConvCtx on SQLite = %+v, want nil (PG-only)", rec)
 	}

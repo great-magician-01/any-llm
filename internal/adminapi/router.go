@@ -62,6 +62,8 @@ func (a *API) Handler() http.Handler {
 	// 对话归档（只读）与配置导入导出
 	mux.HandleFunc("GET /api/admin/conversations", a.listConversations)
 	mux.HandleFunc("GET /api/admin/conversations/{id}", withID(a.getConversation))
+	mux.HandleFunc("GET /api/admin/conv-sessions", a.listConvSessions)
+	mux.HandleFunc("GET /api/admin/conv-sessions/{id}", withID(a.getConvSession))
 	mux.HandleFunc("GET /api/admin/config/export", a.handleConfigExport)
 	mux.HandleFunc("POST /api/admin/config/import", a.handleConfigImport)
 

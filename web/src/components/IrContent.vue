@@ -8,7 +8,7 @@ const md = new MarkdownIt()
 <script setup lang="ts">
 import { computed } from 'vue'
 import { formatInt } from '../utils/format'
-import type { IRContentBlock } from '../utils/ir'
+import { imageSrc, type IRContentBlock } from '../utils/ir'
 
 interface BlockView {
   kind: 'text' | 'markdown' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'unknown'
@@ -62,7 +62,7 @@ function toView(b: IRContentBlock): BlockView {
       return base({ kind: 'tool_result', text, long: text.length > COLLAPSE_LEN, isError: !!b.ToolResult?.IsError })
     }
     case 'image':
-      return base({ kind: 'image', imageURL: b.Image?.URL || '', mediaType: b.Image?.MediaType || '' })
+      return base({ kind: 'image', imageURL: imageSrc(b.Image), mediaType: b.Image?.MediaType || '' })
     default:
       return base({ kind: 'unknown', text: b.Text || '' })
   }
@@ -122,10 +122,10 @@ function renderMd(text: string): string {
         <pre v-else class="mono pre-wrap sub-body">{{ v.text }}</pre>
       </div>
 
-      <!-- 图片 -->
+      <!-- 图片（URL 或 base64 组装成的 data URL；点击可放大预览） -->
       <div v-else-if="v.kind === 'image'" class="sub-block">
         <n-image v-if="v.imageURL" :src="v.imageURL" :width="320" object-fit="contain" />
-        <span v-else class="dim">[base64 图片{{ v.mediaType ? `（${v.mediaType}）` : '' }}]</span>
+        <span v-else class="dim">[图片数据为空{{ v.mediaType ? `（${v.mediaType}）` : '' }}]</span>
       </div>
 
       <!-- 未知类型兜底 -->
