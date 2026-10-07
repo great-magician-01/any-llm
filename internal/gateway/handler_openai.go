@@ -19,6 +19,10 @@ import (
 // dispatch 按候选链依次尝试调用上游。直连路由是单候选的特例；别名路由可含
 // 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
 // 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
+//
+// 多格式上游：每个候选先经 effectiveUpstream 按入站端点格式解析实际使用的
+// 端点——命中附加端点则原生直通（零转译），否则用主格式走 IR 转译（与单格式
+// 上游行为一致）。usage / 对话归档的 up_format 记实际生效的格式。
 func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, body []byte) {
 	first := targets[0]
 	logger.Info("completion request",
@@ -26,6 +30,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		"key_label", key.Label,
 		"upstream", first.Upstream.Name,
 		"upstream_format", first.Upstream.Format,
+		"effective_format", effectiveUpstream(first.Upstream, inFormat).Format,
 		"model", first.ModelName,
 		"candidates", len(targets),
 		"in_format", inFormat,
@@ -98,9 +103,10 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			continue
 		}
 		irReq.Model = t.ModelName
-		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body, conv)
+		eu := effectiveUpstream(t.Upstream, inFormat)
+		rec := g.newConvCtx(r, key, eu, t.ModelName, inFormat, reqIRJSON, false, body, conv)
 		callStart := time.Now()
-		result, err := g.client.Call(r.Context(), t.Upstream, irReq, r.Header)
+		result, err := g.client.Call(r.Context(), eu, irReq, r.Header)
 		// 非流式 Call 返回时上游响应体已完整读取，立即释放并发槽。
 		release()
 		callDur := time.Since(callStart)
@@ -108,7 +114,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			if len(targets) > 1 {
 				logger.Warn("candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
+			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			lastErr = err
 			continue
@@ -116,7 +122,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		if sess != nil {
 			result.Response.ID = sess.respID
 		}
-		g.handleNonStream(w, inFormat, result, key, t.Upstream, t.ModelName, irReq.Stream, sess, rec, callDur)
+		g.handleNonStream(w, inFormat, result, key, eu, t.ModelName, irReq.Stream, sess, rec, callDur)
 		return
 	}
 	if busy == len(targets) {
@@ -283,7 +289,8 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	// 直接跳过（预占时已过滤一遍；循环内再试占是为了覆盖故障转移到的候选）。
 	var result *upstream.Result
 	var win *store.AliasTarget
-	var winStart time.Time // 命中候选的调用开始时刻，作为该次调用的计时起点
+	var winEff *store.Upstream // 命中候选按入站格式解析后的生效端点（usage/错误透传用）
+	var winStart time.Time     // 命中候选的调用开始时刻，作为该次调用的计时起点
 	var rec *convCtx
 	var lastErr error
 	for i := heldIdx; i < len(targets); i++ {
@@ -302,16 +309,17 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 		winRelease = release
 		irReq.Model = t.ModelName
-		rec = g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body, conv)
+		eu := effectiveUpstream(t.Upstream, inFormat)
+		rec = g.newConvCtx(r, key, eu, t.ModelName, inFormat, reqIRJSON, true, body, conv)
 		if rec != nil {
 			rec.tee = tee
 		}
 		callStart := time.Now()
-		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, t.Upstream, irReq, streamStart)
+		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, eu, irReq, streamStart)
 		callDur := time.Since(callStart)
 		if clientGone {
 			release()
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
+			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			logger.Info("completion done",
 				"upstream", t.Upstream.Name, "model", t.ModelName, "stream", true,
@@ -325,11 +333,11 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			if len(targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
+			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
 			rec.finish("error", translate.Usage{}, nil)
 			continue
 		}
-		result, win, winStart = res, t, callStart
+		result, win, winEff, winStart = res, t, eu, callStart
 		break
 	}
 
@@ -353,7 +361,9 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		return
 	}
 
-	u := win.Upstream
+	// 命中候选的生效端点：原生直通时 u.Format 已是附加端点的格式，下面
+	// recordUsage 的 up_format 与错误类型透传判断都按实际使用的格式记。
+	u := winEff
 	realModel := win.ModelName
 
 	// 命中候选确定后再建编码器（此前只写过 keep-alive，无内容帧）。
@@ -593,6 +603,24 @@ func decodeInbound(body []byte, inFormat string) (*translate.Request, error) {
 	default:
 		return openai.DecodeRequest(body)
 	}
+}
+
+// effectiveUpstream 按入站端点格式解析本次请求对候选上游实际使用的端点：
+// 附加端点命中 inFormat → 浅拷贝换上该条目的 BaseURL/Format（原生直通，
+// 零转译）；否则原样返回（主格式兜底，走 IR 转译，与单格式上游行为一致）。
+// 浅拷贝安全：只换两个 string 字段，ExtraEndpoints 等 slice 字段不改动。
+// 上游调用层（upstream.Client.Call 的编码/路径/认证头/流式解码）只对
+// 生效视图的 Format 分发，因此本身无需感知多端点。
+func effectiveUpstream(u *store.Upstream, inFormat string) *store.Upstream {
+	for _, ep := range u.ExtraEndpoints {
+		if ep.Format == inFormat {
+			c := *u
+			c.Format = ep.Format
+			c.BaseURL = ep.BaseURL
+			return &c
+		}
+	}
+	return u
 }
 
 func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {

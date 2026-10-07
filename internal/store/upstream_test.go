@@ -122,6 +122,105 @@ func TestUpstreamRemark(t *testing.T) {
 	}
 }
 
+// TestUpstreamExtraEndpoints 盯住 extra_endpoints 的完整往返（与 TestUpstreamRemark
+// 同款理由：UpdateUpstream 是全量覆盖，UPDATE 漏了该列会在每次保存——含只改
+// enabled 的开关 PATCH——时静默清空附加端点）。
+func TestUpstreamExtraEndpoints(t *testing.T) {
+	d := testDB(t)
+	eps := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://api.deepseek.com/anthropic"}}
+	id, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "https://api.deepseek.com/v1", APIKey: "k", Format: "openai", ExtraEndpoints: eps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 无附加端点的上游：读回为 nil/空，而不是 NULL 扫描失败或脏值
+	plain, err := CreateUpstream(d, &Upstream{Name: "plain", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := mustGet(t, d, plain); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("unset extra_endpoints=%+v, want empty", u.ExtraEndpoints)
+	}
+
+	for _, tc := range []struct {
+		name string
+		u    *Upstream
+	}{
+		{"byID", mustGet(t, d, id)},
+		{"byName", mustGetByName(t, d, "u")},
+	} {
+		if len(tc.u.ExtraEndpoints) != 1 || tc.u.ExtraEndpoints[0] != eps[0] {
+			t.Fatalf("%s extra_endpoints=%+v", tc.name, tc.u.ExtraEndpoints)
+		}
+	}
+	list, err := ListUpstreams(d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || len(list[0].ExtraEndpoints) != 1 || list[0].ExtraEndpoints[0] != eps[0] {
+		t.Fatalf("list extra_endpoints=%+v (len=%d)", list[0].ExtraEndpoints, len(list))
+	}
+
+	// 全量保存（只改别的字段）不得抹掉附加端点
+	u := mustGet(t, d, id)
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	again := mustGet(t, d, id)
+	if len(again.ExtraEndpoints) != 1 || again.ExtraEndpoints[0] != eps[0] || again.Enabled {
+		t.Fatalf("after update=%+v", again)
+	}
+	// 清空附加端点也要落库
+	again.ExtraEndpoints = nil
+	if err := UpdateUpstream(d, again); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, d, id); len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("clear extra_endpoints=%+v", got.ExtraEndpoints)
+	}
+}
+
+func TestValidateExtraEndpoints(t *testing.T) {
+	good := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}}
+	if err := ValidateExtraEndpoints("openai", good); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	if err := ValidateExtraEndpoints("openai", nil); err != nil {
+		t.Fatalf("nil should be valid: %v", err)
+	}
+	cases := []struct {
+		name    string
+		primary string
+		eps     []UpstreamEndpoint
+	}{
+		{"unknown format", "openai", []UpstreamEndpoint{{Format: "gemini", BaseURL: "https://x"}}},
+		{"empty base_url", "openai", []UpstreamEndpoint{{Format: "anthropic", BaseURL: "  "}}},
+		{"duplicates primary", "openai", []UpstreamEndpoint{{Format: "openai", BaseURL: "https://x"}}},
+		{"duplicate within list", "openai", []UpstreamEndpoint{
+			{Format: "anthropic", BaseURL: "https://x"}, {Format: "anthropic", BaseURL: "https://y"}}},
+	}
+	for _, tc := range cases {
+		if err := ValidateExtraEndpoints(tc.primary, tc.eps); err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
+	}
+}
+
+// TestParseExtraEndpointsDirty 脏数据（非法 JSON）按无附加端点处理而不是报错：
+// 该列在网关热路径上被读，一条坏数据不能把整个上游读挂。
+func TestParseExtraEndpointsDirty(t *testing.T) {
+	if got := parseExtraEndpoints(""); got != nil {
+		t.Fatalf("empty=%v", got)
+	}
+	if got := parseExtraEndpoints("{not-json"); got != nil {
+		t.Fatalf("dirty=%v", got)
+	}
+	got := parseExtraEndpoints(`[{"format":"anthropic","base_url":"https://x"}]`)
+	if len(got) != 1 || got[0].Format != "anthropic" || got[0].BaseURL != "https://x" {
+		t.Fatalf("parsed=%+v", got)
+	}
+}
+
 func mustGet(t *testing.T, d *sql.DB, id int64) *Upstream {
 	t.Helper()
 	u, err := GetUpstreamByID(d, id)

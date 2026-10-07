@@ -307,4 +307,83 @@ describe('Upstreams 页（经典皮肤）', () => {
     expect(api.callsTo('get', '/upstreams').length).toBe(listBefore + 1)
     expect(api.callsTo('get', '/balances').length).toBe(balBefore + 1)
   })
+
+  // 规则：附加端点在表单里增删成行，创建时随表单一起提交
+  it('附加格式端点：添加一行并随创建请求提交', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://api.deepseek.com/v1')
+    await fillInput(inputByLabel('API Key'), 'sk-real')
+
+    await clickButton('添加端点')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    expect(epInput).toBeTruthy()
+    await fillInput(epInput, 'https://api.deepseek.com/anthropic')
+
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds' }) })
+    await clickButton('添加')
+
+    const posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    // 附加端点默认取第一个未被主格式占用的协议（主格式 openai → anthropic）
+    expect(posts[0].data.extra_endpoints).toEqual([{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }])
+    expect(messagesOf('success')).toContain('已添加')
+  })
+
+  // 规则：主格式与附加端点撞车时在表单里给出可操作的提示，并阻止保存
+  // （后端同样 400，但用户应该更早看到该删哪一行）
+  it('主格式与附加端点重复：提示删除重复项且不发保存请求', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://api.deepseek.com/v1')
+    await clickButton('添加端点')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    await fillInput(epInput, 'https://api.deepseek.com/anthropic')
+    // 此刻尚无重复（主格式 openai + 附加 anthropic）
+    expect(bodyHas('请删除重复项')).toBe(false)
+
+    // 把主格式切到 Anthropic → 与附加端点撞车，提示出现
+    const radio = Array.from(document.querySelectorAll('.n-radio'))
+      .find(el => (el.textContent ?? '').replace(/\s+/g, '') === 'Anthropic') as HTMLElement
+    expect(radio).toBeTruthy()
+    radio.click()
+    await flush()
+    expect(bodyHas('附加端点与主格式重复')).toBe(true)
+
+    // 保存被拦截：提示 + 不发创建请求
+    await clickButton('添加')
+    expect(messagesOf('error').join('|')).toContain('请删除重复项')
+    expect(api.callsTo('post', '/upstreams')).toHaveLength(0)
+
+    // 移除重复行后提示消失、可以保存
+    await clickButton('移除')
+    expect(bodyHas('请删除重复项')).toBe(false)
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds', format: 'anthropic' }) })
+    await clickButton('添加')
+    const posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    expect(posts[0].data.format).toBe('anthropic')
+    expect(posts[0].data.extra_endpoints).toEqual([])
+  })
+
+  // 规则：编辑带附加端点的上游时端点回填进表单；直接保存原样带回（不能丢）
+  it('编辑时回填附加端点，保存原样提交', async () => {
+    const withExtras = upstream({
+      extra_endpoints: [{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }],
+    })
+    await open([withExtras])
+    api.on('put', '/upstreams/1', { data: withExtras })
+
+    await clickButton('编辑')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    expect(epInput?.value).toBe('https://api.deepseek.com/anthropic')
+
+    await clickButton('保存')
+    const puts = api.callsTo('put', '/upstreams/1')
+    expect(puts).toHaveLength(1)
+    expect(puts[0].data.extra_endpoints).toEqual([{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }])
+    expect(messagesOf('success')).toContain('已保存')
+  })
 })

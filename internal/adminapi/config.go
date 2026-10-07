@@ -37,17 +37,20 @@ type configUpstreamModel struct {
 }
 
 type configUpstream struct {
-	Name              string                `json:"name"`
-	BaseURL           string                `json:"base_url"`
-	APIKey            string                `json:"api_key"`
-	Format            string                `json:"format"`
-	Remark            *string               `json:"remark"`
-	Enabled           *bool                 `json:"enabled"`
-	ExpiresAt         optTime               `json:"expires_at"`
-	DailyTokenLimit   *int                  `json:"daily_token_limit"`
-	MonthlyTokenLimit *int                  `json:"monthly_token_limit"`
-	MaxConcurrent     *int                  `json:"max_concurrent"`
-	Models            []configUpstreamModel `json:"models"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Format  string `json:"format"`
+	// 附加格式端点（选填）。指针沿用「缺席即保留」惯例：导入时 nil = 新建不带 /
+	// 更新保留现值，显式空数组 = 清空。version 保持 1：旧文件没有该字段，语义不变。
+	ExtraEndpoints    *[]store.UpstreamEndpoint `json:"extra_endpoints,omitempty"`
+	Remark            *string                   `json:"remark"`
+	Enabled           *bool                     `json:"enabled"`
+	ExpiresAt         optTime                   `json:"expires_at"`
+	DailyTokenLimit   *int                      `json:"daily_token_limit"`
+	MonthlyTokenLimit *int                      `json:"monthly_token_limit"`
+	MaxConcurrent     *int                      `json:"max_concurrent"`
+	Models            []configUpstreamModel     `json:"models"`
 }
 
 type configBinding struct {
@@ -96,6 +99,10 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		cu := configUpstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Remark: &u.Remark,
 			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit, MaxConcurrent: &u.MaxConcurrent,
 			ExpiresAt: optTime{set: true, t: u.ExpiresAt}}
+		if len(u.ExtraEndpoints) > 0 {
+			eps := append([]store.UpstreamEndpoint(nil), u.ExtraEndpoints...)
+			cu.ExtraEndpoints = &eps
+		}
 		en := u.Enabled
 		cu.Enabled = &en
 		models, err := store.ListModels(a.db, u.ID)
@@ -239,6 +246,11 @@ func validateImport(in *configFile) error {
 		if u.Format != "openai" && u.Format != "anthropic" && u.Format != "responses" {
 			return fmt.Errorf("upstreams[%d]: format must be openai, anthropic or responses", i)
 		}
+		if u.ExtraEndpoints != nil {
+			if err := store.ValidateExtraEndpoints(u.Format, *u.ExtraEndpoints); err != nil {
+				return fmt.Errorf("upstreams[%d]: %w", i, err)
+			}
+		}
 		if u.DailyTokenLimit != nil && *u.DailyTokenLimit < 0 {
 			return fmt.Errorf("upstreams[%d]: daily_token_limit must be >= 0", i)
 		}
@@ -290,6 +302,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		nu := &store.Upstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Enabled: true,
 			MaxConcurrent: store.DefaultMaxConcurrent}
+		if u.ExtraEndpoints != nil {
+			nu.ExtraEndpoints = *u.ExtraEndpoints
+		}
 		if u.Remark != nil {
 			nu.Remark = *u.Remark
 		}
@@ -332,6 +347,9 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	ex.BaseURL = u.BaseURL
 	ex.APIKey = u.APIKey
 	ex.Format = u.Format
+	if u.ExtraEndpoints != nil {
+		ex.ExtraEndpoints = *u.ExtraEndpoints
+	}
 	if u.Remark != nil {
 		ex.Remark = *u.Remark
 	}

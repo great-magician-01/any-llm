@@ -114,6 +114,11 @@ var schemaTables = []Table{
 			// 不给 Len、不建索引，MySQL 保持 TEXT，默认值走表达式形式（DEFAULT ('')）。
 			// 声明在列清单末尾：老库靠 LateAdd ALTER 追加也在末尾，两种库物理列序一致。
 			{Name: "remark", Type: TypeText, Default: "''", LateAdd: true},
+			// 附加格式端点（选填）：JSON 数组文本 [{"format":"anthropic","base_url":"..."}]，
+			// '' = 无。base_url/format 仍是主格式（兜底），这里是其余格式的原生入口；
+			// 网关按入站 endpoint 格式优先命中附加端点做原生直通，未命中走主格式转译。
+			// 与 remark 同款：无 Len 不建索引，MySQL 保持 TEXT + 表达式默认值。
+			{Name: "extra_endpoints", Type: TypeText, Default: "''", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_upstreams_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},

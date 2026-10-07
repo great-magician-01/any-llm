@@ -379,6 +379,11 @@ func cloneUpstream(u *Upstream) *Upstream {
 		t := *u.ExpiresAt
 		c.ExpiresAt = &t
 	}
+	// ExtraEndpoints 是 slice：浅拷贝会共享底层数组，调用方（网关并发读）若
+	// 追加/改元素会直接改到缓存里的条目。与 cloneExtKey 的 AllowedModels 同理深拷贝。
+	if u.ExtraEndpoints != nil {
+		c.ExtraEndpoints = append([]UpstreamEndpoint(nil), u.ExtraEndpoints...)
+	}
 	return &c
 }
 
