@@ -111,6 +111,44 @@ describe('Dashboard 页（经典皮肤）', () => {
     expect(document.querySelector('textarea')).toBeNull()
   })
 
+  // 规则：概览的「上游用量」和「余额/额度」卡片只展示启用中的上游——
+  // 已禁用代表下线观察，不应再占概览版面（过期的仍显示，续期即恢复服务）
+  it('上游用量与余额/额度卡片隐藏已禁用的上游', async () => {
+    api.on('get', '/usage/summary', { data: { data: [] } })
+    api.on('get', '/usage/daily', { data: { data: [] } })
+    api.on('get', '/keys', { data: { data: [] } })
+    api.on('get', '/upstreams', {
+      data: {
+        data: [
+          { id: 1, name: 'up-enabled', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 },
+          { id: 2, name: 'up-disabled', enabled: false, daily_token_limit: 0, monthly_token_limit: 0 },
+        ],
+      },
+    })
+    api.on('get', '/usage/upstream/1', { data: { daily_tokens: 100, monthly_tokens: 200 } })
+    api.on('get', '/usage/upstream/2', { data: { daily_tokens: 5, monthly_tokens: 6 } })
+    const snapshot = (id: number, upstreamId: number, name: string) => ({
+      id,
+      upstream_id: upstreamId,
+      upstream_name: name,
+      vendor: 'deepseek',
+      payload: {
+        kind: 'balance',
+        is_available: true,
+        balances: [{ currency: 'CNY', total: '169.29', granted: '0', topped_up: '169.29' }],
+      },
+      created_at: new Date().toISOString(),
+    })
+    api.on('get', '/balances', { data: { data: [snapshot(11, 1, 'up-enabled'), snapshot(12, 2, 'up-disabled')] } })
+
+    wrapper = mountPage(Dashboard)
+    await flush()
+
+    const text = wrapper.text()
+    expect(text).toContain('up-enabled')
+    expect(text).not.toContain('up-disabled')
+  })
+
   // 规则：两套 Dashboard 必须共用同一份复制实现；任何一边自己调
   // navigator.clipboard 都会在这里露馅（这次修的就是经典/毛玻璃各写了一份）
   it('两套 Dashboard 都从共享的 useClipboard 复制，不私藏剪贴板实现', () => {

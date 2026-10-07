@@ -14,9 +14,11 @@ function usageOf(u: Upstream): UsageTotals | undefined {
   return u.id != null ? props.usage[u.id] : undefined
 }
 
-// 本月用量多的排前面，概览一眼看到消耗大头
+// 本月用量多的排前面，概览一眼看到消耗大头；已禁用的上游不再展示（过期仍显示，续期即恢复）
 const rows = computed(() =>
-  [...props.upstreams].sort((a, b) => (usageOf(b)?.monthly_tokens ?? 0) - (usageOf(a)?.monthly_tokens ?? 0)),
+  props.upstreams
+    .filter((u) => u.enabled)
+    .sort((a, b) => (usageOf(b)?.monthly_tokens ?? 0) - (usageOf(a)?.monthly_tokens ?? 0)),
 )
 
 interface Quota {
@@ -55,12 +57,11 @@ function statusOf(q: Quota): 'success' | 'warning' | 'error' {
         v-for="u in rows"
         :key="u.id"
         class="up-row"
-        :class="{ dim: !u.enabled || isExpired(u) }"
+        :class="{ dim: isExpired(u) }"
       >
         <div class="up-head">
           <span class="up-name">{{ u.name }}</span>
-          <n-tag v-if="!u.enabled" size="tiny" :bordered="false">已禁用</n-tag>
-          <n-tag v-else-if="isExpired(u)" size="tiny" type="error" :bordered="false">已过期</n-tag>
+          <n-tag v-if="isExpired(u)" size="tiny" type="error" :bordered="false">已过期</n-tag>
         </div>
         <div class="up-quotas">
           <div v-for="q in quotas(u)" :key="q.label" class="up-quota">
