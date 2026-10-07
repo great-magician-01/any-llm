@@ -79,6 +79,33 @@ func DecodeStreamEvent(data []byte) (*translate.StreamEvent, error) {
 			evt.CacheCreationTokens = u.CacheCreationInputTokens
 			evt.RawUsage = raw.Usage
 		}
+		// Preserve raw delta fields we don't model (e.g. Claude Code's
+		// `safeguard_results`) so they survive the same-format round trip.
+		if len(raw.Delta) > 0 {
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(raw.Delta, &m); err == nil {
+				delete(m, "stop_reason")
+				delete(m, "stop_sequence")
+				if len(m) > 0 {
+					evt.DeltaExtras = m
+				}
+			}
+		}
+		return evt, nil
+	case "error":
+		// 上游过载/超时会发 event: error。必须作为 error 事件透传（含原始
+		// type/message），否则客户端拿到的是一个没有错误帧、也没有
+		// message_stop 的截断流；细节丢了则只剩一句无法诊断的通用文案。
+		evt := &translate.StreamEvent{Type: "error"}
+		var e struct {
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(data, &e); err == nil {
+			evt.ErrType, evt.ErrMessage = e.Error.Type, e.Error.Message
+		}
 		return evt, nil
 	case "message_stop":
 		return &translate.StreamEvent{Type: "message_stop"}, nil
@@ -150,6 +177,13 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 		d := map[string]any{
 			"stop_reason":   mapStopReasonToAnthropic(evt.StopReason),
 			"stop_sequence": nil,
+		}
+		// Merge raw delta fields we didn't model (e.g. Claude Code's
+		// `safeguard_results`) back into the delta object.
+		for k, v := range evt.DeltaExtras {
+			if _, exists := d[k]; !exists {
+				d[k] = v
+			}
 		}
 		payload["delta"] = d
 		if len(evt.RawUsage) > 0 {
@@ -237,6 +271,13 @@ func blockToRaw(b translate.ContentBlock) map[string]any {
 		return m
 	case "redacted_thinking":
 		return map[string]any{"type": "redacted_thinking", "data": b.Data}
+	case "image":
+		// 图片块没有 delta 形态，source 全在 start 帧里：缺这个分支时图片块
+		// 落到 default（Extra 为空）被编成 {"type":"image"} 空壳，source 丢失。
+		if b.Image == nil {
+			return map[string]any{"type": "image"}
+		}
+		return map[string]any{"type": "image", "source": anthropicImageSource(b.Image)}
 	case "tool_use":
 		if b.ToolUse == nil {
 			// Synthesized block (upstream omitted content_block_start): only
@@ -274,6 +315,12 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 		var tp rawTextPart
 		_ = json.Unmarshal(raw, &tp)
 		return &translate.ContentBlock{Type: "text", Text: tp.Text}, nil
+	case "image":
+		// 流式 content_block_start 也要认图片，否则图片块落到 default 被当成
+		// 未知块塞进 Extra（source 丢失）。
+		var ip rawImagePart
+		_ = json.Unmarshal(raw, &ip)
+		return &translate.ContentBlock{Type: "image", Image: anthropicImage(ip.Source)}, nil
 	case "thinking":
 		var tb struct {
 			Type      string `json:"type"`

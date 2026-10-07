@@ -22,7 +22,8 @@ go vet ./...                           # lint is gofmt + go vet only (checked in
 
 # Frontend
 cd web && npm run dev                  # Vite dev server, proxies /api and /v1 to :6718
-cd web && npm run test                 # vitest (router auth guard, axios 401 interceptor, theme composable)
+cd web && npm run test                 # vitest: utils/composables + 组件测试 + 路由/axios 契约 + 双主题 parity
+cd web && npm run test:coverage        # 同上并打印覆盖率（v8，测试与 src/test/ 辅助不计入）
 cd web && npm run build                # vue-tsc typecheck + vite build + copy dist to ../cmd/any-llm/web/dist
 
 # Build the binary (frontend dist MUST exist first — it is embedded)
@@ -65,7 +66,8 @@ Every request ends in `recordUsage` (via the async writer, so it never blocks th
 
 - The response header is flushed before the upstream call completes; a 500ms ticker sends keep-alive pings (`: kp` for OpenAI, `ping` events for Anthropic) until the call returns.
 - Anthropic clients abort if they receive a `content_block_delta` for an index that never had `content_block_start` — the gateway synthesizes missing `content_block_start` events for upstreams like DeepSeek that omit them.
-- If the upstream answers a stream request with a non-stream JSON body, it is forwarded as a complete response (`result.Response != nil` branch).
+- If the upstream answers a stream request with a non-stream JSON body (compat layers that ignore `stream: true`), the complete response is expanded back into IR stream events (`translate.ResponseStreamEvents`) and re-encoded as a **proper SSE stream** — writing the bare JSON into an `text/event-stream` response would be dropped line-by-line by strict SDKs, and the pre-2024 behaviour (nothing at all) left the client with an empty stream. `upstream.Client.Call` detects this by an explicit JSON `Content-Type` only, so upstreams that omit the header still get real streaming.
+- If the upstream emits an in-band error event mid-stream (`event: error` for Anthropic, `response.failed` for Responses → IR `{Type:"error"}`), the gateway writes a client-format error frame (`writeStreamErrorFrame`), stops the stream, skips `Flush` (a failed stream must not be rewritten as a normal completion) and records the usage as `error`. None of the three stream encoders has an `error` branch, so without this the event is silently dropped.
 - On stream end, `encoder.Flush()` emits trailing frames (e.g. Responses `response.completed`).
 
 ### DB layer
@@ -75,7 +77,7 @@ Every request ends in `recordUsage` (via the async writer, so it never blocks th
   Queries are written with `?` and passed through `db.Rebind(d, q)` which rewrites them to `$N` for PostgreSQL only (SQLite and MySQL use `?` natively); string literals and SQL comments are skipped. `db.DialectOf` infers the dialect from the driver — never store dialect as global state.
   Everything else dialect-specific is a named helper in `internal/db`, not a switch in business code: `InsertReturningID` / `InsertReturningIDTx` (MySQL has no `RETURNING`), `ConflictIgnoreSuffix` / `UpsertSuffix` (MySQL has no `ON CONFLICT`), `JSONPlaceholder`, `DayBucketExpr`, `ConcatExpr`, `CastTextExpr`, `QuoteIdent`, `IsUndefinedTable`, `ListTablesLike`, `NextShardID`, and the `Dialect.SupportsConversationArchive()` capability predicate.
   MySQL's biggest gap is **no partial indexes** — the "unique among active rows" scheme is lowered to a generated column plus a plain unique key (MySQL allows multiple NULLs, so soft-deleted rows stop occupying the slot). MySQL also needs **8.0.13+**: `BLOB`/`TEXT`/`JSON` columns reject a literal `DEFAULT ''` (error 1101) and only accept it wrapped as an expression (`DEFAULT ('')`), which is how the renderer keeps defaults identical across dialects. Read the `MySQL specifics` entry in `AGENTS.md` before touching any of this.
-- Backend tests use in-memory SQLite via `t.TempDir()`; PG and MySQL behavior is covered in `pg_e2e_test.go` / `mysql_e2e_test.go`, both skipped unless `DB_TEST_PG_DSN` / `DB_TEST_MYSQL_DSN` is set. CI runs a `mysql:8.0` service so the MySQL suite executes for real.
+- Backend tests use in-memory SQLite via `t.TempDir()`; PG and MySQL behavior is covered in `pg_e2e_test.go` / `mysql_e2e_test.go`, both skipped unless `DB_TEST_PG_DSN` / `DB_TEST_MYSQL_DSN` is set. CI runs **both** a `mysql:8.0` and a `postgres:17` service (with the matching DSNs), so both e2e suites execute for real there.
 
 ### Auth — two independent schemes
 

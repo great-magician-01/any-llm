@@ -124,10 +124,7 @@ func decodeBlocks(raw json.RawMessage) ([]translate.ContentBlock, error) {
 		case "image":
 			var ip rawImagePart
 			_ = json.Unmarshal(p, &ip)
-			out = append(out, translate.ContentBlock{Type: "image", Image: &translate.Image{
-				Base64:    ip.Source.Data,
-				MediaType: ip.Source.MediaType,
-			}})
+			out = append(out, translate.ContentBlock{Type: "image", Image: anthropicImage(ip.Source)})
 		case "thinking":
 			var tp rawThinkingPart
 			_ = json.Unmarshal(p, &tp)
@@ -223,6 +220,16 @@ func extractExtra(all map[string]any) map[string]any {
 	return extra
 }
 
+// anthropicImage 归一化 Anthropic 的图片 source：base64 source 保留载荷，
+// url source（以及塞在 url 里的 data URL）统一走 translate.NewImage。
+// 只认 base64 source 会让 {"type":"url",...} 的图片整块变成空图片。
+func anthropicImage(src rawImageSrc) *translate.Image {
+	if src.Data != "" {
+		return &translate.Image{Base64: src.Data, MediaType: src.MediaType}
+	}
+	return translate.NewImage(src.URL)
+}
+
 func DecodeResponse(body []byte) (*translate.Response, error) {
 	var rr rawResponse
 	if err := json.Unmarshal(body, &rr); err != nil {
@@ -244,6 +251,9 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 		return nil, err
 	}
 	resp.Content = blocks
+	if len(rr.SafeguardResults) > 0 {
+		resp.Extra = map[string]any{"safeguard_results": json.RawMessage(rr.SafeguardResults)}
+	}
 	return resp, nil
 }
 

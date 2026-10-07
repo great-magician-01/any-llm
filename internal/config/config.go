@@ -63,12 +63,21 @@ func Load() (*Config, error) {
 		SessionSecretFile: envStr("ANY_LLM_SESSION_SECRET_FILE", "./.session-secret"),
 		SessionTTL:        envDuration("ANY_LLM_SESSION_TTL", 24*time.Hour),
 		BalanceInterval:   envDuration("ANY_LLM_BALANCE_INTERVAL", 10*time.Minute),
-		LogFile:           envStr("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
-		LogLevel:          logLevel,
+		// LOG_FILE 用 allow-empty 语义：显式设成空串表示关闭文件日志（见
+		// AGENTS.md 的配置表）。用 envStr 会让空串回落到默认路径，于是"关闭
+		// 文件日志"这个已文档化的行为根本没法实现。
+		LogFile:  envAllowEmpty("ANY_LLM_LOG_FILE", "./logs/any-llm.log"),
+		LogLevel: logLevel,
 	}
 	cfg.DBType = normalizeDBType(cfg.DBType)
 	if cfg.MasterPassword == "admin" {
 		fmt.Fprintln(os.Stderr, "WARNING: using default master password 'admin'. Set ANY_LLM_MASTER_PASSWORD to change it.")
+	}
+	// 旧版 Docker 镜像曾把这个占位符预置进 ENV（见 git 历史）：它明文躺在公开
+	// 仓库里，用它签发的 admin 会话 cookie 任何人都能伪造。仍在跑旧镜像（或从
+	// 示例配置原样拷贝）的部署必须响亮警告。
+	if cfg.SessionSecret == knownPlaceholderSessionSecret {
+		fmt.Fprintln(os.Stderr, "WARNING: ANY_LLM_SESSION_SECRET is a public placeholder shipped in old images; anyone can forge admin sessions. Set a random value (openssl rand -hex 32) or unset it to auto-generate.")
 	}
 	if cfg.SessionSecret == "" {
 		secret, err := loadOrCreateSecret(cfg.SessionSecretFile)
@@ -79,6 +88,10 @@ func Load() (*Config, error) {
 	}
 	return cfg, nil
 }
+
+// knownPlaceholderSessionSecret 是旧镜像/示例配置里出现过的占位符密钥，
+// 仅用于启动时识别并告警。
+const knownPlaceholderSessionSecret = "a_very_strong_random_string_here"
 
 // loadOrCreateSecret reads the session secret from path, generating and
 // persisting a new one (mode 0600) when the file is missing or empty.
@@ -109,6 +122,15 @@ func loadOrCreateSecret(path string) (string, error) {
 
 func envStr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// envAllowEmpty 与 envStr 的区别只有一处：变量**存在但为空**时返回空串而不是
+// 默认值。用于那些"空串有独立含义"的设置（目前只有 ANY_LLM_LOG_FILE= 关闭文件日志）。
+func envAllowEmpty(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return def

@@ -55,6 +55,14 @@ type rawResponse struct {
 	Output            []rawOutputItem       `json:"output,omitempty"`
 	Usage             *rawUsage             `json:"usage,omitempty"`
 	IncompleteDetails *rawIncompleteDetails `json:"incomplete_details,omitempty"`
+	// Error 仅在 status=failed（或 response.failed 事件）时出现。
+	Error *rawResponseError `json:"error,omitempty"`
+}
+
+// rawResponseError 是 Responses 响应对象的扁平错误字段（code/message）。
+type rawResponseError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type rawIncompleteDetails struct {

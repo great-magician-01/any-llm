@@ -5,14 +5,18 @@ import { useMessage } from 'naive-ui'
 import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '@/api/usage'
 import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
+import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
+import { useClipboard } from '@/composables/useClipboard'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageCalendar from '@/components/UsageCalendar.vue'
 import UpstreamUsagePanel from '@/components/UpstreamUsagePanel.vue'
+import BalanceBoard from '@/components/BalanceBoard.vue'
 
 const router = useRouter()
 const message = useMessage()
+const { copyText } = useClipboard()
 
 const loading = ref(false)
 const today = ref({ requests: 0, tokens: 0, ok: 0, error: 0 })
@@ -22,6 +26,7 @@ const topModels = ref<UsageSummary[]>([])
 const daily = ref<UsageDayStat[]>([])
 const upstreamRows = ref<Upstream[]>([])
 const usageByUpstream = ref<Record<number, UsageTotals>>({})
+const balancesByUpstream = ref<Record<number, BalanceSnapshot>>({})
 const upstreamCount = ref(0)
 const modelCount = ref(0)
 const keyCount = ref(0)
@@ -54,7 +59,7 @@ function monthStart(): string {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [todayList, monthList, allList, ups, ks, dailyStats] = await Promise.all([
+    const [todayList, monthList, allList, ups, ks, dailyStats, snaps] = await Promise.all([
       fetchSummary('model', dayStart()),
       fetchSummary('model', monthStart()),
       fetchSummary('model'),
@@ -62,6 +67,8 @@ async function load(silent = false) {
       listKeys(),
       // 日历热力图要铺满 53 周，窗口略大于一年（后端上限 370 天）
       fetchDaily(370),
+      // 余额快照接口失败不阻塞概览其余数据（同上游管理页的做法）
+      listLatestBalances().catch(() => [] as BalanceSnapshot[]),
     ])
     today.value = sum(todayList)
     month.value = sum(monthList)
@@ -83,6 +90,9 @@ async function load(silent = false) {
       if (u.id != null && r) uMap[u.id] = r
     })
     usageByUpstream.value = uMap
+    const bMap: Record<number, BalanceSnapshot> = {}
+    for (const s of snaps) bMap[s.upstream_id] = s
+    balancesByUpstream.value = bMap
   } catch (e: any) {
     if (!silent) message.error('加载概览失败：' + (e?.message || String(e)))
   } finally {
@@ -94,14 +104,14 @@ const todayRate = computed(() => formatPercent(today.value.ok, today.value.reque
 const maxModelTokens = computed(() => topModels.value[0]?.total_tokens || 1)
 
 const origin = computed(() => window.location.origin)
-async function copyBaseUrl() {
+async function copyBaseUrl(evt?: MouseEvent) {
   const text = origin.value + '/v1'
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success('已复制：' + text)
-  } catch {
-    message.warning('复制失败，请手动复制：' + text)
-  }
+  // 走共享的 useClipboard：HTTP 非 localhost 部署（常见的内网/局域网访问）下
+  // 浏览器剪贴板 API 不可用，必须退回 execCommand 才能真正复制成功
+  await copyText(text, evt, {
+    success: '已复制：' + text,
+    fail: '复制失败，请手动复制：' + text,
+  })
 }
 
 let timer: ReturnType<typeof setInterval> | undefined
@@ -205,7 +215,7 @@ onUnmounted(() => clearInterval(timer))
               <template #icon><AppIcon name="key" :size="15" /></template>
               签发密钥
             </n-button>
-            <n-button block class="quick-btn" @click="copyBaseUrl">
+            <n-button block class="quick-btn" @click="copyBaseUrl($event)">
               <template #icon><AppIcon name="copy" :size="15" /></template>
               复制 Base URL
             </n-button>
@@ -218,6 +228,7 @@ onUnmounted(() => clearInterval(timer))
       </div>
 
       <UpstreamUsagePanel :upstreams="upstreamRows" :usage="usageByUpstream" />
+      <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" to="glass-upstreams" />
     </div>
   </div>
 </template>

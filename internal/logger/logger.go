@@ -100,6 +100,14 @@ func Init(opts Options) error {
 	level := opts.Level
 	outputs := []output{{w: os.Stdout, color: true, console: true}}
 
+	// 重新 Init 时先摘掉上一次的文件输出：否则 FilePath 为空时 fileWriter 仍
+	// 指着旧文件（LogFilePath 报上一次的路径），旧句柄也不会被关闭。
+	if closer != nil {
+		_ = closer.Close()
+		closer = nil
+	}
+	fileWriter = nil
+
 	if opts.FilePath != "" {
 		w, err := newDailyFileWriter(filepath.Dir(opts.FilePath), filepath.Base(opts.FilePath))
 		if err != nil {

@@ -2,6 +2,8 @@
 
 通用 LLM API 网关，将多个上游模型服务统一为 OpenAI / Anthropic / Responses 兼容接口。单二进制部署，内置管理界面。
 
+![alt text](docs/image.png)
+
 ## 特性
 
 - **统一网关**：对外提供 OpenAI（`/v1/chat/completions`）、Anthropic（`/v1/messages`）、Responses（`/v1/responses`）兼容 API，流式与非流式均支持
@@ -11,10 +13,10 @@
 - **Token 限额**：外部 Key 与上游均可设置日 / 月 Token 配额（0 = 不限），超限返回 429
 - **并发控制**：每个上游可设并发上限（默认 100，0 = 不限），占满的别名候选自动跳过并故障转移，全部占满返回 429
 - **模型权限**：每个外部 Key 可限定可用模型白名单（别名或 `上游/模型`，留空 = 不限），越权请求返回 403，`/v1/models` 按 Key 过滤
-- **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或客户端配置（opencode / Oh My Pi / dsh）
+- **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或客户端配置（opencode / Oh My Pi / dsh / Claude Code）
 - **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
 - **对话记录**：自动归档每次调用的完整请求/响应（PostgreSQL / MySQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
-- **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量、阶跃星辰账户余额），保留历史趋势
+- **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量、阶跃星辰账户余额——Step Plan 订阅通道除外，其套餐月池与钱包余额相互独立），保留历史趋势
 - **配置备份**：上游与别名配置一键导出/导入
 - **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0.13+（同为纯 Go 驱动）
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
@@ -44,10 +46,13 @@ go build -o any-llm ./cmd/any-llm/
 docker build -t any-llm .
 
 # 运行（数据库、日志和会话密钥持久化到宿主机）
+# 镜像默认 DB_TYPE=postgres（配套 compose 里的 PG 服务）；裸 `docker run`
+# 没有可用的 PG，这里显式用 SQLite。
 docker run -d \
   -p 6718:6718 \
   -v $PWD/data:/data \
   -e ANY_LLM_PORT=6718 \
+  -e DB_TYPE=sqlite \
   -e ANY_LLM_DB_PATH=/data/any-llm.db \
   -e ANY_LLM_LOG_FILE=/data/logs/any-llm.log \
   -e ANY_LLM_MASTER_PASSWORD=your-password \
@@ -102,8 +107,8 @@ docker compose up -d
 访问 `http://localhost:6718`，使用管理员密码登录：
 
 1. **Dashboard（总览）**：用量统计卡片、本月模型用量 Top、资源与快捷操作
-2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、有效期、日/月 Token 限额与并发上限，以及选填的备注；模型可配置上下文/输出长度与多模态标记；DeepSeek / Kimi / 阶跃星辰上游自动抓取余额快照；支持配置导出/导入与按启用状态过滤
-3. **Keys（API 密钥）**：创建和管理外部 API Key，可填写名称与备注，设置日/月 Token 限额与可用模型白名单，一键复制调用示例或客户端配置（opencode / Oh My Pi / dsh），内置客户端接入使用文档
+2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、有效期、日/月 Token 限额与并发上限，以及选填的备注；模型可配置上下文/输出长度与多模态标记；DeepSeek / Kimi / 阶跃星辰（按量付费通道）上游自动抓取余额快照；支持配置导出/导入与按启用状态过滤
+3. **Keys（API 密钥）**：创建和管理外部 API Key，可填写名称与备注，设置日/月 Token 限额与可用模型白名单，一键复制调用示例或客户端配置（opencode / Oh My Pi / dsh / Claude Code），内置客户端接入使用文档
 4. **Aliases（模型别名）**：维护固定对外模型名及绑定列表
 5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（PostgreSQL / MySQL，SQLite 下显示禁用提示）
 6. **Usage（用量）**：Token 消耗、调用耗时（token/s）与按日汇总图表

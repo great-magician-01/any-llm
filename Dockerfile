@@ -23,9 +23,14 @@ COPY --from=backend-builder /app/any-llm /usr/local/bin/any-llm
 # Runtime config defaults: .env.example's values, with the database moved to
 # PostgreSQL. These beat a .env file in the container (internal/config
 # loadDotEnv only fills vars that are unset), and `-e KEY=...` beats these.
-# Deliberately absent: DB_PASSWORD (image env is readable via `docker inspect`
-# — pass it with `-e`) and ANY_LLM_DB_PATH (only read when DB_TYPE=sqlite, and
-# the code default is the same value).
+# Deliberately absent:
+#   - DB_PASSWORD — image env is readable via `docker inspect`; pass it with `-e`.
+#   - ANY_LLM_DB_PATH — only read when DB_TYPE=sqlite, and the code default is
+#     the same value.
+#   - ANY_LLM_SESSION_SECRET — baking a fixed value into a public image would
+#     publish the HMAC key that signs admin session cookies (anyone could forge
+#     one). Leave it unset: a random secret is generated and persisted to
+#     ANY_LLM_SESSION_SECRET_FILE (compose points it at the mounted volume).
 ENV ANY_LLM_PORT=6718 \
     ANY_LLM_MASTER_PASSWORD=admin \
     ANY_LLM_SESSION_TTL=24h \
@@ -37,8 +42,7 @@ ENV ANY_LLM_PORT=6718 \
     DB_PORT=5432 \
     DB_USER=chat_user \
     DB_NAME=chat_db \
-    DB_SCHEMA=any_llm \
-    ANY_LLM_SESSION_SECRET=a_very_strong_random_string_here
+    DB_SCHEMA=any_llm
 
 # Metadata only: the app listens on ANY_LLM_PORT (default 6718).
 EXPOSE 6718

@@ -63,7 +63,11 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 }
 
 // listLatestBalances serves GET /api/admin/balances: the newest snapshot per
-// upstream.
+// upstream. Snapshots whose upstream no longer supports balance fetch are
+// filtered out — e.g. a StepFun upstream repointed at the /step_plan
+// subscription channel (its billing is a separate monthly Credit pool), or
+// one switched to an unsupported vendor. Otherwise a stale wallet-balance
+// snapshot would keep displaying forever.
 func (a *API) listLatestBalances(w http.ResponseWriter, r *http.Request) {
 	snaps, err := store.LatestBalanceSnapshots(a.db)
 	if err != nil {
@@ -71,7 +75,25 @@ func (a *API) listLatestBalances(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"data": snaps})
+	upstreams, err := store.ListUpstreams(a.db, nil)
+	if err != nil {
+		logger.Error("admin: list latest balances list upstreams failed", "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	supported := make(map[int64]bool, len(upstreams))
+	for i := range upstreams {
+		if upstream.BalanceVendor(&upstreams[i]) != "" {
+			supported[upstreams[i].ID] = true
+		}
+	}
+	out := make([]store.BalanceSnapshot, 0, len(snaps))
+	for _, s := range snaps {
+		if supported[s.UpstreamID] {
+			out = append(out, s)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"data": out})
 }
 
 // listBalanceHistory serves GET /api/admin/upstreams/:id/balances: one

@@ -138,11 +138,7 @@ func blockToPart(b translate.ContentBlock) map[string]any {
 	case "text":
 		return map[string]any{"type": "input_text", "text": b.Text}
 	case "image":
-		url := b.Image.URL
-		if b.Image.Base64 != "" {
-			url = "data:" + b.Image.MediaType + ";base64," + b.Image.Base64
-		}
-		return map[string]any{"type": "input_image", "image_url": url}
+		return map[string]any{"type": "input_image", "image_url": b.Image.SourceURL()}
 	}
 	return map[string]any{"type": "input_text", "text": ""}
 }

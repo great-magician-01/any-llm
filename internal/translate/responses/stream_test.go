@@ -214,6 +214,26 @@ func TestStreamDecode_ErrorEvent(t *testing.T) {
 	if len(got) != 1 || got[0].Type != "error" {
 		t.Fatalf("evs=%+v", got)
 	}
+	// 错误细节必须随事件透传：网关要用它给客户端写带内错误帧，丢了只剩
+	// 无法诊断的通用文案。
+	if got[0].ErrType != "x" || got[0].ErrMessage != "boom" {
+		t.Fatalf("error detail lost: %+v", got[0])
+	}
+}
+
+// error 事件（扁平 code/message，无 response 包装）同样要带出细节。
+func TestStreamDecode_FlatErrorEvent(t *testing.T) {
+	d := NewStreamDecoder()
+	got, err := d.Decode([]byte(`{"type":"error","code":"rate_limit_exceeded","message":"slow down"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Type != "error" {
+		t.Fatalf("evs=%+v", got)
+	}
+	if got[0].ErrType != "rate_limit_exceeded" || got[0].ErrMessage != "slow down" {
+		t.Fatalf("error detail lost: %+v", got[0])
+	}
 }
 
 // 文本回复：完整事件序列断言

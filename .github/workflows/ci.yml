@@ -25,9 +25,26 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      # PostgreSQL e2e 套件（internal/db/pg_e2e_test.go、
+      # internal/gateway/pg_conv_e2e_test.go）此前只在本地手跑，CI 里没有 PG
+      # 就整批 skip，于是 PG 迁移与对话归档在 CI 上是零覆盖。每个用例自己建
+      # 独立的 schema（any_llm_test_<UnixNano>）并在 cleanup 时 drop。
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: anyllm
+          POSTGRES_DB: any_llm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     env:
       DB_TEST_MYSQL_DSN: >-
         root:anyllm@tcp(127.0.0.1:3306)/any_llm_test?parseTime=true&loc=Local&charset=utf8mb4&collation=utf8mb4_bin&maxAllowedPacket=0
+      DB_TEST_PG_DSN: postgres://postgres:anyllm@127.0.0.1:5432/any_llm_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +73,9 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test ./...
+        # -cover 只是为了在日志里看得见每个包的覆盖率（无阈值门禁）：PG/MySQL
+        # e2e 与新增的流式用例都参与统计，覆盖率掉了能在 PR 日志里发现。
+        run: go test -cover ./...
 
       - name: go build
         run: go build ./...

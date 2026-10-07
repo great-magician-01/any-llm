@@ -124,12 +124,7 @@ func encodeBlocks(blocks []translate.ContentBlock) []map[string]any {
 		case "text":
 			parts = append(parts, map[string]any{"type": "text", "text": b.Text})
 		case "image":
-			parts = append(parts, map[string]any{
-				"type": "image",
-				"source": map[string]any{
-					"type": "base64", "media_type": b.Image.MediaType, "data": b.Image.Base64,
-				},
-			})
+			parts = append(parts, map[string]any{"type": "image", "source": anthropicImageSource(b.Image)})
 		case "thinking":
 			m := map[string]any{"type": "thinking", "thinking": b.Thinking}
 			if b.Signature != "" {
@@ -163,6 +158,20 @@ func encodeBlocks(blocks []translate.ContentBlock) []map[string]any {
 	return parts
 }
 
+// anthropicImageSource 把 IR 图片渲染成 Anthropic 的 image source：内联数据走
+// base64 source，其余走 url source。原实现无条件输出 base64 source，于是
+// OpenAI/Responses 来的 URL 图片会变成 {"type":"base64","media_type":"","data":""}
+// —— 一个上游必然拒绝的非法载荷。
+func anthropicImageSource(img *translate.Image) map[string]any {
+	if mediaType, payload, ok := img.Base64Payload(); ok {
+		return map[string]any{"type": "base64", "media_type": mediaType, "data": payload}
+	}
+	if url := img.SourceURL(); url != "" {
+		return map[string]any{"type": "url", "url": url}
+	}
+	return map[string]any{"type": "base64", "media_type": "", "data": ""}
+}
+
 func encodeResultContent(blocks []translate.ContentBlock) any {
 	if len(blocks) == 0 {
 		return ""
@@ -192,6 +201,10 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 			content = append(content, map[string]any{
 				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
 			})
+		case "image":
+			// 响应侧同样要有 image 分支：原实现落到 default，把图片当成
+			// hosted server 块透传（只剩 {"type":"image"}，source 丢失）。
+			content = append(content, map[string]any{"type": "image", "source": anthropicImageSource(b.Image)})
 		default:
 			// hosted server 块（web_search_tool_result 等）原样透传。
 			m := map[string]any{"type": b.Type}
@@ -216,6 +229,13 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 			"cache_creation_input_tokens": resp.Usage.CacheCreationTokens,
 			"cache_read_input_tokens":     resp.Usage.CacheReadTokens,
 		},
+	}
+	// Same-format pass-through of fields we don't model in IR (e.g.
+	// Claude Code's server-side classifier verdicts in `safeguard_results`).
+	for k, v := range resp.Extra {
+		if _, exists := out[k]; !exists {
+			out[k] = v
+		}
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

@@ -4,8 +4,11 @@ import { useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import { useLoginRedirect } from '@/composables/useLoginRedirect'
 
 const router = useRouter()
+/** 深链被守卫弹到登录页时会带 ?redirect=，登录后跳回原目标而不是一律回首页 */
+const goAfterLogin = useLoginRedirect('/')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -16,7 +19,7 @@ async function login() {
   try {
     await client.post('/login', { password: password.value })
     localStorage.setItem('authed', '1')
-    router.push('/')
+    await goAfterLogin()
   } catch {
     error.value = '密码错误'
   } finally {

@@ -177,8 +177,23 @@ func assertRequestsMatch(t *testing.T, a, b *translate.Request) {
 					t.Errorf("msg[%d].content[%d] text %q != %q", i, j, ca.Text, cb.Text)
 				}
 			case "image":
-				// Image payload (URL vs base64) is not preserved across formats by design;
-				// only the block type is asserted (checked above).
+				// 图片载荷必须保真：URL 图片在两侧都还是 URL，内联 base64 也
+				// 必须是同一份 base64/media_type。曾经这里的注释把「URL 图片
+				// 跨到 Anthropic 会退化成 {"type":"base64","media_type":"","data":""}」
+				// 当成 by design 豁免掉了，于是这个真实缺陷长期无人发现。
+				if ca.Image == nil || cb.Image == nil {
+					t.Errorf("msg[%d].content[%d] image nil", i, j)
+					continue
+				}
+				if ca.Image.URL != cb.Image.URL {
+					t.Errorf("msg[%d].content[%d] image url %q != %q", i, j, ca.Image.URL, cb.Image.URL)
+				}
+				if ca.Image.Base64 != cb.Image.Base64 {
+					t.Errorf("msg[%d].content[%d] image base64 mismatch", i, j)
+				}
+				if ca.Image.MediaType != cb.Image.MediaType {
+					t.Errorf("msg[%d].content[%d] image media_type %q != %q", i, j, ca.Image.MediaType, cb.Image.MediaType)
+				}
 			case "tool_use":
 				if ca.ToolUse == nil || cb.ToolUse == nil {
 					t.Errorf("msg[%d].content[%d] tool_use nil", i, j)

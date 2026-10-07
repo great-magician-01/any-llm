@@ -361,7 +361,17 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 		// 缺省 false：新模型默认非多模态。
 		Multimodal bool `json:"multimodal"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	// 解码失败（空 body / 坏 JSON）与空模型名都必须响亮拒绝：静默继续会把
+	// model_name="" 的行插进库，随后 /v1/models 里冒出一个 "upstream/" 空名模型。
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
+		return
+	}
+	req.ModelName = strings.TrimSpace(req.ModelName)
+	if req.ModelName == "" {
+		writeJSON(w, 400, map[string]any{"error": "model_name is required"})
+		return
+	}
 	if req.ContextLength < 0 || req.MaxOutputLength < 0 {
 		writeJSON(w, 400, map[string]any{"error": "lengths must be >= 0"})
 		return
@@ -388,8 +398,14 @@ func (a *API) addModel(w http.ResponseWriter, r *http.Request, upstreamID int64)
 
 // deleteModel serves DELETE /api/admin/upstreams/{id}/models/{mid}.
 func (a *API) deleteModel(w http.ResponseWriter, r *http.Request, upstreamID, mid int64) {
-	if err := a.writeSync(func(d *sql.DB) error { return store.DeleteModel(d, mid) }); err != nil {
-		logger.Error("admin: delete model failed", "model_id", mid, "err", err)
+	if err := a.writeSync(func(d *sql.DB) error { return store.DeleteModel(d, upstreamID, mid) }); err != nil {
+		// 模型不存在、已删除、或不属于路径里的上游：与 updateModel 同口径 404，
+		// 不能跨上游按模型 ID 裸删。
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, 404, map[string]any{"error": "model not found"})
+			return
+		}
+		logger.Error("admin: delete model failed", "upstream_id", upstreamID, "model_id", mid, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}

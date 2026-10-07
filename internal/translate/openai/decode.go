@@ -116,7 +116,7 @@ func decodeUserContent(raw json.RawMessage) ([]translate.ContentBlock, error) {
 		case "text":
 			blocks = append(blocks, translate.ContentBlock{Type: "text", Text: p.Text})
 		case "image_url":
-			blocks = append(blocks, translate.ContentBlock{Type: "image", Image: &translate.Image{URL: p.ImageURL.URL}})
+			blocks = append(blocks, translate.ContentBlock{Type: "image", Image: translate.NewImage(p.ImageURL.URL)})
 		}
 	}
 	return blocks, nil

@@ -250,7 +250,7 @@ func TestModelsCRUD(t *testing.T) {
 		t.Fatalf("models after replace=%+v", names)
 	}
 	// delete one
-	if err := DeleteModel(d, models[0].ID); err != nil {
+	if err := DeleteModel(d, uid, models[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	models, _ = ListModels(d, uid)
@@ -355,7 +355,7 @@ func TestSoftDeleteModelAndRevive(t *testing.T) {
 	// 手动删除模型后同名可重建
 	for _, m := range models {
 		if m.ModelName == "m1" {
-			if err := DeleteModel(d, m.ID); err != nil {
+			if err := DeleteModel(d, uid, m.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -377,7 +377,7 @@ func TestReplaceModelsSkipsManualConflict(t *testing.T) {
 	}
 	// 2. 管理员删除 m
 	models, _ := ListModels(d, uid)
-	if err := DeleteModel(d, models[0].ID); err != nil {
+	if err := DeleteModel(d, uid, models[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	// 3. 管理员手动添加同名模型 m
@@ -406,7 +406,7 @@ func TestAddModelRevivesSoftDeleted(t *testing.T) {
 	AddModel(d, uid, UpstreamModel{ModelName: "m"})
 	models, _ := ListModels(d, uid)
 	origID := models[0].ID
-	if err := DeleteModel(d, origID); err != nil {
+	if err := DeleteModel(d, uid, origID); err != nil {
 		t.Fatal(err)
 	}
 	if err := AddModel(d, uid, UpstreamModel{ModelName: "m", Manual: true, ContextLength: 1000, MaxOutputLength: 2000, Multimodal: true}); err != nil {
@@ -469,7 +469,7 @@ func TestModelMultimodal(t *testing.T) {
 	}
 
 	// 软删除后复活同样以新值为准（AddModel 复活路径）
-	if err := DeleteModel(d, byName["m1"].ID); err != nil {
+	if err := DeleteModel(d, uid, byName["m1"].ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := AddModel(d, uid, UpstreamModel{ModelName: "m1", Manual: true}); err != nil {
@@ -522,7 +522,7 @@ func TestReplaceModelsRevivePreservesConfig(t *testing.T) {
 	ms, _ := ListModels(d, uid)
 	for _, m := range ms {
 		if m.ModelName == "m2" {
-			if err := DeleteModel(d, m.ID); err != nil {
+			if err := DeleteModel(d, uid, m.ID); err != nil {
 				t.Fatal(err)
 			}
 		}

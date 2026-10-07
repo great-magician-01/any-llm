@@ -17,8 +17,16 @@ const trendDays = ref(14)
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
-// 汇总时间范围（仅影响汇总统计，明细始终显示最新）
-const range = ref<[number, number] | null>(null)
+// 汇总时间范围（仅影响汇总统计，明细始终显示最新）：默认本月 1 号至今，
+// 清空选择即回到全部用量
+function currentMonthRange(): [number, number] {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return [new Date(today.getFullYear(), today.getMonth(), 1).getTime(), today.getTime()]
+}
+const range = ref<[number, number] | null>(currentMonthRange())
+// 清空范围 = 查看全部用量，给一个一键回到本月的入口
+const rangeShortcuts: Record<string, () => [number, number]> = { '本月': currentMonthRange }
 
 const totals = computed(() =>
   summaries.value.reduce(
@@ -330,6 +338,7 @@ onMounted(loadAll)
             size="small"
             clearable
             :is-date-disabled="(ts: number) => ts > Date.now()"
+            :shortcuts="rangeShortcuts"
             style="width: 250px"
             @update:value="load(); loadRangeExtras(); selectRangeAsTrend()"
           />
