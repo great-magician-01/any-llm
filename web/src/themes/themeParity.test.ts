@@ -8,7 +8,8 @@
  *   2. 运行时层：同样的假后端 + 同样的用户操作（开页 / 行内测试 / 删除确认），
  *      两边发出的请求序列与给用户的提示必须完全一致。
  *
- * 允许两套页面在「样式与列宽」上不同（glass 不做 scroll-x 是刻意的），所以这里
+ * 允许两套页面在「样式」上不同，但列宽规格与自适应逻辑共用同一份
+ * （useTableFit：列宽随容器宽度连续压缩、scroll-x 永不超出容器），所以这里
  * 只比文案、请求与业务分支，不比 class/style。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -30,7 +31,7 @@ vi.mock('naive-ui', async (importOriginal) => {
 /** 两边都必须从共享实现引入的业务函数（页面私有实现一律算回归） */
 const SHARED_IMPORTS = [
   '@/composables/useUpstreamList',
-  '@/composables/useNarrowScreen',
+  '@/composables/useTableFit',
   './composables/useUpstreamList',
   '../composables/useUpstreamList',
   '@/utils/connectivity',
@@ -134,7 +135,8 @@ describe('双主题 parity：上游管理页', () => {
       for (const fn of [
         'connectivityView(', 'parseConfigFile(', 'describeConfigFile(', 'describeImportResult(',
         'downloadJSON(', 'expiryLabel(', 'expiryToISO(', 'isoToExpiry(', 'presetSelectOptions(',
-        'findPreset(', 'balanceView(', 'formatInt(', 'formatTime(', 'ACTIONS_COL_WIDTH',
+        'findPreset(', 'balanceView(', 'formatInt(', 'formatTime(', 'fitColumns(', 'fitScrollX(',
+        'useContainerWidth(', 'UPSTREAM_FIT_COLUMNS',
       ]) {
         expect(src, `${name} 必须使用共享实现 ${fn}`).toContain(fn)
       }
