@@ -24,14 +24,14 @@ const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, togg
 const tableBox = ref<HTMLElement | null>(null)
 const { width: tableWidth } = useContainerWidth(tableBox)
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
 const editing = ref<Upstream | null>(null)
-// 内置上游预设快捷选择：只在「添加」时展示（编辑已有上游不套模板）。选中只
-// 带出 base_url 和 format 两项，名称/Key/限额仍由用户填，带出后字段也保持可改；
-// 清空选择（自定义）不动已填内容。
+// 内置上游预设快捷选择：只在「添加」时展示（编辑已有上游不套模板）。选中
+// 带出 base_url、format 与附加端点，名称/Key/限额仍由用户填，带出后字段也
+// 保持可改；清空选择（自定义）不动已填内容。
 const presetKey = ref<string | null>(null)
 const presetOptions = presetSelectOptions()
 const activePreset = computed(() => findPreset(presetKey.value))
@@ -41,6 +41,32 @@ function onPresetSelect(key: string | null) {
   if (!p) return
   form.value.base_url = p.baseUrl
   form.value.format = p.format
+  form.value.extra_endpoints = (p.extra ?? []).map(e => ({ format: e.format, base_url: e.baseUrl }))
+}
+// 附加格式端点：其余协议格式的原生入口，入站请求格式命中时网关原生直通
+// （不再转译）。同一 format 只允许出现一次且不得与主格式重复（后端同样
+// 400 拒绝）——有重复时表单内提示并阻止保存，由用户删除重复项。
+const FORMAT_LABELS: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic', responses: 'Responses' }
+const extraEndpointError = computed(() => {
+  const eps = form.value.extra_endpoints ?? []
+  const seen = new Set<string>()
+  for (const ep of eps) {
+    if (ep.format === form.value.format) return `附加端点与主格式重复（${FORMAT_LABELS[ep.format] ?? ep.format}），请删除重复项`
+    if (seen.has(ep.format)) return `附加端点格式重复（${FORMAT_LABELS[ep.format] ?? ep.format}），请删除重复项`
+    seen.add(ep.format)
+  }
+  return ''
+})
+// 三种协议中主格式占一种，附加端点最多再加其余两种
+const canAddEndpoint = computed(() => (form.value.extra_endpoints ?? []).length < 2)
+function addExtraEndpoint() {
+  if (!canAddEndpoint.value) return
+  const used = new Set([form.value.format, ...(form.value.extra_endpoints ?? []).map(e => e.format)])
+  const free = ['openai', 'anthropic', 'responses'].find(f => !used.has(f)) ?? 'openai'
+  form.value.extra_endpoints = [...(form.value.extra_endpoints ?? []), { format: free, base_url: '' }]
+}
+function removeExtraEndpoint(i: number) {
+  form.value.extra_endpoints = (form.value.extra_endpoints ?? []).filter((_, j) => j !== i)
 }
 const expandedRowKeys = ref<number[]>([])
 const modelsByUpstream = ref<Record<number, UpstreamModel[]>>({})
@@ -55,6 +81,8 @@ const testingId = ref<number | null>(null)
 // 表单内连通性测试：结果按 成功/警告/失败 三档就地展示在按钮下方
 const formTesting = ref(false)
 const formTestResult = ref<ConnectivityView | null>(null)
+// 附加端点的逐个测试结果（主端点结果仍在 formTestResult）
+const formExtraTestResults = ref<{ format: string; view: ConnectivityView }[]>([])
 const showHistory = ref(false)
 const historyUpstream = ref<Upstream | null>(null)
 const historyRows = ref<BalanceSnapshot[]>([])
@@ -165,6 +193,17 @@ async function save() {
     form.value.expires_at = expiryToISO(expiryPicker.value)
     // 备注同样在提交前归一：去掉首尾空白，没填就是空串（后端不 trim，与 keys 一致）
     form.value.remark = (form.value.remark ?? '').trim()
+    // 附加端点归一与重复检查：撞车主格式/列表内重复时阻止保存并提示删除
+    // 重复项（后端同样 400，这里是更早、更可操作的提示）。
+    if (extraEndpointError.value) {
+      message.error(extraEndpointError.value)
+      return
+    }
+    form.value.extra_endpoints = (form.value.extra_endpoints ?? []).map(e => ({ format: e.format, base_url: e.base_url.trim() }))
+    if (form.value.extra_endpoints.some(e => !e.base_url)) {
+      message.warning('附加端点的 Base URL 不能为空，请填写或删除该行')
+      return
+    }
     const created = !editing.value?.id
     const createdEnabled = form.value.enabled
     if (!created) {
@@ -189,11 +228,13 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null; formExtraTestResults.value = [] }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
-function edit(u: Upstream) { editing.value = u; form.value = { ...u }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; showForm.value = true }
+// extra_endpoints 深拷贝进表单：直接引用列表行的数组会让编辑中的改动（含
+// 未保存就取消）直接写进列表数据。
+function edit(u: Upstream) { editing.value = u; form.value = { ...u, extra_endpoints: (u.extra_endpoints ?? []).map(e => ({ ...e })) }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; formExtraTestResults.value = []; showForm.value = true }
 function add() { editing.value = null; resetForm(); formTestResult.value = null; showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function fetchM(id: number) {
@@ -300,6 +341,7 @@ async function testRow(u: Upstream) {
 
 // 表单内测试：编辑态把表单当前值（可能已改过地址/key）作为覆盖发给 by-id 端点
 // ——key 还是掩码或留空时后端沿用库存真 key；新增态直接测表单里的配置。
+// 附加端点逐个各测一次（同样走覆盖/掩码 key 约定），结果按格式分行展示。
 async function testForm() {
   if (formTesting.value) return
   if (!form.value.base_url.trim()) {
@@ -308,6 +350,7 @@ async function testForm() {
   }
   formTesting.value = true
   formTestResult.value = null
+  formExtraTestResults.value = []
   try {
     const r = editing.value?.id
       ? await testUpstream(editing.value.id, { base_url: form.value.base_url, api_key: form.value.api_key, format: form.value.format })
@@ -315,9 +358,19 @@ async function testForm() {
     formTestResult.value = connectivityView(r)
   } catch (e) {
     formTestResult.value = { type: 'error', text: '测试失败：' + errMsg(e) }
-  } finally {
-    formTesting.value = false
   }
+  for (const ep of form.value.extra_endpoints ?? []) {
+    if (!ep.base_url.trim()) continue
+    try {
+      const r = editing.value?.id
+        ? await testUpstream(editing.value.id, { base_url: ep.base_url, api_key: form.value.api_key, format: ep.format })
+        : await testUpstreamConfig({ base_url: ep.base_url, api_key: form.value.api_key, format: ep.format })
+      formExtraTestResults.value = [...formExtraTestResults.value, { format: ep.format, view: connectivityView(r) }]
+    } catch (e) {
+      formExtraTestResults.value = [...formExtraTestResults.value, { format: ep.format, view: { type: 'error', text: '测试失败：' + errMsg(e) } }]
+    }
+  }
+  formTesting.value = false
 }
 
 async function openHistory(row: Upstream) {
@@ -462,7 +515,13 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
     title: '格式',
     key: 'format',
     width: colW.value.format,
-    render: (row) => h(NTag, { type: row.format === 'openai' ? 'info' : 'warning', bordered: false, size: 'small' }, { default: () => row.format }),
+    // 主格式 + 附加端点格式各一个 tag；附加的半透明显示，主从一眼可辨
+    render: (row) => h('div', { style: 'display: flex; gap: 4px; flex-wrap: wrap' }, [
+      h(NTag, { type: row.format === 'openai' ? 'info' : 'warning', bordered: false, size: 'small' }, { default: () => row.format }),
+      ...(row.extra_endpoints ?? []).map(e => h(NTag, {
+        type: e.format === 'openai' ? 'info' : 'warning', bordered: false, size: 'small', style: 'opacity: 0.6',
+      }, { default: () => e.format })),
+    ]),
   },
   {
     title: '模型数',
@@ -569,7 +628,7 @@ onMounted(() => {
     <header class="page-header">
       <div>
         <h1>上游管理</h1>
-        <p>配置上游 LLM 服务，支持 OpenAI / Anthropic 格式。点击行前箭头展开查看模型</p>
+        <p>配置上游 LLM 服务；一个上游可挂多种协议格式端点，入站格式命中时原生直通。点击行前箭头展开查看模型</p>
       </div>
       <div class="page-header-side">
         <n-button quaternary circle @click="load">
@@ -615,7 +674,7 @@ onMounted(() => {
     </n-card>
 
     <n-modal :show="showForm" @update:show="(show: boolean) => { if (!show) showForm = false }">
-      <n-card :title="editing ? '编辑上游' : '添加上游'" :bordered="false" style="width:500px">
+      <n-card :title="editing ? '编辑上游' : '添加上游'" :bordered="false" style="width:560px">
         <n-form label-placement="top">
           <n-form-item v-if="!editing" label="快捷配置">
             <div style="width: 100%">
@@ -642,18 +701,51 @@ onMounted(() => {
               :placeholder="editing ? '未修改将保持原 key' : '请输入 API Key'"
             />
           </n-form-item>
-          <n-form-item label="格式">
+          <n-form-item label="格式（主）">
             <n-radio-group v-model:value="form.format">
               <n-radio value="openai">OpenAI</n-radio>
               <n-radio value="anthropic">Anthropic</n-radio>
               <n-radio value="responses">Responses</n-radio>
             </n-radio-group>
           </n-form-item>
+          <n-form-item label="附加格式端点（可选）">
+            <div style="width: 100%">
+              <div v-for="(ep, i) in form.extra_endpoints ?? []" :key="i" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
+                <n-select
+                  v-model:value="ep.format"
+                  :options="[
+                    { label: 'OpenAI', value: 'openai' },
+                    { label: 'Anthropic', value: 'anthropic' },
+                    { label: 'Responses', value: 'responses' },
+                  ]"
+                  style="width: 140px"
+                />
+                <n-input v-model:value="ep.base_url" placeholder="该格式端点的 Base URL" style="flex: 1" />
+                <n-button size="small" quaternary @click="removeExtraEndpoint(i)">移除</n-button>
+              </div>
+              <n-button size="small" dashed block :disabled="!canAddEndpoint" @click="addExtraEndpoint">添加端点</n-button>
+              <div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-3)">
+                该上游以其它协议格式提供服务的入口（如 DeepSeek 的 Anthropic 端点）。入站请求格式命中时原生直通，不再转译；未命中走主格式。
+              </div>
+              <n-alert v-if="extraEndpointError" type="warning" :bordered="false" style="margin-top: 8px">
+                {{ extraEndpointError }}
+              </n-alert>
+            </div>
+          </n-form-item>
           <n-form-item label="连通性">
             <div style="width: 100%">
               <n-button size="small" :loading="formTesting" @click="testForm">测试连通性</n-button>
               <n-alert v-if="formTestResult" :type="formTestResult.type" :bordered="false" style="margin-top: 8px">
                 {{ formTestResult.text }}
+              </n-alert>
+              <n-alert
+                v-for="r in formExtraTestResults"
+                :key="r.format"
+                :type="r.view.type"
+                :bordered="false"
+                style="margin-top: 8px"
+              >
+                [{{ FORMAT_LABELS[r.format] ?? r.format }}] {{ r.view.text }}
               </n-alert>
             </div>
           </n-form-item>

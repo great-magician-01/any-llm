@@ -17,6 +17,8 @@ export interface ConfigUpstream {
   base_url: string
   api_key: string
   format: string
+  /** 附加格式端点（选填）；缺省保持现状，显式空数组表示清空 */
+  extra_endpoints?: { format: string; base_url: string }[]
   /** 选填备注；缺省保持现状，空串表示清除 */
   remark?: string
   enabled?: boolean

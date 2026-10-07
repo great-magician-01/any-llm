@@ -1,7 +1,15 @@
 import client from './client'
 
+export interface UpstreamEndpoint {
+  format: string
+  base_url: string
+}
+
 export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
+  /** 附加格式端点（选填）：其余格式的原生入口；网关按入站 endpoint 命中后原生
+   * 直通，未命中走主格式（base_url/format）转译。空 = 单格式上游。 */
+  extra_endpoints?: UpstreamEndpoint[]
   /** 选填备注，仅管理端元数据（列表展示/配置导出用），网关路由与转发不读它 */
   remark?: string
   enabled: boolean
