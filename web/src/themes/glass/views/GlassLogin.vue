@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
+import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
+const route = useRoute()
 /** 深链被守卫弹到玻璃登录页时会带 ?redirect=，登录后跳回原目标 */
 const goAfterLogin = useLoginRedirect('/glass/dashboard')
 const password = ref('')
@@ -61,7 +63,7 @@ async function login() {
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
       <div class="login-extra">
         <ThemeToggle />
-        <button class="switch-link" @click="router.push('/login')">切换到经典版</button>
+        <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">切换到经典版</button>
       </div>
     </div>
   </div>
@@ -81,13 +83,13 @@ async function login() {
   position: relative;
   width: 380px;
   padding: 44px 38px 30px;
-  /* 毛玻璃表面统一走 glass.css 在 .glass-root 上定义的变量，随主题切换 */
-  background: var(--surface);
+  /* 液态玻璃表面统一走 glass.css 在 .glass-root 上定义的变量，随主题切换 */
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 22px;
+  border-radius: 24px;
   box-shadow: var(--glass-shadow-lg);
-  backdrop-filter: blur(24px) saturate(1.5);
-  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   display: flex;
   flex-direction: column;
   align-items: center;

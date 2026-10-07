@@ -5,6 +5,7 @@ import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
 const route = useRoute()
@@ -63,9 +64,9 @@ const menuItems = [
             </button>
           </div>
         </div>
-        <div class="suite-switch" @click="router.push('/glass/dashboard')">
+        <div class="suite-switch" @click="router.push(switchSuite(route.fullPath))">
           <AppIcon name="swap" :size="14" />
-          <span>切换到毛玻璃版</span>
+          <span>切换到液态玻璃版</span>
         </div>
       </div>
     </n-layout-sider>

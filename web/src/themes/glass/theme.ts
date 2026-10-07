@@ -1,8 +1,8 @@
 import type { GlobalThemeOverrides } from 'naive-ui'
 
 /**
- * 毛玻璃主题：在底色上把卡片 / 弹窗 / 表格等表面改为半透明白色叠加，
- * 配合 glass.css 中的 backdrop-filter 与极光背景使用（仅作用于 /glass 路由树）。
+ * 液态玻璃主题：在底色上把卡片 / 弹窗 / 表格等表面改为渐变色叠加，
+ * 配合 glass.css 中的 backdrop-filter、折射亮边与流光背景使用（仅作用于 /glass 路由树）。
  * 明暗两套由 GlassShell.vue 按 useTheme() 的 isDark 切换，品牌色共用 commonShared。
  */
 
@@ -30,8 +30,8 @@ const commonShared = {
   errorColorPressed: '#fb7185',
   errorColorSuppl: '#fda5b2',
 
-  borderRadius: '12px',
-  borderRadiusSmall: '7px',
+  borderRadius: '14px',
+  borderRadiusSmall: '8px',
   fontSize: '14px',
   fontFamily:
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
@@ -79,8 +79,8 @@ export const darkGlassThemeOverrides: GlobalThemeOverrides = {
     itemColorActiveHover: 'rgba(123, 163, 255, 0.26)',
   },
   Card: {
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: '16px',
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderRadius: '20px',
     titleFontWeight: '600',
     titleFontSizeMedium: '15px',
     paddingMedium: '18px 22px',
@@ -96,18 +96,18 @@ export const darkGlassThemeOverrides: GlobalThemeOverrides = {
     thFontWeight: '600',
   },
   Button: {
-    borderRadiusMedium: '9px',
-    borderRadiusSmall: '7px',
+    borderRadiusMedium: '10px',
+    borderRadiusSmall: '8px',
     fontWeight: '500',
   },
   Input: {
-    borderRadius: '9px',
+    borderRadius: '10px',
   },
   Modal: {
-    borderRadius: '16px',
+    borderRadius: '20px',
   },
   Tag: {
-    borderRadius: '6px',
+    borderRadius: '7px',
   },
   Dialog: {
     color: 'rgba(18, 24, 42, 0.62)',
@@ -157,7 +157,7 @@ export const lightGlassThemeOverrides: GlobalThemeOverrides = {
   },
   Card: {
     borderColor: 'rgba(15, 23, 42, 0.1)',
-    borderRadius: '16px',
+    borderRadius: '20px',
     titleFontWeight: '600',
     titleFontSizeMedium: '15px',
     paddingMedium: '18px 22px',
@@ -173,18 +173,18 @@ export const lightGlassThemeOverrides: GlobalThemeOverrides = {
     thFontWeight: '600',
   },
   Button: {
-    borderRadiusMedium: '9px',
-    borderRadiusSmall: '7px',
+    borderRadiusMedium: '10px',
+    borderRadiusSmall: '8px',
     fontWeight: '500',
   },
   Input: {
-    borderRadius: '9px',
+    borderRadius: '10px',
   },
   Modal: {
-    borderRadius: '16px',
+    borderRadius: '20px',
   },
   Tag: {
-    borderRadius: '6px',
+    borderRadius: '7px',
   },
   Dialog: {
     color: 'rgba(255, 255, 255, 0.8)',

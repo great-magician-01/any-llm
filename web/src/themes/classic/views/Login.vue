@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
+import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
+const route = useRoute()
 /** 深链被守卫弹到登录页时会带 ?redirect=，登录后跳回原目标而不是一律回首页 */
 const goAfterLogin = useLoginRedirect('/')
 const password = ref('')
@@ -65,7 +67,7 @@ async function login() {
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
       <div class="login-extra">
         <ThemeToggle />
-        <button class="switch-link" @click="router.push('/glass/login')">切换到毛玻璃版</button>
+        <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">切换到液态玻璃版</button>
       </div>
     </div>
   </div>

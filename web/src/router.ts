@@ -19,7 +19,7 @@ const router = createRouter({
       ],
     },
     {
-      // 毛玻璃风格页面套件：与经典版一一对应，仅视觉风格不同
+      // 液态玻璃风格页面套件：与经典版一一对应，仅视觉风格不同
       path: '/glass',
       component: () => import('@/themes/glass/GlassShell.vue'),
       children: [

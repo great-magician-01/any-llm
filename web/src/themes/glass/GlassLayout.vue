@@ -5,6 +5,7 @@ import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
 const route = useRoute()
@@ -63,7 +64,7 @@ const menuItems = [
             </button>
           </div>
         </div>
-        <div class="suite-switch" @click="router.push('/dashboard')">
+        <div class="suite-switch" @click="router.push(switchSuite(route.fullPath))">
           <AppIcon name="swap" :size="14" />
           <span>切换到经典版</span>
         </div>
@@ -81,8 +82,8 @@ const menuItems = [
 .sider {
   border-right: 1px solid var(--border-soft);
   background: var(--sider-bg);
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 .sider-inner {
   display: flex;
@@ -176,20 +177,23 @@ const menuItems = [
   gap: 6px;
   padding: 7px 10px;
   border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
   color: var(--text-3);
   font-size: 12px;
   cursor: pointer;
   transition:
     color 0.15s ease,
     border-color 0.15s ease,
-    background 0.15s ease;
+    box-shadow 0.15s ease;
 }
 .suite-switch:hover {
   color: var(--brand-hover);
   border-color: rgba(123, 163, 255, 0.4);
-  background: rgba(123, 163, 255, 0.1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 4px 14px rgba(123, 163, 255, 0.18);
 }
 .content {
   background: transparent;

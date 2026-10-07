@@ -1,6 +1,11 @@
 /*
- * 毛玻璃页面套件样式（仅作用于 /glass 路由树）。
+ * 液态玻璃页面套件样式（仅作用于 /glass 路由树）。
  * 所有选择器都以 .glass-root 或 body.glass-mode 开头，不会泄漏到经典版页面。
+ *
+ * 材质思路：表面不再是平铺的半透明色，而是「斜向白色渐变填充（模拟玻璃厚度
+ * 反光）+ 高斯模糊/饱和提升 + 顶部高光内阴影（折射亮边）+ 分层环境投影」的
+ * 组合；共享组件只引用 --surface / --surface-2 等变量，因此把变量本身换成渐变
+ * 即可让 StatCard、登录卡等全部自动获得液态质感。
  */
 
 /* ---- 设计变量：覆盖 style.css 中的经典版变量，让共享组件自动适配 ---- */
@@ -10,69 +15,97 @@
   --brand-hover: #95b7ff;
   --grad: linear-gradient(135deg, #7ba3ff 0%, #4ed8f0 100%);
   --bg: transparent;
-  --surface: rgba(255, 255, 255, 0.07);
-  --surface-2: rgba(255, 255, 255, 0.1);
-  --border: rgba(255, 255, 255, 0.16);
-  --border-soft: rgba(255, 255, 255, 0.1);
+
+  /* 液态玻璃填充：135° 斜向渐变——左上受光更亮、右下回落，形成玻璃厚度感 */
+  --surface: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.05) 45%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+  --surface-2: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.13) 100%
+  );
+  --border: rgba(255, 255, 255, 0.18);
+  --border-soft: rgba(255, 255, 255, 0.12);
   --text: #f5f8ff;
   --text-2: #dbe4f3;
   --text-3: #9fb0c9;
   --text-4: #687992;
 
-  /* 毛玻璃材质的三档阴影 / 侧栏底色，浅色主题在下方覆盖。
+  /* 液态玻璃材质的三档投影 / 模糊 / 侧栏底色，浅色主题在下方覆盖。
+     投影里的 inset 0 1px 0 是玻璃顶部的折射亮边，比边框更靠内、更柔。
      悬停阴影沿用 :root 的 --shadow-hover 变量名：StatCard 的 scoped 规则与下方
      的 .glass-root .stat-card:hover 特异性相同，同名变量保证谁胜出都不串味。 */
-  --glass-shadow: 0 12px 36px rgba(3, 8, 24, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.09);
-  --shadow-hover: 0 10px 28px rgba(3, 8, 24, 0.4), 0 0 24px rgba(123, 163, 255, 0.12);
-  --glass-shadow-lg: 0 24px 64px rgba(3, 8, 24, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-  --sider-bg: rgba(255, 255, 255, 0.04);
-  --tip-bg: rgba(18, 24, 42, 0.86);
+  --glass-blur: blur(24px) saturate(1.8);
+  --glass-blur-soft: blur(12px) saturate(1.5);
+  --glass-shadow:
+    0 16px 40px rgba(3, 8, 24, 0.4), 0 2px 10px rgba(3, 8, 24, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  --shadow-hover:
+    0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(123, 163, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  --glass-shadow-lg:
+    0 28px 72px rgba(3, 8, 24, 0.52), 0 4px 16px rgba(3, 8, 24, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  --sider-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  --tip-bg: rgba(16, 22, 40, 0.88);
 
   position: relative;
   min-height: 100vh;
   isolation: isolate;
 }
 
-/* ---- 极光背景层 ---- */
+/* ---- 流光背景层：三块彩色光斑缓慢漂移，是液态玻璃折射感的来源 ---- */
 .glass-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
   overflow: hidden;
   background:
-    radial-gradient(1200px 700px at 80% -20%, rgba(64, 100, 220, 0.28), transparent 60%),
-    radial-gradient(1000px 640px at -15% 115%, rgba(34, 211, 238, 0.16), transparent 60%),
-    linear-gradient(160deg, #0a1024 0%, #0d1330 45%, #0a1a2e 100%);
+    radial-gradient(1100px 680px at 82% -18%, rgba(99, 132, 255, 0.3), transparent 62%),
+    radial-gradient(900px 620px at -12% 112%, rgba(34, 211, 238, 0.2), transparent 62%),
+    radial-gradient(720px 540px at 112% 78%, rgba(168, 120, 255, 0.16), transparent 64%),
+    linear-gradient(160deg, #0a1024 0%, #0c1230 45%, #0a1a2e 100%);
 }
 .glass-bg::before,
 .glass-bg::after {
   content: '';
   position: absolute;
   border-radius: 50%;
-  filter: blur(110px);
-  animation: glass-drift 18s ease-in-out infinite alternate;
+  filter: blur(130px) saturate(1.2);
+  animation: glass-drift 22s ease-in-out infinite alternate;
+  will-change: transform;
 }
 .glass-bg::before {
-  width: 560px;
-  height: 560px;
-  top: -160px;
-  right: -100px;
-  background: radial-gradient(circle, rgba(123, 163, 255, 0.5), transparent 65%);
+  width: 640px;
+  height: 640px;
+  top: -180px;
+  right: -120px;
+  background: radial-gradient(circle, rgba(123, 163, 255, 0.55), transparent 65%);
 }
 .glass-bg::after {
-  width: 520px;
-  height: 520px;
-  bottom: -180px;
-  left: -120px;
-  background: radial-gradient(circle, rgba(78, 216, 240, 0.38), transparent 65%);
-  animation-delay: -9s;
+  width: 600px;
+  height: 600px;
+  bottom: -200px;
+  left: -140px;
+  background: radial-gradient(circle, rgba(78, 216, 240, 0.42), transparent 65%);
+  animation-duration: 27s;
+  animation-delay: -11s;
 }
 @keyframes glass-drift {
   from {
     transform: translate(0, 0) scale(1);
   }
   to {
-    transform: translate(-50px, 50px) scale(1.12);
+    transform: translate(-60px, 60px) scale(1.16);
   }
 }
 .glass-bg-noise {
@@ -87,33 +120,68 @@
   -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 35%, transparent 80%);
 }
 
-/* ---- 卡片 / 面板：半透明 + 背景模糊 + 顶部高光 ---- */
+/* ---- 卡片 / 面板：液态填充 + 强模糊 + 折射亮边 + 分层投影 ---- */
 .glass-root .n-card,
 .glass-root .panel {
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  background: var(--surface);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: var(--glass-shadow);
 }
 
-/* ---- 输入 / 表格等内嵌表面 ---- */
+/* ---- 统计卡片：同样上模糊，悬停时整片「浮起」（位移在共享组件的 scoped 里） ---- */
+.glass-root .stat-card {
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+.glass-root .stat-card:hover {
+  border-color: rgba(123, 163, 255, 0.5);
+  box-shadow: var(--shadow-hover);
+}
+
+/* ---- 输入 / 表格等内嵌表面：凹陷感，弱一档模糊 ---- */
 .glass-root .n-input,
 .glass-root .n-base-selection,
 .glass-root .n-data-table,
 .glass-root .n-pagination .n-pagination-item {
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: var(--glass-blur-soft);
+  -webkit-backdrop-filter: var(--glass-blur-soft);
 }
 
-/* ---- 统计卡片悬停微光（共享组件 StatCard 使用 --surface 变量，此处补动效） ---- */
-.glass-root .stat-card:hover {
-  border-color: rgba(123, 163, 255, 0.45);
-  box-shadow: var(--shadow-hover);
+/* ---- 主按钮：液态玻璃珠——品牌渐变 + 顶部高光 + 彩色投影，悬停上浮 ---- */
+.glass-root .n-button--primary-type:not(.n-button--disabled) {
+  background-image: linear-gradient(
+    135deg,
+    rgba(139, 172, 255, 0.95) 0%,
+    rgba(78, 216, 240, 0.9) 100%
+  );
+  box-shadow:
+    0 6px 18px rgba(94, 143, 255, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  text-shadow: 0 1px 2px rgba(10, 20, 50, 0.25);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    filter 0.18s ease;
+}
+.glass-root .n-button--primary-type:not(.n-button--disabled):hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+  box-shadow:
+    0 10px 26px rgba(94, 143, 255, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+.glass-root .n-button--primary-type:not(.n-button--disabled):active {
+  transform: translateY(0);
+  filter: brightness(0.97);
 }
 
 /*
  * ---- teleport 到 body 的浮层（Modal / Popover / Dropdown / Message 等） ----
  * naive-ui 的主题变量以内联 CSS var 形式挂在组件根节点上，颜色由 config provider 生效；
- * 这里的 backdrop-filter 只能靠全局选择器，故用 body.glass-mode 限定。
+ * 这里的模糊与液态高光只能靠全局选择器，故用 body.glass-mode 限定。
+ * 注意：浮层在 .glass-root 之外，拿不到上面的渐变变量，这里的填充用字面值。
  */
 body.glass-mode .n-modal .n-card,
 body.glass-mode .n-dialog,
@@ -124,19 +192,37 @@ body.glass-mode .n-notification,
 body.glass-mode .n-select-menu,
 body.glass-mode .n-date-panel,
 body.glass-mode .n-cascader-menu {
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  background-image: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.04) 55%,
+    rgba(255, 255, 255, 0.07) 100%
+  );
+  box-shadow:
+    0 20px 56px rgba(3, 8, 24, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(26px) saturate(1.8);
+  -webkit-backdrop-filter: blur(26px) saturate(1.8);
 }
 
 /*
- * ---- 浅色毛玻璃 ----
- * 底色换成浅色渐变，材质由「暗底上叠白」改成「白色半透明 + 深色文字」。
+ * ---- 浅色液态玻璃 ----
+ * 底色换成浅色渐变，材质由「暗底上叠白」改成「白色渐变玻璃 + 深色文字」。
  * 只需要覆盖上面定义过的变量与素材：组件本身都走 var(--...)。
- * 特判属性只加 backdrop-filter，颜色跟随各自的 naive-ui 主题变量，这里不用管。
+ * 特判属性只加 backdrop-filter/背景，颜色跟随各自的 naive-ui 主题变量，这里不用管。
  */
 :root[data-theme='light'] .glass-root {
-  --surface: rgba(255, 255, 255, 0.62);
-  --surface-2: rgba(255, 255, 255, 0.74);
+  --surface: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.8) 0%,
+    rgba(255, 255, 255, 0.56) 50%,
+    rgba(255, 255, 255, 0.7) 100%
+  );
+  --surface-2: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(255, 255, 255, 0.72) 100%
+  );
   /* 品牌高亮色在白底上要深一档才够对比 */
   --brand-hover: #4673e8;
   --border: rgba(15, 23, 42, 0.1);
@@ -146,27 +232,57 @@ body.glass-mode .n-cascader-menu {
   --text-3: #5b6b85;
   --text-4: #94a3b8;
 
-  --glass-shadow: 0 12px 36px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  --shadow-hover: 0 10px 28px rgba(15, 23, 42, 0.12), 0 0 24px rgba(91, 140, 255, 0.18);
-  --glass-shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  --sider-bg: rgba(255, 255, 255, 0.5);
-  --tip-bg: rgba(255, 255, 255, 0.9);
+  --glass-shadow:
+    0 14px 36px rgba(15, 23, 42, 0.1), 0 2px 8px rgba(15, 23, 42, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --shadow-hover:
+    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(91, 140, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --glass-shadow-lg:
+    0 26px 64px rgba(15, 23, 42, 0.14), 0 4px 14px rgba(15, 23, 42, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --sider-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.66) 0%,
+    rgba(255, 255, 255, 0.45) 100%
+  );
+  --tip-bg: rgba(255, 255, 255, 0.92);
 }
 :root[data-theme='light'] .glass-bg {
   background:
-    radial-gradient(1200px 700px at 80% -20%, rgba(91, 140, 255, 0.2), transparent 60%),
-    radial-gradient(1000px 640px at -15% 115%, rgba(34, 211, 238, 0.16), transparent 60%),
+    radial-gradient(1100px 680px at 82% -18%, rgba(91, 140, 255, 0.24), transparent 62%),
+    radial-gradient(900px 620px at -12% 112%, rgba(34, 211, 238, 0.2), transparent 62%),
+    radial-gradient(720px 540px at 112% 78%, rgba(168, 120, 255, 0.14), transparent 64%),
     linear-gradient(160deg, #eef2fb 0%, #e9eefc 45%, #e5f1f7 100%);
 }
 :root[data-theme='light'] .glass-bg::before {
-  background: radial-gradient(circle, rgba(123, 163, 255, 0.34), transparent 65%);
+  background: radial-gradient(circle, rgba(123, 163, 255, 0.38), transparent 65%);
 }
 :root[data-theme='light'] .glass-bg::after {
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.26), transparent 65%);
+  background: radial-gradient(circle, rgba(34, 211, 238, 0.3), transparent 65%);
 }
 /* 白色网格线在浅底上等于没有，换成深色细线 */
 :root[data-theme='light'] .glass-bg-noise {
   background-image:
     linear-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
     linear-gradient(90deg, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
+}
+/* 浅色浮层：白色液态渐变 + 强高光 */
+:root[data-theme='light'] body.glass-mode .n-modal .n-card,
+:root[data-theme='light'] body.glass-mode .n-dialog,
+:root[data-theme='light'] body.glass-mode .n-popover,
+:root[data-theme='light'] body.glass-mode .n-dropdown-menu,
+:root[data-theme='light'] body.glass-mode .n-message,
+:root[data-theme='light'] body.glass-mode .n-notification,
+:root[data-theme='light'] body.glass-mode .n-select-menu,
+:root[data-theme='light'] body.glass-mode .n-date-panel,
+:root[data-theme='light'] body.glass-mode .n-cascader-menu {
+  background-image: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.88) 0%,
+    rgba(255, 255, 255, 0.62) 100%
+  );
+  box-shadow:
+    0 20px 56px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }

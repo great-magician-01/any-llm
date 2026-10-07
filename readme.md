@@ -173,6 +173,6 @@ internal/
   upstream/           # 上游 HTTP 客户端与余额快照轮询
 web/                  # Vue 3 前端（Naive UI + Vite）
   src/themes/classic/ # 经典主题套件（视图 + Layout + theme.ts）
-  src/themes/glass/   # 毛玻璃主题套件（/glass 路由前缀，结构对称）
+  src/themes/glass/   # 液态玻璃主题套件（/glass 路由前缀，结构对称）
   src/components/     # 两套主题共享的组件
 ```
