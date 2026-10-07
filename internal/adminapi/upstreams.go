@@ -37,17 +37,20 @@ func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name              string  `json:"name"`
-		BaseURL           string  `json:"base_url"`
-		APIKey            string  `json:"api_key"`
-		Format            string  `json:"format"`
-		Remark            string  `json:"remark"`
-		Enabled           *bool   `json:"enabled"`
-		ExpiresAt         optTime `json:"expires_at"`
-		DailyTokenLimit   int     `json:"daily_token_limit"`
-		MonthlyTokenLimit int     `json:"monthly_token_limit"`
-		MaxConcurrent     *int    `json:"max_concurrent"`
-		FetchModels       bool    `json:"fetch_models"`
+		Name            string  `json:"name"`
+		BaseURL         string  `json:"base_url"`
+		APIKey          string  `json:"api_key"`
+		Format          string  `json:"format"`
+		Remark          string  `json:"remark"`
+		Enabled         *bool   `json:"enabled"`
+		ExpiresAt       optTime `json:"expires_at"`
+		DailyTokenLimit int     `json:"daily_token_limit"`
+		// 附加格式端点（选填）：其余格式的原生入口，网关按入站 endpoint 命中
+		// 后原生直通。缺席 = 单格式上游。
+		ExtraEndpoints    []store.UpstreamEndpoint `json:"extra_endpoints"`
+		MonthlyTokenLimit int                      `json:"monthly_token_limit"`
+		MaxConcurrent     *int                     `json:"max_concurrent"`
+		FetchModels       bool                     `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: create upstream invalid JSON", "err", err)
@@ -57,6 +60,11 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
 		logger.Warn("admin: create upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+		return
+	}
+	if err := store.ValidateExtraEndpoints(req.Format, req.ExtraEndpoints); err != nil {
+		logger.Warn("admin: create upstream invalid extra_endpoints", "err", err)
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
@@ -74,6 +82,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		maxConcurrent = *req.MaxConcurrent
 	}
 	u := &store.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format, Remark: req.Remark,
+		ExtraEndpoints:  req.ExtraEndpoints,
 		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit, MaxConcurrent: maxConcurrent}
 	if req.ExpiresAt.set {
 		u.ExpiresAt = req.ExpiresAt.value()
@@ -152,12 +161,14 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		Format  string `json:"format"`
 		// 指针区分「没给」与「给了空串」：只带 enabled 的 PATCH（如列表页开关）
 		// 不得顺手清空备注；显式空串才是清空。
-		Remark            *string `json:"remark"`
-		Enabled           *bool   `json:"enabled"`
-		ExpiresAt         optTime `json:"expires_at"`
-		DailyTokenLimit   *int    `json:"daily_token_limit"`
-		MonthlyTokenLimit *int    `json:"monthly_token_limit"`
-		MaxConcurrent     *int    `json:"max_concurrent"`
+		Remark    *string `json:"remark"`
+		Enabled   *bool   `json:"enabled"`
+		ExpiresAt optTime `json:"expires_at"`
+		// 指针三态与 remark 同理：nil = 不动，显式空数组 = 清空附加端点。
+		ExtraEndpoints    *[]store.UpstreamEndpoint `json:"extra_endpoints"`
+		DailyTokenLimit   *int                      `json:"daily_token_limit"`
+		MonthlyTokenLimit *int                      `json:"monthly_token_limit"`
+		MaxConcurrent     *int                      `json:"max_concurrent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: update upstream invalid JSON", "id", id, "err", err)
@@ -208,6 +219,15 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 		if req.Format != "" {
 			u.Format = req.Format
+		}
+		if req.ExtraEndpoints != nil {
+			u.ExtraEndpoints = *req.ExtraEndpoints
+		}
+		// 附加端点校验放在合并之后：主格式可能被本次 PATCH 同时改掉，必须用
+		// 最终的主格式做撞车检查——新主格式与保留的附加端点撞车（同一格式两个
+		// URL）会产生路由二义性，响亮拒绝让管理员显式删除重复项。
+		if err := store.ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
+			return err
 		}
 		if req.Remark != nil {
 			u.Remark = *req.Remark

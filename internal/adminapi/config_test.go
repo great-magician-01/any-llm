@@ -671,3 +671,66 @@ func TestExportConfig_ExpiresAt(t *testing.T) {
 		t.Fatalf("permanent expires_at=%v, want null", v)
 	}
 }
+
+// TestConfigExportImport_ExtraEndpoints 盯住 extra_endpoints 的配置文件语义：
+// 导出带出；导入新建写入、字段缺席保留现值（旧版导出文件没有该字段）、显式
+// 空数组清空、非法值整体 400。
+func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+
+	// 导出带出
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	eps, ok := out.Upstreams[0]["extra_endpoints"].([]any)
+	if !ok || len(eps) != 1 {
+		t.Fatalf("exported extra_endpoints=%v", out.Upstreams[0]["extra_endpoints"])
+	}
+	ep := eps[0].(map[string]any)
+	if ep["format"] != "anthropic" || ep["base_url"] != "https://x/anthropic" {
+		t.Fatalf("exported endpoint=%v", ep)
+	}
+
+	// 字段缺席 → 保留现值（模拟旧版导出文件再导入）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai"},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 1 {
+		t.Fatalf("absent field must preserve extras: %+v", got.ExtraEndpoints)
+	}
+
+	// 显式空数组 → 清空
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai", "extra_endpoints": []map[string]any{}},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("explicit empty should clear: %+v", got.ExtraEndpoints)
+	}
+
+	// 非法值（与主格式撞车）→ 整体 400，不写库
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai",
+			"extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://y"}}},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("invalid import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.APIKey != "k2" {
+		t.Fatalf("rejected import should not have landed: %+v", got)
+	}
+}

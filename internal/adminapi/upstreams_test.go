@@ -925,6 +925,136 @@ func TestUpstreamConnectivity_ByID(t *testing.T) {
 	}
 }
 
+// TestUpstreamExtraEndpoints_API 覆盖管理端 extra_endpoints 的完整生命周期：
+// 创建带入、缺省保留（只发 enabled 的开关 PATCH 尤其不能清空）、显式空数组
+// 清空、非法值 400。指针三态与 remark 一致。
+func TestUpstreamExtraEndpoints_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) (int64, int) {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x/v1", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		var resp struct {
+			ID int64 `json:"id"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID, w.Code
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+	eps := []map[string]any{{"format": "anthropic", "base_url": "https://x/anthropic"}}
+
+	// 创建时带入
+	id, code := create(map[string]any{"extra_endpoints": eps})
+	if code != 200 {
+		t.Fatalf("create status=%d", code)
+	}
+	u, _ := store.GetUpstreamByID(d, id)
+	if len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "anthropic" || u.ExtraEndpoints[0].BaseURL != "https://x/anthropic" {
+		t.Fatalf("create extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 创建时不给 → 无附加端点
+	plainID, code := create(map[string]any{"name": "plain"})
+	if code != 200 {
+		t.Fatalf("plain create status=%d", code)
+	}
+	if u, _ := store.GetUpstreamByID(d, plainID); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("unset extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 字段缺省 → 保留现状（含只发 enabled 的开关 PATCH）
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 1 {
+		t.Fatalf("enabled-only patch cleared extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 显式替换
+	eps2 := []map[string]any{{"format": "responses", "base_url": "https://x/v1"}}
+	if w := do(id, map[string]any{"extra_endpoints": eps2}); w.Code != 200 {
+		t.Fatalf("replace status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "responses" {
+		t.Fatalf("replaced extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 显式空数组 → 清空
+	if w := do(id, map[string]any{"extra_endpoints": []map[string]any{}}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("cleared extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 非法值 → 400：未知格式 / 空 base_url / 与主格式撞车 / 列表内重复
+	if _, code := create(map[string]any{"name": "bad1", "extra_endpoints": []map[string]any{{"format": "gemini", "base_url": "https://x"}}}); code != 400 {
+		t.Fatalf("unknown format status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad2", "extra_endpoints": []map[string]any{{"format": "anthropic", "base_url": " "}}}); code != 400 {
+		t.Fatalf("empty base_url status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad3", "extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://y"}}}); code != 400 {
+		t.Fatalf("primary collision status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad4", "extra_endpoints": []map[string]any{
+		{"format": "anthropic", "base_url": "https://x"}, {"format": "anthropic", "base_url": "https://y"}}}); code != 400 {
+		t.Fatalf("duplicate format status=%d want 400", code)
+	}
+}
+
+// TestUpdateUpstream_FormatCollisionWithExtras：只改主 format 的 PATCH 撞上保留
+// 的附加端点（同一格式出现两个 URL）必须 400 响亮拒绝——读路径上没有隐式
+// 优先级，二义配置不允许落库。管理员需在同一请求里同时修正 extra_endpoints。
+func TestUpdateUpstream_FormatCollisionWithExtras(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "u", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+
+	do := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 只改主格式为 anthropic：与保留的附加端点撞车 → 400，库里的行不变
+	if w := do(map[string]any{"format": "anthropic"}); w.Code != 400 {
+		t.Fatalf("collision status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := store.GetUpstreamByID(d, id)
+	if u.Format != "openai" || len(u.ExtraEndpoints) != 1 {
+		t.Fatalf("rejected patch should not have landed: %+v", u)
+	}
+
+	// 同一请求里同时修正 extra_endpoints → 200
+	if w := do(map[string]any{"format": "anthropic", "extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://x/v1"}}}); w.Code != 200 {
+		t.Fatalf("fix status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = store.GetUpstreamByID(d, id)
+	if u.Format != "anthropic" || len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "openai" {
+		t.Fatalf("after fix=%+v", u)
+	}
+}
+
 // 模型写操作的错误语义：添加已存在的活跃模型返回 409（静默 200 会让管理员以为
 // 新配置生效了）；编辑不存在/已软删/跨上游的模型返回 404（更新 0 行不能假成功）。
 func TestModelWriteErrorSemantics(t *testing.T) {
