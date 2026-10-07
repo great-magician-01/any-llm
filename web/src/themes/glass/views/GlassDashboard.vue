@@ -170,26 +170,30 @@ onUnmounted(() => clearInterval(timer))
     <UsageCalendar :stats="daily" />
 
     <div class="dash-grid">
-      <n-card title="本月模型用量 Top" class="panel">
-        <div v-if="topModels.length === 0" class="empty-hint">本月暂无用量数据</div>
-        <div v-else class="rank-list">
-          <div v-for="m in topModels" :key="m.group_key" class="rank-item">
-            <div class="rank-head">
-              <span class="rank-name mono">{{ m.group_key }}</span>
-              <span class="rank-val mono">{{ formatCompact(m.total_tokens) }}</span>
+      <div class="dash-col">
+        <n-card title="本月模型用量 Top" class="panel">
+          <div v-if="topModels.length === 0" class="empty-hint">本月暂无用量数据</div>
+          <div v-else class="rank-list">
+            <div v-for="m in topModels" :key="m.group_key" class="rank-item">
+              <div class="rank-head">
+                <span class="rank-name mono">{{ m.group_key }}</span>
+                <span class="rank-val mono">{{ formatCompact(m.total_tokens) }}</span>
+              </div>
+              <div class="rank-bar">
+                <div
+                  class="rank-bar-fill"
+                  :style="{ width: Math.max(2, (m.total_tokens / maxModelTokens) * 100) + '%' }"
+                ></div>
+              </div>
+              <div class="rank-sub">请求 {{ formatInt(m.request_count) }} · 成功率 {{ formatPercent(m.ok_count, m.request_count) }}</div>
             </div>
-            <div class="rank-bar">
-              <div
-                class="rank-bar-fill"
-                :style="{ width: Math.max(2, (m.total_tokens / maxModelTokens) * 100) + '%' }"
-              ></div>
-            </div>
-            <div class="rank-sub">请求 {{ formatInt(m.request_count) }} · 成功率 {{ formatPercent(m.ok_count, m.request_count) }}</div>
           </div>
-        </div>
-      </n-card>
+        </n-card>
 
-      <div class="dash-side">
+        <UpstreamUsagePanel :upstreams="upstreamRows" :usage="usageByUpstream" />
+      </div>
+
+      <div class="dash-col">
         <n-card title="资源" class="panel">
           <div class="res-row">
             <span class="res-label"><AppIcon name="layers" :size="14" /> 上游</span>
@@ -225,10 +229,9 @@ onUnmounted(() => clearInterval(timer))
             <code class="mono">upstream-name/model-name</code>
           </p>
         </n-card>
-      </div>
 
-      <UpstreamUsagePanel :upstreams="upstreamRows" :usage="usageByUpstream" />
-      <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" to="glass-upstreams" />
+        <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" to="glass-upstreams" />
+      </div>
     </div>
   </div>
 </template>
@@ -246,8 +249,11 @@ onUnmounted(() => clearInterval(timer))
     grid-template-columns: 1fr;
   }
 }
-.dash-side .panel + .panel {
-  margin-top: 20px;
+.dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
 }
 .empty-hint {
   padding: 36px 0;
