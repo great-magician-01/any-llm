@@ -161,6 +161,10 @@ func mysqlConvTestDB(t *testing.T) *sql.DB {
 		d.Close()
 		t.Fatalf("load conversation shards: %v", err)
 	}
+	if err := store.LoadSessionShards(d); err != nil {
+		d.Close()
+		t.Fatalf("load session shards: %v", err)
+	}
 	t.Cleanup(func() { d.Close() })
 	return d
 }
@@ -491,5 +495,85 @@ func convUpstreamErrorBody(t *testing.T, dl convDialect) {
 	}
 	if tt != 0 {
 		t.Errorf("total_tokens=%d, want 0", tt)
+	}
+}
+
+func TestConvE2E_SessionAggregation(t *testing.T) {
+	forEachConvDialect(t, convSessionAggBody)
+}
+
+// convSessionAggBody：真实请求链路验证会话聚合——带 x-deepseek-harness-session-id
+// 的两轮请求聚成一行（轮数/token 累加、增量消息、无全量重复）；不带 id 的请求
+// 不进会话表。
+func convSessionAggBody(t *testing.T, dl convDialect) {
+	mockBody := `{"id":"c1","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(mockBody))
+	}))
+	defer srv.Close()
+
+	g, d, w := setupConvGateway(t, dl)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: srv.URL, APIKey: "k", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	k, _ := store.CreateExtKey(d, "test", "", 0, 0, nil)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	doReq := func(body string, headers map[string]string) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		for n, v := range headers {
+			req.Header.Set(n, v)
+		}
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// 第一轮：带会话 id
+	doReq(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`,
+		map[string]string{"x-deepseek-harness-session-id": "sess-e2e"})
+	// 第二轮：同会话，客户端重发全量历史 + 新消息
+	doReq(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"again"}],"max_tokens":50}`,
+		map[string]string{"x-deepseek-harness-session-id": "sess-e2e"})
+	// 无 id 的请求：不进会话表
+	doReq(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":50}`, nil)
+	flushConv(w)
+
+	sess, err := store.GetConversationSession(d, 0) // 先确认表已建
+	if err != nil && err != sql.ErrNoRows {
+		t.Fatalf("probe: %v", err)
+	}
+	_ = sess
+	sessions, total, err := store.ConversationSessionsList(d, 1, 50)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if total != 1 || len(sessions) != 1 {
+		t.Fatalf("total=%d len=%d, want 1/1（无 id 的请求不应建行）", total, len(sessions))
+	}
+	s := sessions[0]
+	if s.SessionID != "dsh:sess-e2e" {
+		t.Fatalf("session_id=%q", s.SessionID)
+	}
+	if s.TurnCount != 2 || s.PromptTokens != 10 || s.CompletionTokens != 14 || s.TotalTokens != 24 {
+		t.Fatalf("turns=%d tokens=%d/%d/%d", s.TurnCount, s.PromptTokens, s.CompletionTokens, s.TotalTokens)
+	}
+
+	detail, err := store.GetConversationSession(d, s.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	// 增量存储：hi 只出现一次（第二轮的全量历史没有重复并入），4 条消息
+	if strings.Count(detail.Messages, `"hi"`) != 1 {
+		t.Fatalf("history duplicated in session messages: %s", detail.Messages)
+	}
+	if detail.MsgCount != 4 {
+		t.Fatalf("msg_count=%d, want 4", detail.MsgCount)
+	}
+	if !strings.Contains(detail.Messages, `"again"`) {
+		t.Fatalf("second turn delta missing: %s", detail.Messages)
 	}
 }

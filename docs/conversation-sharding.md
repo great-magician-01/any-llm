@@ -226,3 +226,23 @@ UPDATE id_sequences SET next_id = LAST_INSERT_ID(next_id + 1) WHERE name = 'conv
 与分表无关，根因：`n-data-table` 缺少 `remote` 属性，naive-ui 忽略传入的 `itemCount: total`，按当前页 20 行计算页数并把页码钳回第 1 页（已核对 `naive-ui/es/data-table/src/use-table-data.mjs`）。后端 `page`/`size`/`total` 链路正常。
 
 修复：4 处表格各加 `remote` 属性——`themes/classic/views/Conversations.vue`、`themes/glass/views/GlassConversations.vue`、`themes/classic/views/Usage.vue`（请求明细，同款 bug）、`themes/glass/views/GlassUsage.vue`。
+
+---
+
+## 附：conversation_sessions 会话聚合分表（2026-10）
+
+在按轮归档之上叠加了**会话聚合表** `conversation_sessions_YYYY_MM`（设计文档：
+`docs/superpowers/specs/2026-10-07-conversation-sessions.md`）。它复用本文件描述的
+全部机制，差异只有几点：
+
+- **每行一个会话，upsert 而非纯插入**：写入路径先按 `session_id` 跨分表扇出查
+  （各表有 `UNIQUE(session_id)`），命中则 UPDATE 原行、未命中才 INSERT 到当月分表；
+- **分片归属键是首轮 `created_at`**：跨月续聊更新首轮月份的原行，不搬移；
+- 行 id 全局唯一（PG 新序列 `conversation_sessions_id_seq`；MySQL 复用
+  `id_sequences` 计数器），详情按 id 跨分表扇出，与按轮归档相同；
+- 注册缓存是同一份代码的两个实例（`shardRegistry`）：`convShards` 管
+  `conversation_records`，`sessShards` 管 `conversation_sessions`，
+  `ListTablesLike` 的前缀天然不互相误捞；
+- 会话 id 的提取规则（dsh 头 / 会话亲和头 / responses 链 / claude-code
+  metadata / 自定义头）在 `internal/gateway/convid.go`；提取不到 id 的请求
+  不进会话表，行为与上线前完全一致。

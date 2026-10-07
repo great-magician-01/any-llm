@@ -38,6 +38,7 @@ type convCtx struct {
 	stream       bool
 	reqIRJSON    []byte          // 请求 IR 的 JSON，创建时快照（session 合并前）
 	reqRaw       []byte          // 入站请求体（别名，不复制）
+	conv         convInfo        // 会话 id 提取结果（zero = 不进会话表）
 	acc          *streamRecorder // 流请求时非 nil
 	tee          *teeWriter      // 流请求安装后非 nil
 }
@@ -62,7 +63,7 @@ func (g *Gateway) snapshotRequestIR(irReq *translate.Request) []byte {
 // 或快照失败）时返回 nil。reqIRJSON 必须是 dispatch 在 responses session 合并
 // irReq 之前的快照（见 snapshotRequestIR），保证 request_ir 是客户端原始请求
 // 的归一化快照。
-func (g *Gateway) newConvCtx(r *http.Request, key *store.ExtKey, u *store.Upstream, realModel, inFormat string, reqIRJSON []byte, stream bool, body []byte) *convCtx {
+func (g *Gateway) newConvCtx(r *http.Request, key *store.ExtKey, u *store.Upstream, realModel, inFormat string, reqIRJSON []byte, stream bool, body []byte, conv convInfo) *convCtx {
 	if reqIRJSON == nil {
 		return nil
 	}
@@ -77,6 +78,7 @@ func (g *Gateway) newConvCtx(r *http.Request, key *store.ExtKey, u *store.Upstre
 		stream:    stream,
 		reqIRJSON: reqIRJSON,
 		reqRaw:    body,
+		conv:      conv,
 	}
 	if key != nil {
 		kid := key.ID
@@ -147,13 +149,78 @@ func (c *convCtx) finish(status string, usage translate.Usage, respIR *translate
 		ResponseRaw:         respRaw,
 		CreatedAt:           c.createdAt,
 	}
+	turn := c.sessionTurn(status, usage, respIR)
+	upsert := func(d *sql.DB) {
+		if turn == nil {
+			return
+		}
+		// 会话聚合是叠加层：失败只记日志，绝不让它影响按轮归档的结果。
+		if err := store.UpsertSessionTurn(d, turn); err != nil {
+			logger.Warn("conversation session upsert failed", "session_id", turn.SessionID, "err", err)
+		}
+	}
 	if c.g.writer != nil {
-		c.g.writer.DoAsync(func(d *sql.DB) error { return store.InsertConversation(d, rec) })
+		c.g.writer.DoAsync(func(d *sql.DB) error {
+			// 同一闭包内先写按轮归档再并入会话：writer 单线程保证 responses
+			// 续接链的上一轮对下一轮可见。
+			err := store.InsertConversation(d, rec)
+			upsert(d)
+			return err
+		})
 	} else {
 		if err := store.InsertConversation(c.g.db, rec); err != nil {
 			logger.Error("conversation: sync write failed", "model", rec.Model, "err", err)
 		}
+		upsert(c.g.db)
 	}
+}
+
+// sessionTurn 把本轮组装成会话聚合更新输入；没有会话标识（conv.zero）时
+// 返回 nil，写入侧零开销。
+func (c *convCtx) sessionTurn(status string, usage translate.Usage, respIR *translate.Response) *store.SessionTurn {
+	if c.conv.zero() {
+		return nil
+	}
+	t := &store.SessionTurn{
+		SessionID:           c.conv.sessionID,
+		PrevResponseID:      c.conv.prevRespID,
+		OwnRespID:           c.conv.ownRespID,
+		Compact:             c.conv.compact,
+		OK:                  status == "ok",
+		ExtKeyID:            c.extKeyID,
+		Harness:             c.harness,
+		InFormat:            c.inFormat,
+		Model:               c.model,
+		Status:              status,
+		PromptTokens:        usage.InputTokens,
+		CompletionTokens:    usage.OutputTokens,
+		CacheReadTokens:     usage.CacheReadTokens,
+		CacheCreationTokens: usage.CacheCreationTokens,
+		ReasoningTokens:     usage.ReasoningTokens,
+		Now:                 c.createdAt,
+	}
+	if !t.OK {
+		return t
+	}
+	// reqIRJSON 是 session 合并前的快照：responses 格式下它就是本轮新增
+	// input（增量），无状态格式下它是客户端重发的全量历史（按 msg_count
+	// 在写入侧切增量）。
+	var req struct {
+		Messages json.RawMessage `json:"Messages"`
+	}
+	if err := json.Unmarshal(c.reqIRJSON, &req); err == nil && len(req.Messages) > 0 {
+		if c.inFormat == "responses" {
+			t.DeltaMessages = req.Messages
+		} else {
+			t.FullMessages = req.Messages
+		}
+	}
+	if respIR != nil && len(respIR.Content) > 0 {
+		if b, err := json.Marshal(translate.Message{Role: "assistant", Content: respIR.Content}); err == nil {
+			t.Assistant = b
+		}
+	}
+	return t
 }
 
 // teeWriter 记录写给客户端的每个字节，同时原样透传。嵌入 http.ResponseWriter

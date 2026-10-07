@@ -110,18 +110,18 @@ func TestRegisterConvShard(t *testing.T) {
 	registerConvShard("2026-09", "conversation_records_2026_09")
 	registerConvShard("2026-11", "conversation_records_2026_11")
 	registerConvShard("2026-10", "conversation_records_2026_10")
-	convShardCache.RLock()
-	got := append([]string(nil), convShardCache.months...)
-	convShardCache.RUnlock()
+	convShards.mu.RLock()
+	got := append([]string(nil), convShards.months...)
+	convShards.mu.RUnlock()
 	want := []string{"conversation_records_2026_11", "conversation_records_2026_10", "conversation_records_2026_09"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("months=%v, want %v", got, want)
 	}
 	// 幂等：重复注册不产生重复项
 	registerConvShard("2026-10", "conversation_records_2026_10")
-	convShardCache.RLock()
-	n := len(convShardCache.months)
-	convShardCache.RUnlock()
+	convShards.mu.RLock()
+	n := len(convShards.months)
+	convShards.mu.RUnlock()
 	if n != 3 {
 		t.Fatalf("after re-register months len=%d, want 3", n)
 	}
@@ -134,28 +134,34 @@ func TestRegisterConvShard(t *testing.T) {
 	}
 }
 
-// resetConvShardCache 清空包级注册缓存并注册 t.Cleanup 还原，保证测试间隔离。
+// resetConvShardCache 清空按轮归档的包级注册缓存并注册 t.Cleanup 还原。
 func resetConvShardCache(t *testing.T) {
 	t.Helper()
-	convShardCache.Lock()
+	resetShardCache(t, convShards)
+}
+
+// resetShardCache 清空指定注册缓存并注册 t.Cleanup 还原，保证测试间隔离。
+func resetShardCache(t *testing.T, r *shardRegistry) {
+	t.Helper()
+	r.mu.Lock()
 	saved := struct {
 		loaded  bool
 		months  []string
 		byMonth map[string]string
 		hasBase bool
-	}{convShardCache.loaded, convShardCache.months, convShardCache.byMonth, convShardCache.hasBase}
-	convShardCache.loaded = false
-	convShardCache.months = nil
-	convShardCache.byMonth = nil
-	convShardCache.hasBase = false
-	convShardCache.Unlock()
+	}{r.loaded, r.months, r.byMonth, r.hasBase}
+	r.loaded = false
+	r.months = nil
+	r.byMonth = nil
+	r.hasBase = false
+	r.mu.Unlock()
 	t.Cleanup(func() {
-		convShardCache.Lock()
-		convShardCache.loaded = saved.loaded
-		convShardCache.months = saved.months
-		convShardCache.byMonth = saved.byMonth
-		convShardCache.hasBase = saved.hasBase
-		convShardCache.Unlock()
+		r.mu.Lock()
+		r.loaded = saved.loaded
+		r.months = saved.months
+		r.byMonth = saved.byMonth
+		r.hasBase = saved.hasBase
+		r.mu.Unlock()
 	})
 }
 
