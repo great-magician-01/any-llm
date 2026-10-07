@@ -12,169 +12,250 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-// conversation_records 应用层按月分表（PG 与 MySQL；SQLite 走单表路径，见
-// conversation.go）。设计见 docs/conversation-sharding.md：
+// 应用层按月分表（PG 与 MySQL；SQLite 走单表路径，见 conversation.go）。
+// 设计见 docs/conversation-sharding.md。目前有两组分表：
 //
-//   - 月分表 conversation_records_YYYY_MM，每月一张普通物理表；
-//   - 存量库的旧表 conversation_records 原地保留为「历史分表」，零迁移；
-//   - 写入按 created_at 月份路由，缺表时自动建（EnsureConversationShard）；
-//   - 分表集合由进程内注册缓存维护（convShardCache）：启动时 LoadConvShards
-//     从 catalog 全量加载，建表后立即注册，读写路径不再逐查询打 catalog；
-//   - 全部分表共享 id 序列（PG 用 CREATE SEQUENCE，MySQL 用 id_sequences
+//   - conversation_records_YYYY_MM：按轮对话归档（每请求一行）；
+//   - conversation_sessions_YYYY_MM：会话聚合（每会话一行，upsert）。
+//
+// 两组共用同一套机制（shardRegistry）：
+//
+//   - 月分表 <base>_YYYY_MM，每月一张普通物理表；
+//   - 存量库的旧 conversation_records 原地保留为「历史分表」，零迁移
+//     （conversation_sessions 是新表，没有历史分表，但机制保留）；
+//   - 写入按 created_at 月份路由，缺表时自动建（ensure）；
+//   - 分表集合由进程内注册缓存维护：启动时 load 从 catalog 全量加载，
+//     建表后立即注册，读写路径不再逐查询打 catalog；
+//   - 全部分表共享一条 id 序列（PG 用 CREATE SEQUENCE，MySQL 用 id_sequences
 //     计数器表模拟），id 全局唯一，详情查询 WHERE id=? 语义不变。
+
+// shardRegistry 是一组月分表的注册缓存与 DDL 生成器。表名白名单正则保证
+// 拼进动态 SQL 的表名不可能来自外部输入。
+type shardRegistry struct {
+	baseTable string // 历史分表名，也是月分表名的前缀（不带尾下划线）
+	seqName   string // 共享 id 序列名（PG）/ id_sequences 计数器键（MySQL）
+	nameRe    *regexp.Regexp
+	renderDDL func(d db.Dialect, tableName, seqName string) ([]string, error)
+
+	// 缓存是进程内的——多实例部署时，其他实例建的表要重启（或等本实例
+	// 写入路径惰性加载）后才出现在读路径里。当前部署形态为单实例，可接受。
+	mu      sync.RWMutex
+	loaded  bool
+	months  []string // 月分表名，新→旧（零填充月份保证字典序=时间序）
+	byMonth map[string]string
+	hasBase bool // 历史分表是否存在
+}
+
+// convShards / sessShards 是两组进程级分表注册缓存。
+var convShards = &shardRegistry{
+	baseTable: convBaseTable,
+	seqName:   convSeqName,
+	nameRe:    regexp.MustCompile(`^conversation_records_\d{4}_\d{2}$`),
+	renderDDL: db.ConversationShardDDL,
+}
+
+var sessShards = &shardRegistry{
+	baseTable: sessBaseTable,
+	seqName:   sessSeqName,
+	nameRe:    regexp.MustCompile(`^conversation_sessions_\d{4}_\d{2}$`),
+	renderDDL: db.SessionShardDDL,
+}
+
 const (
 	convBaseTable = "conversation_records"
 	convSeqName   = "conversation_records_id_seq"
-	convShardPfx  = "conversation_records_"
+
+	sessBaseTable = "conversation_sessions"
+	sessSeqName   = "conversation_sessions_id_seq"
 )
 
-// convShardNameRe 校验月分表名。来自 catalog 或自身生成的表名必须过此
-// 白名单才允许拼进动态 SQL，杜绝注入面。
-var convShardNameRe = regexp.MustCompile(`^conversation_records_\d{4}_\d{2}$`)
-
-// ConvShardName 返回 t 所属月份的分表名（本地时区，与全项目墙钟约定一致）。
-func ConvShardName(t time.Time) string {
-	return convShardPfx + t.Format("2006_01")
+// shardName 返回 t 所属月份的分表名（本地时区，与全项目墙钟约定一致）。
+func (r *shardRegistry) shardName(t time.Time) string {
+	return r.baseTable + "_" + t.Format("2006_01")
 }
 
-// convMonthKey 返回注册缓存用的月份键（"2006-01"）。
-func convMonthKey(t time.Time) string { return t.Format("2006-01") }
+// monthKey 返回注册缓存用的月份键（"2006-01"）。
+func (r *shardRegistry) monthKey(t time.Time) string { return t.Format("2006-01") }
 
-// convShardNameToKey 把表名转回月份键；调用前需已过 convShardNameRe。
-func convShardNameToKey(name string) string {
-	return strings.Replace(name[len(convShardPfx):], "_", "-", 1)
+// nameToKey 把表名转回月份键；调用前需已过 nameRe 白名单。
+func (r *shardRegistry) nameToKey(name string) string {
+	return strings.Replace(name[len(r.baseTable)+1:], "_", "-", 1)
 }
 
-// convShardCache 分表注册缓存（包级全局变量）。months 按新→旧排列
-// （零填充月份保证表名字典序=时间序）；byMonth 以月份键索引表名；
-// hasBase 记录历史分表是否存在。
+// load 从 catalog 全量重载注册缓存。由启动流程调用，可重复调用（每次重载）
+// —— e2e 测试用它做 schema 隔离。
 //
-// 注意：缓存是进程内的——多实例部署时，其他实例建的表要重启（或等本实例
-// 写入路径惰性加载）后才出现在读路径里。当前部署形态为单实例，可接受。
-var convShardCache struct {
-	sync.RWMutex
-	loaded  bool
-	months  []string
-	byMonth map[string]string
-	hasBase bool
-}
-
-// LoadConvShards 从 catalog 全量重载分表注册缓存。由启动流程调用，可重复调用
-// （每次重载）—— e2e 测试用它做 schema 隔离。
-func LoadConvShards(d *sql.DB) error {
-	// 粗粒度 LIKE 捞候选，再由 Go 侧的 convShardNameRe 白名单复校验：不同 catalog
-	// 的正则语法不一样（PG 是 ~，MySQL 是 REGEXP），没必要为它分叉。
-	//
-	// 前缀必须用 convBaseTable（不带尾下划线）：存量库的旧 conversation_records
-	// 要作为「历史分表」被捞回来，用 convShardPfx 的 LIKE 'conversation_records_%'
-	// 会把它漏掉 —— 历史归档会从读路径整体消失。
-	names, err := db.ListTablesLike(d, convBaseTable)
+// 粗粒度 LIKE 捞候选，再由 Go 侧的 nameRe 白名单复校验：不同 catalog 的正则
+// 语法不一样（PG 是 ~，MySQL 是 REGEXP），没必要为它分叉。
+//
+// 前缀必须用 baseTable（不带尾下划线）：存量库的旧 conversation_records
+// 要作为「历史分表」被捞回来，用带下划线的 LIKE 'conversation_records_%'
+// 会把它漏掉 —— 历史归档会从读路径整体消失。
+func (r *shardRegistry) load(d *sql.DB) error {
+	names, err := db.ListTablesLike(d, r.baseTable)
 	if err != nil {
-		return fmt.Errorf("list conversation shards: %w", err)
+		return fmt.Errorf("list %s shards: %w", r.baseTable, err)
 	}
 	hasBase := false
 	var months []string
 	byMonth := make(map[string]string)
 	for _, name := range names {
-		if name == convBaseTable {
+		if name == r.baseTable {
 			hasBase = true
 			continue
 		}
-		if !convShardNameRe.MatchString(name) {
+		if !r.nameRe.MatchString(name) {
 			continue
 		}
 		months = append(months, name)
-		byMonth[convShardNameToKey(name)] = name
+		byMonth[r.nameToKey(name)] = name
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(months)))
-	convShardCache.Lock()
-	convShardCache.months = months
-	convShardCache.byMonth = byMonth
-	convShardCache.hasBase = hasBase
-	convShardCache.loaded = true
-	convShardCache.Unlock()
+	r.mu.Lock()
+	r.months = months
+	r.byMonth = byMonth
+	r.hasBase = hasBase
+	r.loaded = true
+	r.mu.Unlock()
 	return nil
 }
 
-// convShardSnapshot 返回分表清单快照（月分表新→旧，历史分表若存在排最后）。
+// snapshot 返回分表清单快照（月分表新→旧，历史分表若存在排最后）。
 // 缓存未加载时惰性从 catalog 加载（兜底；正常路径启动时已加载）。
-func convShardSnapshot(d *sql.DB) ([]string, error) {
-	convShardCache.RLock()
-	if convShardCache.loaded {
-		out := append([]string(nil), convShardCache.months...)
-		if convShardCache.hasBase {
-			out = append(out, convBaseTable)
+func (r *shardRegistry) snapshot(d *sql.DB) ([]string, error) {
+	r.mu.RLock()
+	if r.loaded {
+		out := append([]string(nil), r.months...)
+		if r.hasBase {
+			out = append(out, r.baseTable)
 		}
-		convShardCache.RUnlock()
+		r.mu.RUnlock()
 		return out, nil
 	}
-	convShardCache.RUnlock()
-	if err := LoadConvShards(d); err != nil {
+	r.mu.RUnlock()
+	if err := r.load(d); err != nil {
 		return nil, err
 	}
-	return convShardSnapshot(d)
+	return r.snapshot(d)
 }
 
-// convShardForMonth 查月份键对应的分表名。
-func convShardForMonth(key string) (string, bool) {
-	convShardCache.RLock()
-	name, ok := convShardCache.byMonth[key]
-	convShardCache.RUnlock()
+// forMonth 查月份键对应的分表名。
+func (r *shardRegistry) forMonth(key string) (string, bool) {
+	r.mu.RLock()
+	name, ok := r.byMonth[key]
+	r.mu.RUnlock()
 	return name, ok
 }
 
-// registerConvShard 把新分表注册进缓存，保持 months 新→旧有序。幂等。
-func registerConvShard(key, name string) {
-	convShardCache.Lock()
-	defer convShardCache.Unlock()
-	if convShardCache.byMonth == nil {
-		convShardCache.byMonth = make(map[string]string)
+// register 把新分表注册进缓存，保持 months 新→旧有序。幂等。
+func (r *shardRegistry) register(key, name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byMonth == nil {
+		r.byMonth = make(map[string]string)
 	}
-	if _, ok := convShardCache.byMonth[key]; ok {
+	if _, ok := r.byMonth[key]; ok {
 		return
 	}
-	convShardCache.byMonth[key] = name
+	r.byMonth[key] = name
 	// 二分找插入点：months 降序，插到第一个比 name 小的元素之前。
-	i := sort.Search(len(convShardCache.months), func(i int) bool {
-		return convShardCache.months[i] < name
+	i := sort.Search(len(r.months), func(i int) bool {
+		return r.months[i] < name
 	})
-	convShardCache.months = append(convShardCache.months, "")
-	copy(convShardCache.months[i+1:], convShardCache.months[i:])
-	convShardCache.months[i] = name
+	r.months = append(r.months, "")
+	copy(r.months[i+1:], r.months[i:])
+	r.months[i] = name
 }
 
-// convShardDDL 生成一张月分表的完整 DDL（共享序列 + 建表 + 索引）。
-// 索引名 schema 级唯一，故带月份后缀。全部幂等（IF NOT EXISTS）。MySQL 的索引
-// 内联在 CREATE TABLE 里，故只返回一条语句。
-// 表名必须已过 convShardNameRe 白名单。
-func convShardDDL(d db.Dialect, name string) ([]string, error) {
-	if !convShardNameRe.MatchString(name) {
+// ddl 生成一张月分表的完整 DDL（共享序列 + 建表 + 索引）。索引名 schema 级
+// 唯一，故带月份后缀。全部幂等（IF NOT EXISTS）。MySQL 的索引内联在
+// CREATE TABLE 里，故只返回一条语句。表名必须已过 nameRe 白名单。
+func (r *shardRegistry) ddl(d db.Dialect, name string) ([]string, error) {
+	if !r.nameRe.MatchString(name) {
 		return nil, fmt.Errorf("bad shard name %q", name)
 	}
-	stmts := db.ShardSequenceStatements(d, convSeqName)
-	table, err := db.ConversationShardDDL(d, name, convSeqName)
+	stmts := db.ShardSequenceStatements(d, r.seqName)
+	table, err := r.renderDDL(d, name, r.seqName)
 	if err != nil {
 		return nil, err
 	}
 	return append(stmts, table...), nil
 }
 
-// EnsureConversationShard 确保 t 所属月份的分表存在并注册进缓存。幂等。
+// ensure 确保 t 所属月份的分表存在并注册进缓存。幂等。
 // 由启动流程（预建当月）与写入路径（缺表兜底）触发，跨月自愈，无需定时任务。
-func EnsureConversationShard(d *sql.DB, t time.Time) error {
-	name := ConvShardName(t)
-	stmts, err := convShardDDL(db.DialectOf(d), name)
+func (r *shardRegistry) ensure(d *sql.DB, t time.Time) error {
+	name := r.shardName(t)
+	stmts, err := r.ddl(db.DialectOf(d), name)
 	if err != nil {
 		return err
 	}
 	for _, s := range stmts {
 		if _, err := d.Exec(s); err != nil {
-			return fmt.Errorf("ensure conversation shard %s: %w", name, err)
+			return fmt.Errorf("ensure %s shard %s: %w", r.baseTable, name, err)
 		}
 	}
-	registerConvShard(convMonthKey(t), name)
+	r.register(r.monthKey(t), name)
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// conversation_records 的对外包装（保持既有签名，测试与 main.go 不动）
+// ---------------------------------------------------------------------------
+
+// convShardNameRe 校验月分表名。来自 catalog 或自身生成的表名必须过此
+// 白名单才允许拼进动态 SQL，杜绝注入面。
+var convShardNameRe = convShards.nameRe
+
+// ConvShardName 返回 t 所属月份的分表名（本地时区，与全项目墙钟约定一致）。
+func ConvShardName(t time.Time) string { return convShards.shardName(t) }
+
+// convMonthKey 返回注册缓存用的月份键（"2006-01"）。
+func convMonthKey(t time.Time) string { return convShards.monthKey(t) }
+
+// convShardNameToKey 把表名转回月份键；调用前需已过 convShardNameRe。
+func convShardNameToKey(name string) string { return convShards.nameToKey(name) }
+
+// LoadConvShards 从 catalog 全量重载分表注册缓存。由启动流程调用，可重复调用
+// （每次重载）—— e2e 测试用它做 schema 隔离。
+func LoadConvShards(d *sql.DB) error { return convShards.load(d) }
+
+// convShardSnapshot 返回分表清单快照（月分表新→旧，历史分表若存在排最后）。
+func convShardSnapshot(d *sql.DB) ([]string, error) { return convShards.snapshot(d) }
+
+// convShardForMonth 查月份键对应的分表名。
+func convShardForMonth(key string) (string, bool) { return convShards.forMonth(key) }
+
+// registerConvShard 把新分表注册进缓存，保持 months 新→旧有序。幂等。
+func registerConvShard(key, name string) { convShards.register(key, name) }
+
+// convShardDDL 生成一张月分表的完整 DDL（共享序列 + 建表 + 索引）。
+// 表名必须已过 convShardNameRe 白名单。
+func convShardDDL(d db.Dialect, name string) ([]string, error) { return convShards.ddl(d, name) }
+
+// EnsureConversationShard 确保 t 所属月份的分表存在并注册进缓存。幂等。
+// 由启动流程（预建当月）与写入路径（缺表兜底）触发，跨月自愈，无需定时任务。
+func EnsureConversationShard(d *sql.DB, t time.Time) error { return convShards.ensure(d, t) }
+
+// ---------------------------------------------------------------------------
+// conversation_sessions 的对外包装
+// ---------------------------------------------------------------------------
+
+// SessionShardName 返回 t 所属月份的会话分表名。
+func SessionShardName(t time.Time) string { return sessShards.shardName(t) }
+
+// LoadSessionShards 从 catalog 全量重载会话分表注册缓存（启动流程调用）。
+func LoadSessionShards(d *sql.DB) error { return sessShards.load(d) }
+
+// sessShardSnapshot 返回会话分表清单快照（月分表新→旧，历史分表若存在排最后）。
+func sessShardSnapshot(d *sql.DB) ([]string, error) { return sessShards.snapshot(d) }
+
+// EnsureSessionShard 确保 t 所属月份的会话分表存在并注册进缓存。幂等。
+func EnsureSessionShard(d *sql.DB, t time.Time) error { return sessShards.ensure(d, t) }
+
+// ---------------------------------------------------------------------------
+// 跨分表分页（两组分表共用）
+// ---------------------------------------------------------------------------
 
 // convWindow 描述一页结果在某张分表上的截取范围。
 type convWindow struct {

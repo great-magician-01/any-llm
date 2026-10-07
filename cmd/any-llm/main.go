@@ -100,6 +100,12 @@ func run() int {
 		if err := store.EnsureConversationShard(d, time.Now()); err != nil {
 			logger.Warn("ensure conversation shard failed", "err", err)
 		}
+		if err := store.LoadSessionShards(d); err != nil {
+			logger.Warn("load session shards failed", "err", err)
+		}
+		if err := store.EnsureSessionShard(d, time.Now()); err != nil {
+			logger.Warn("ensure session shard failed", "err", err)
+		}
 	}
 
 	poller := upstream.NewBalancePoller(writer.DB, writer, cfg.BalanceInterval)

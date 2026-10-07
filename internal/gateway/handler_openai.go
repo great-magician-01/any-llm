@@ -44,20 +44,22 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	reqIRJSON := g.snapshotRequestIR(irReq)
 
 	var sess *sessionCtx
+	var prevRespID string
 	if inFormat == "responses" {
 		sess = &sessionCtx{respID: responses.NewID(), input: irReq.Messages}
 		if pid, _ := irReq.Extra["previous_response_id"].(string); pid != "" {
+			prevRespID = pid
 			hist, ok, err := g.sessions.Get(pid)
 			if err != nil {
 				WriteError(w, 500, inFormat, "session lookup failed: "+err.Error(), "internal_error")
 				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
-				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
+				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body, convInfo{}).finish("error", translate.Usage{}, nil)
 				return
 			}
 			if !ok {
 				WriteError(w, 400, inFormat, "unknown previous_response_id: "+pid, "invalid_previous_response_id")
 				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
-				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body).finish("error", translate.Usage{}, nil)
+				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body, convInfo{}).finish("error", translate.Usage{}, nil)
 				return
 			}
 			sess.prev = hist
@@ -72,8 +74,12 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		delete(irReq.Extra, "store")
 	}
 
+	// 会话聚合视图：从请求头 / metadata / responses 链提取会话 id。
+	// 全部未命中（zero）时写入侧零开销，行为与现状一致。
+	conv := extractConversationID(r, irReq, prevRespID, sess)
+
 	if irReq.Stream {
-		g.handleStream(w, r, inFormat, key, targets, irReq, reqIRJSON, body, sess)
+		g.handleStream(w, r, inFormat, key, targets, irReq, reqIRJSON, body, sess, conv)
 		return
 	}
 
@@ -92,7 +98,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			continue
 		}
 		irReq.Model = t.ModelName
-		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body)
+		rec := g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, false, body, conv)
 		callStart := time.Now()
 		result, err := g.client.Call(r.Context(), t.Upstream, irReq, r.Header)
 		// 非流式 Call 返回时上游响应体已完整读取，立即释放并发槽。
@@ -205,13 +211,13 @@ func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, wri
 	}
 }
 
-func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx) {
+func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx, conv convInfo) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
 		t := targets[0]
 		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, 0, "error")
-		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body).finish("error", translate.Usage{}, nil)
+		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body, conv).finish("error", translate.Usage{}, nil)
 		return
 	}
 	// 并发上限：在 flush 200 头部之前先为候选占槽——所有候选都满还能回干净的
@@ -296,7 +302,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		}
 		winRelease = release
 		irReq.Model = t.ModelName
-		rec = g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body)
+		rec = g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body, conv)
 		if rec != nil {
 			rec.tee = tee
 		}

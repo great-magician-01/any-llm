@@ -288,16 +288,6 @@ var conversationRecordsCols = []Column{
 	{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 }
 
-// convShardIndexes 返回一张月分表的索引定义。索引名带月份后缀（schema 级唯一），
-// 故由调用方按表名生成而非复用固定定义。
-func convShardIndexes(suffix string) []Index {
-	return []Index{
-		{Name: "idx_conv_" + suffix + "_created", Columns: []string{"created_at"}},
-		{Name: "idx_conv_" + suffix + "_ext_key", Columns: []string{"ext_key_id"}},
-		{Name: "idx_conv_" + suffix + "_harness", Columns: []string{"harness"}},
-	}
-}
-
 // convColumnOrder 是归档插入的列顺序（即参数顺序）。单独列出来供
 // store.insertConversationInto 拼装 INSERT，避免列清单与值列表漂移。
 var convColumnOrder = []string{
@@ -306,6 +296,59 @@ var convColumnOrder = []string{
 	"prompt_tokens", "completion_tokens", "total_tokens",
 	"cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
 	"request_ir", "response_ir", "request_raw", "response_raw", "created_at",
+}
+
+// conversationSessionsCols 是会话聚合表（conversation_sessions 及其月分表）的
+// 列定义。与按轮归档（conversation_records）平行的独立叠加层：每行一个会话，
+// 随每轮请求 upsert。主迁移不建这张表，由应用层按月分表（见
+// store/conversation_shard.go 的 shardRegistry）。
+//
+// messages 用 TypeLongText 而非 TypeJSON：会话内容只整存整取、不做 JSON 内查询，
+// LONGTEXT 省去 MySQL JSON 的写入校验开销（response_sessions.messages 同款教训：
+// MySQL 的 TEXT 上限 64 KiB，必须用 LONGTEXT）。
+var conversationSessionsCols = []Column{
+	{Name: "id", Type: TypeBigInt, PrimaryKey: true},
+	{Name: "session_id", Type: TypeText, Len: 255},
+	{Name: "last_response_id", Type: TypeText, Len: 255, Nullable: true},
+	{Name: "ext_key_id", Type: TypeBigInt, Nullable: true},
+	{Name: "harness", Type: TypeText, Len: 64},
+	{Name: "in_format", Type: TypeText, Len: 32},
+	{Name: "model", Type: TypeText, Len: 512},
+	{Name: "turn_count", Type: TypeInt, Default: "0"},
+	{Name: "prompt_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "completion_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "total_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "cache_read_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "cache_creation_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "reasoning_tokens", Type: TypeBigInt, Default: "0"},
+	{Name: "status", Type: TypeText, Len: 32, Default: "'ok'"},
+	{Name: "msg_count", Type: TypeInt, Default: "0"},
+	{Name: "messages", Type: TypeLongText, Default: "'[]'"},
+	{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
+	{Name: "last_active_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
+}
+
+// convShardIndexes 返回一张月分表的索引定义。索引名带月份后缀（schema 级唯一），
+// 故由调用方按表名生成而非复用固定定义（后缀由 suffix 参数直接内联，不走
+// DDLConfig.IndexSuffix 的 "{}" 替换路径）。
+func convShardIndexes(suffix string) []Index {
+	return []Index{
+		{Name: "idx_conv_" + suffix + "_created", Columns: []string{"created_at"}},
+		{Name: "idx_conv_" + suffix + "_ext_key", Columns: []string{"ext_key_id"}},
+		{Name: "idx_conv_" + suffix + "_harness", Columns: []string{"harness"}},
+	}
+}
+
+// sessionShardIndexes 返回一张会话月分表的索引定义。
+// session_id 在**每张分表内**唯一；跨分表全局唯一由写入路径「先跨分表查、
+// 查不到才插」保证（db.Writer 单线程串行，进程内无竞态）。
+func sessionShardIndexes(suffix string) []Index {
+	return []Index{
+		{Name: "idx_sess_" + suffix + "_sid", Columns: []string{"session_id"}, Unique: true},
+		{Name: "idx_sess_" + suffix + "_lastresp", Columns: []string{"last_response_id"}},
+		{Name: "idx_sess_" + suffix + "_active", Columns: []string{"last_active_at"}},
+		{Name: "idx_sess_" + suffix + "_ext_key", Columns: []string{"ext_key_id"}},
+	}
 }
 
 // ConversationShardCols 返回归档插入的列顺序（exported wrapper）。
@@ -847,4 +890,22 @@ func ShardSequenceStatements(d Dialect, seqName string) []string {
 		return nil
 	}
 	return []string{fmt.Sprintf("CREATE SEQUENCE IF NOT EXISTS %s", seqName)}
+}
+
+// SessionShardDDL 渲染一张会话聚合月分表（conversation_sessions_YYYY_MM）的
+// DDL，与 ConversationShardDDL 同约定：MySQL 索引内联，PG 另需 CREATE SEQUENCE；
+// name 必须已过 store 侧的表名白名单。SQLite 拒绝渲染（无分表机制）。
+func SessionShardDDL(d Dialect, tableName string, seqName string) ([]string, error) {
+	if d == DialectSQLite {
+		return nil, fmt.Errorf("conversation sharding is not supported on sqlite")
+	}
+	suffix := strings.TrimPrefix(tableName, "conversation_sessions_")
+	t := Table{Name: tableName, Cols: conversationSessionsCols, Idx: sessionShardIndexes(suffix)}
+	cfg := DDLConfig{IfNotExists: true}
+	if d == DialectPostgres {
+		cfg.ColumnDefaults = map[string]string{
+			"id": fmt.Sprintf("nextval('%s')", seqName),
+		}
+	}
+	return t.DDL(d, cfg)
 }
