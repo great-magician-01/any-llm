@@ -2,12 +2,44 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
+
+// marshalExtraEndpoints 序列化附加端点列为 JSON 文本；空列表落成空串（与列默认值
+// 一致），避免无附加端点的行在库里存两种写法（空串与 "[]"）。
+func marshalExtraEndpoints(eps []UpstreamEndpoint) string {
+	if len(eps) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(eps)
+	if err != nil {
+		// 两个 string 字段不可能 marshal 失败；兜底存空，别让脏配置写进库。
+		return ""
+	}
+	return string(b)
+}
+
+// parseExtraEndpoints 反序列化附加端点列。脏数据（非法 JSON）按「无附加端点」
+// 处理并 warn：该列在网关热路径（GetUpstreamByName / 别名解析）上被读，一条
+// 坏数据不能把整个上游读挂——此时该上游退化为单格式主端点，行为与旧版本一致。
+func parseExtraEndpoints(raw string) []UpstreamEndpoint {
+	if raw == "" {
+		return nil
+	}
+	var eps []UpstreamEndpoint
+	if err := json.Unmarshal([]byte(raw), &eps); err != nil {
+		logger.Warn("store: invalid extra_endpoints JSON, treating as none", "err", err)
+		return nil
+	}
+	return eps
+}
 
 // timePtr 把可空时间列转成 *time.Time（无效 → nil）。与 extkey.go 里
 // LastUsedAt 的写法等价，这里抽成函数是因为上游有四个读取站点都要用。
@@ -29,13 +61,48 @@ func nullTime(t *time.Time) sql.NullTime {
 	return sql.NullTime{Time: *t, Valid: true}
 }
 
+// upstreamCols 是 upstreams 表读取用的列清单，顺序与 upstreamRow.targets 一一
+// 对应。四个读取站点（三个直查 + alias.go 的 JOIN，后者用 upstreamColsPrefixed
+// 加表前缀）共用这一份，加列只改这里与 upstreamRow，不再多处手写漂移。
+const upstreamCols = "id, name, base_url, api_key, format, remark, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints"
+
+// upstreamColsPrefixed 渲染带表前缀的列清单（别名候选链的 JOIN 查询用）。
+func upstreamColsPrefixed(prefix string) string {
+	parts := strings.Split(upstreamCols, ", ")
+	for i := range parts {
+		parts[i] = prefix + "." + parts[i]
+	}
+	return strings.Join(parts, ", ")
+}
+
+// upstreamRow 是 upstreamCols 一行的扫描载体：targets 给出 Scan 目标，finish
+// 把整型布尔、可空时间与 JSON 文本列落到 Upstream 字段上。
+type upstreamRow struct {
+	u         *Upstream
+	enabled   int
+	expiresAt sql.NullTime
+	extraRaw  string
+}
+
+func (r *upstreamRow) targets() []any {
+	return []any{&r.u.ID, &r.u.Name, &r.u.BaseURL, &r.u.APIKey, &r.u.Format, &r.u.Remark,
+		&r.enabled, &r.u.DailyTokenLimit, &r.u.MonthlyTokenLimit, &r.u.MaxConcurrent,
+		&r.u.CreatedAt, &r.u.UpdatedAt, &r.expiresAt, &r.extraRaw}
+}
+
+func (r *upstreamRow) finish() {
+	r.u.Enabled = r.enabled != 0
+	r.u.ExpiresAt = timePtr(r.expiresAt)
+	r.u.ExtraEndpoints = parseExtraEndpoints(r.extraRaw)
+}
+
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 	// 成功后要按名称逐出缓存条目：上游名在活跃行里唯一，但「删掉再建同名」是常见
 	// 操作，旧条目不逐出就会把新行整个遮蔽掉（缓存以名称为键，与 ID 无关）。
 	// 新 ID 不可能被现有绑定引用，故顺带刷新别名缓存只是防御，本可省。
 	now := time.Now()
-	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt))
+	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints))
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
@@ -45,15 +112,12 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 
 func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 	u := &Upstream{}
-	var enabled int
-	var expiresAt sql.NullTime
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, remark, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at FROM upstreams WHERE id=? AND is_active = 1`), id).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.Remark, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt)
+	row := &upstreamRow{u: u}
+	err := d.QueryRow(db.Rebind(d, `SELECT `+upstreamCols+` FROM upstreams WHERE id=? AND is_active = 1`), id).Scan(row.targets()...)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream %d: %w", id, err)
 	}
-	u.Enabled = enabled != 0
-	u.ExpiresAt = timePtr(expiresAt)
+	row.finish()
 	return u, nil
 }
 
@@ -61,15 +125,12 @@ func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 // 禁用的上游行以返回明确的「已禁用」错误，而非笼统的 not found。
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
-	var enabled int
-	var expiresAt sql.NullTime
-	err := d.QueryRow(db.Rebind(d, `SELECT id, name, base_url, api_key, format, remark, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at FROM upstreams WHERE name=? AND is_active = 1`), name).
-		Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.Remark, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt)
+	row := &upstreamRow{u: u}
+	err := d.QueryRow(db.Rebind(d, `SELECT `+upstreamCols+` FROM upstreams WHERE name=? AND is_active = 1`), name).Scan(row.targets()...)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
-	u.Enabled = enabled != 0
-	u.ExpiresAt = timePtr(expiresAt)
+	row.finish()
 	return u, nil
 }
 
@@ -77,7 +138,7 @@ func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 // 列表接口的 ?status 参数）。网关 /v1/models、余额轮询、配置导出等调用方传 nil
 // 拿全量再自行过滤（禁用跳过、到期隐藏），全量口径不能动。
 func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
-	q := `SELECT u.id, u.name, u.base_url, u.api_key, u.format, u.remark, u.enabled, u.daily_token_limit, u.monthly_token_limit, u.max_concurrent, u.created_at, u.updated_at, u.expires_at,
+	q := `SELECT ` + upstreamColsPrefixed("u") + `,
 		(SELECT COUNT(*) FROM upstream_models WHERE upstream_id = u.id AND is_active = 1) AS model_count
 		FROM upstreams u WHERE u.is_active = 1`
 	var args []any
@@ -94,13 +155,11 @@ func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 	out := make([]Upstream, 0)
 	for rows.Next() {
 		var u Upstream
-		var enabled int
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Name, &u.BaseURL, &u.APIKey, &u.Format, &u.Remark, &enabled, &u.DailyTokenLimit, &u.MonthlyTokenLimit, &u.MaxConcurrent, &u.CreatedAt, &u.UpdatedAt, &expiresAt, &u.ModelCount); err != nil {
+		row := &upstreamRow{u: &u}
+		if err := rows.Scan(append(row.targets(), &u.ModelCount)...); err != nil {
 			return nil, err
 		}
-		u.Enabled = enabled != 0
-		u.ExpiresAt = timePtr(expiresAt)
+		row.finish()
 		out = append(out, u)
 	}
 	return out, nil
@@ -109,8 +168,8 @@ func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 // UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
 // （enabled 等未赋值字段会把已有值清掉）。
 func UpdateUpstream(d *sql.DB, u *Upstream) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=? WHERE id=? AND is_active = 1`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), u.ID)
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=?, extra_endpoints=? WHERE id=? AND is_active = 1`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}
