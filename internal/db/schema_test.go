@@ -124,6 +124,23 @@ func TestSchemaMySQLUpstreamRemarkIsText(t *testing.T) {
 	}
 }
 
+// TestSchemaMySQLUpstreamTagIsVarchar 盯住 upstreams.tag 在 MySQL 上的形态：
+// 短枚举列（两个取值）渲染成 VARCHAR + 裸字面量默认值，与 format /
+// usage_records.status 同款。它不是 remark 那种自由文本列，所以不走 TEXT +
+// 表达式默认值；反过来说，谁把 Len 去掉让它变成 TEXT，这里的断言就会挂——
+// 那种形态要配 DEFAULT ('official')，两件事必须一起改。
+func TestSchemaMySQLUpstreamTagIsVarchar(t *testing.T) {
+	tbl, _ := schemaTableByName("upstreams")
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(ddl, "`tag` VARCHAR(16) NOT NULL DEFAULT 'official'") {
+		t.Errorf("upstreams.tag must be VARCHAR(16) with a literal default on MySQL:\n%s", ddl)
+	}
+	// 默认值让老库的 ALTER ... NOT NULL 合法（SQLite 侧），别把它删了
+	if tbl.Cols[len(tbl.Cols)-1].Name != "tag" {
+		t.Errorf("upstreams.tag must be declared last so ALTER-appended and CREATE TABLE column order match")
+	}
+}
+
 // TestSchemaMySQLPartialUniqueIsCompositeAware 盯住复合部分唯一索引：只有最后
 // 一列换成生成列，前导列保持真实列。少了这一步，(upstream_id, model_name) 的语义
 // 就丢了。

@@ -126,6 +126,9 @@ func TestMySQL_E2E_ColumnTypes(t *testing.T) {
 		// remark 与 ext_keys 的同名列一致：不建索引 → 保持 TEXT（不是 VARCHAR），
 		// 默认值走表达式形式。谁给它补上 Len，这里就会挂。
 		"upstreams.remark": "text",
+		// 短枚举列：给 Len 的目的就是在 MySQL 上落到 VARCHAR，与 format /
+		// usage_records.status 同款（TEXT 留给 remark 那种自由文本列）
+		"upstreams.tag": "varchar",
 	}
 	for tc, dt := range want {
 		var got string
