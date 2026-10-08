@@ -180,6 +180,31 @@ func TestUpstreamExtraEndpoints(t *testing.T) {
 	}
 }
 
+// TestUpstreamWriteValidation 撞车配置（附加端点与主格式同格式）必须在写库
+// 边界被拒绝：adminapi 各入口的提前校验只是体验优化，store 是最后防线——
+// 配置导入「文件改主格式 + 缺省保留库中附加端点」的合并结果只有这层兜得住。
+func TestUpstreamWriteValidation(t *testing.T) {
+	d := testDB(t)
+	bad := []UpstreamEndpoint{{Format: "openai", BaseURL: "https://y"}}
+	if _, err := CreateUpstream(d, &Upstream{Name: "c", BaseURL: "b", APIKey: "k", Format: "openai", ExtraEndpoints: bad}); err == nil {
+		t.Fatal("create with extra colliding with primary format must fail")
+	}
+	id, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := mustGet(t, d, id)
+	u.ExtraEndpoints = bad
+	if err := UpdateUpstream(d, u); err == nil {
+		t.Fatal("update with extra colliding with primary format must fail")
+	}
+	// 合法更新照常成功
+	u.ExtraEndpoints = []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://y"}}
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatalf("valid update rejected: %v", err)
+	}
+}
+
 func TestValidateExtraEndpoints(t *testing.T) {
 	good := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}}
 	if err := ValidateExtraEndpoints("openai", good); err != nil {

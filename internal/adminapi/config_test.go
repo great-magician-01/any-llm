@@ -673,14 +673,15 @@ func TestExportConfig_ExpiresAt(t *testing.T) {
 }
 
 // TestConfigExportImport_ExtraEndpoints 盯住 extra_endpoints 的配置文件语义：
-// 导出带出；导入新建写入、字段缺席保留现值（旧版导出文件没有该字段）、显式
-// 空数组清空、非法值整体 400。
+// 导出带出（没有该字段的上游也显式导出空数组）；导入新建写入、字段缺席保留
+// 现值（旧版导出文件没有该字段）、显式空数组清空、非法值整体 400。
 func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
 	a, d := setupAPI(t)
 	id, _ := store.CreateUpstream(d, &store.Upstream{
 		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
 		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
 	})
+	store.CreateUpstream(d, &store.Upstream{Name: "plain", BaseURL: "https://p", APIKey: "k", Format: "openai"})
 
 	// 导出带出
 	w := getConfig(t, a, "/api/admin/config/export")
@@ -698,6 +699,15 @@ func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
 	ep := eps[0].(map[string]any)
 	if ep["format"] != "anthropic" || ep["base_url"] != "https://x/anthropic" {
 		t.Fatalf("exported endpoint=%v", ep)
+	}
+	// 无附加端点的上游也必须显式导出空数组：缺省在导入侧是「保留现值」，
+	// 不写该键的导出文件永远无法清空目标实例上的附加端点（有损往返）。
+	v, ok := out.Upstreams[1]["extra_endpoints"]
+	if !ok {
+		t.Fatalf("extra_endpoints key missing for plain upstream: %v", out.Upstreams[1])
+	}
+	if eps, ok := v.([]any); !ok || len(eps) != 0 {
+		t.Fatalf("plain upstream extra_endpoints=%v, want []", v)
 	}
 
 	// 字段缺席 → 保留现值（模拟旧版导出文件再导入）
@@ -730,7 +740,55 @@ func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
 	if w.Code != 400 {
 		t.Fatalf("invalid import status=%d want 400, body=%s", w.Code, w.Body.String())
 	}
-	if got, _ := store.GetUpstreamByID(d, id); got.APIKey != "k2" {
+	// 被拒的写入与现态的差异字段是 extra_endpoints（上一步已清空，被拒文件
+	// 要带一条撞车端点）：必须断言它仍为空——断言 api_key 是空话，被拒文件
+	// 里的 api_key 与现值本来就是同一个。
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 0 {
 		t.Fatalf("rejected import should not have landed: %+v", got)
+	}
+}
+
+// TestConfigImport_MergedFormatConflict 盯住合并校验缺口：文件改了主格式但
+// 缺省 extra_endpoints（= 保留库中现值）时，保留的附加端点可能与新主格式
+// 撞车（同一格式两个 URL）。validateImport 是纯文件校验看不到库，必须由导入
+// 路径在任何写入前按合并口径整体拒绝——否则写进库的冲突行连「只改 enabled」
+// 的 PATCH 都会被 updateUpstream 的合并校验拒绝，行无法禁用。
+func TestConfigImport_MergedFormatConflict(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+
+	// 撞车文件：ds 改主格式为 anthropic 且缺省 extra_endpoints → 保留的
+	// anthropic 附加端点与新主格式撞车。同文件前面夹一个合法新上游，验证
+	// 整体拒绝（不留半导入状态）。
+	w := postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "zzz", "base_url": "https://z", "api_key": "kz", "format": "openai"},
+		{"name": "ds", "base_url": "https://new", "api_key": "k2", "format": "anthropic"},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("merged-conflict import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	got, err := store.GetUpstreamByID(d, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != "openai" || got.BaseURL != "https://x/v1" || got.APIKey != "k" || len(got.ExtraEndpoints) != 1 {
+		t.Fatalf("rejected row mutated: %+v", got)
+	}
+	if _, err := store.GetUpstreamByName(d, "zzz"); err == nil {
+		t.Fatal("earlier valid upstream must not have landed either")
+	}
+
+	// 显式清空附加端点（或给出不撞车的新列表）即可正常换主格式：不阻塞合法导入。
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://new", "api_key": "k2", "format": "anthropic", "extra_endpoints": []map[string]any{}},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("explicit-clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Format != "anthropic" || len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("after explicit clear: %+v", got)
 	}
 }
