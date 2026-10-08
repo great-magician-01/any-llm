@@ -64,7 +64,7 @@ func nullTime(t *time.Time) sql.NullTime {
 // upstreamCols 是 upstreams 表读取用的列清单，顺序与 upstreamRow.targets 一一
 // 对应。四个读取站点（三个直查 + alias.go 的 JOIN，后者用 upstreamColsPrefixed
 // 加表前缀）共用这一份，加列只改这里与 upstreamRow，不再多处手写漂移。
-const upstreamCols = "id, name, base_url, api_key, format, remark, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints"
+const upstreamCols = "id, name, base_url, api_key, format, remark, tag, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints"
 
 // upstreamColsPrefixed 渲染带表前缀的列清单（别名候选链的 JOIN 查询用）。
 func upstreamColsPrefixed(prefix string) string {
@@ -80,20 +80,36 @@ func upstreamColsPrefixed(prefix string) string {
 type upstreamRow struct {
 	u         *Upstream
 	enabled   int
+	tag       string
 	expiresAt sql.NullTime
 	extraRaw  string
 }
 
 func (r *upstreamRow) targets() []any {
-	return []any{&r.u.ID, &r.u.Name, &r.u.BaseURL, &r.u.APIKey, &r.u.Format, &r.u.Remark,
+	return []any{&r.u.ID, &r.u.Name, &r.u.BaseURL, &r.u.APIKey, &r.u.Format, &r.u.Remark, &r.tag,
 		&r.enabled, &r.u.DailyTokenLimit, &r.u.MonthlyTokenLimit, &r.u.MaxConcurrent,
 		&r.u.CreatedAt, &r.u.UpdatedAt, &r.expiresAt, &r.extraRaw}
 }
 
 func (r *upstreamRow) finish() {
 	r.u.Enabled = r.enabled != 0
+	r.u.Tag = readTag(r.tag)
 	r.u.ExpiresAt = timePtr(r.expiresAt)
 	r.u.ExtraEndpoints = parseExtraEndpoints(r.extraRaw)
+}
+
+// readTag 把列里的标记归一成两个合法值之一。写库路径都过 NormalizeTag，正常不会
+// 有脏值；手改库/框架外写入除外。此时 warn 后按默认官方处理（与
+// parseExtraEndpoints 容忍坏 JSON 同款）：一行坏数据不能让管理端列表读不出来。
+func readTag(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "", TagOfficial:
+		return TagOfficial
+	case TagRelay:
+		return TagRelay
+	}
+	logger.Warn("store: invalid upstream tag, treating as official", "tag", raw)
+	return TagOfficial
 }
 
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
@@ -103,12 +119,18 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 	if err := ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
 		return 0, err
 	}
+	// 标记同样在写库边界归一：空串（调用方没填）落默认官方，非法值响亮拒绝。
+	// UPDATE ... SET 里的 tag 由 UpdateUpstream 用同一个函数算，两侧口径一致。
+	tag, err := NormalizeTag(u.Tag)
+	if err != nil {
+		return 0, err
+	}
 	// 成功后要按名称逐出缓存条目：上游名在活跃行里唯一，但「删掉再建同名」是常见
 	// 操作，旧条目不逐出就会把新行整个遮蔽掉（缓存以名称为键，与 ID 无关）。
 	// 新 ID 不可能被现有绑定引用，故顺带刷新别名缓存只是防御，本可省。
 	now := time.Now()
-	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints))
+	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, tag, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, tag, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints))
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
@@ -178,8 +200,14 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	if err := ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
 		return err
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=?, extra_endpoints=? WHERE id=? AND is_active = 1`),
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints), u.ID)
+	// 标记与 CreateUpstream 同一个归一函数：手拼字面量调本函数的调用方（Tag 为
+	// 空串）落到默认官方，非法值被拒。
+	tag, err := NormalizeTag(u.Tag)
+	if err != nil {
+		return err
+	}
+	_, err = d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, tag=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=?, extra_endpoints=? WHERE id=? AND is_active = 1`),
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, tag, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints), u.ID)
 	if err != nil {
 		return fmt.Errorf("update upstream %d: %w", u.ID, err)
 	}
