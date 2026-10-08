@@ -18,12 +18,14 @@ import (
 //
 // 导入语义：同名覆盖——上游全字段覆盖、模型列表精确替换；别名绑定整体替换。
 // 文件里没出现的现有配置原样保留。字段级例外：enabled / 两个 token 上限 /
-// 并发上限 / expires_at / remark / models 在文件里缺省时保留现状（导入侧用
-// 指针/nil 区分「没给」，expires_at 另需区分「显式 null = 清除有效期」），
-// 其余字段一律以文件为准。绑定指向的上游在文件与库中都不存在时丢弃该绑定（计数
-// bindings_dropped）；一个可解析绑定都不剩的别名整个跳过。文件内重名条目
-// （上游/别名/单上游内模型）整体 400 拒绝。导入非单事务：中途 DB 失败时
-// 已提交的条目会保留，直接重导同一文件即可收敛（同名覆盖幂等）。
+// 并发上限 / expires_at / remark / models / extra_endpoints 在文件里缺省时
+// 保留现状（导入侧用指针/nil 区分「没给」，expires_at 另需区分「显式 null =
+// 清除有效期」，extra_endpoints 显式空数组 = 清空），其余字段一律以文件为准。
+// 缺省保留的附加端点会与文件给的新主格式做合并撞车校验（与库中行冲突即整体
+// 400，见 handleConfigImport 的预检）。绑定指向的上游在文件与库中都不存在时
+// 丢弃该绑定（计数 bindings_dropped）；一个可解析绑定都不剩的别名整个跳过。
+// 文件内重名条目（上游/别名/单上游内模型）整体 400 拒绝。导入非单事务：
+// 中途 DB 失败时已提交的条目会保留，直接重导同一文件即可收敛（同名覆盖幂等）。
 
 const configVersion = 1
 
@@ -42,7 +44,8 @@ type configUpstream struct {
 	APIKey  string `json:"api_key"`
 	Format  string `json:"format"`
 	// 附加格式端点（选填）。指针沿用「缺席即保留」惯例：导入时 nil = 新建不带 /
-	// 更新保留现值，显式空数组 = 清空。version 保持 1：旧文件没有该字段，语义不变。
+	// 更新保留现值，显式空数组 = 清空；导出侧无条件写出（空也落成 []），否则
+	// 导出→导入往返永远无法清空该字段。version 保持 1：旧文件没有该字段，语义不变。
 	ExtraEndpoints    *[]store.UpstreamEndpoint `json:"extra_endpoints,omitempty"`
 	Remark            *string                   `json:"remark"`
 	Enabled           *bool                     `json:"enabled"`
@@ -99,10 +102,10 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		cu := configUpstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Remark: &u.Remark,
 			DailyTokenLimit: &u.DailyTokenLimit, MonthlyTokenLimit: &u.MonthlyTokenLimit, MaxConcurrent: &u.MaxConcurrent,
 			ExpiresAt: optTime{set: true, t: u.ExpiresAt}}
-		if len(u.ExtraEndpoints) > 0 {
-			eps := append([]store.UpstreamEndpoint(nil), u.ExtraEndpoints...)
-			cu.ExtraEndpoints = &eps
-		}
+		// 附加端点无条件写出（没有也落成 []）：缺省在导入侧是「保留现值」，
+		// 不写该键的导出文件永远无法清空目标实例上的附加端点（有损往返）。
+		eps := append([]store.UpstreamEndpoint{}, u.ExtraEndpoints...)
+		cu.ExtraEndpoints = &eps
 		en := u.Enabled
 		cu.Enabled = &en
 		models, err := store.ListModels(a.db, u.ID)
@@ -152,6 +155,26 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 	}
 	var res importResult
 	if err := a.writeSync(func(d *sql.DB) error {
+		// 合并口径预检：文件缺省 extra_endpoints = 保留库中现值，若保留的附加
+		// 端点与文件给的新主格式撞车（同一格式两个 URL），合并结果是一行连
+		// PATCH 禁用都会被拒的冲突配置。validateImport 是纯文件校验看不到库，
+		// 必须在任何写入前对照现有行拒掉，守住「不合法就整体拒绝」。
+		for i := range in.Upstreams {
+			u := &in.Upstreams[i]
+			if u.ExtraEndpoints != nil {
+				continue // 附加端点以文件为准的组合已由 validateImport 校验
+			}
+			ex, err := store.GetUpstreamByName(d, u.Name)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("get upstream %q: %w", u.Name, err)
+			}
+			if err := store.ValidateExtraEndpoints(u.Format, ex.ExtraEndpoints); err != nil {
+				return fmt.Errorf("upstreams[%d] %q: retained extra_endpoints conflict with the file's format: %w", i, u.Name, err)
+			}
+		}
 		// 先处理全部上游（建好 名→ID 映射），别名绑定再按名解析。
 		ids := make(map[string]int64, len(in.Upstreams))
 		for i := range in.Upstreams {

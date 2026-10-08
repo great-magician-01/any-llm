@@ -97,6 +97,12 @@ func (r *upstreamRow) finish() {
 }
 
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
+	// 附加端点与主格式的撞车校验收敛到写库边界：adminapi 各入口的提前校验
+	// 只是体验优化，这里才是最后防线——配置导入「文件改主格式 + 缺省保留
+	// 库中附加端点」的合并结果只有在这一层才能被无条件兜住。
+	if err := ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
+		return 0, err
+	}
 	// 成功后要按名称逐出缓存条目：上游名在活跃行里唯一，但「删掉再建同名」是常见
 	// 操作，旧条目不逐出就会把新行整个遮蔽掉（缓存以名称为键，与 ID 无关）。
 	// 新 ID 不可能被现有绑定引用，故顺带刷新别名缓存只是防御，本可省。
@@ -168,6 +174,10 @@ func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 // UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
 // （enabled 等未赋值字段会把已有值清掉）。
 func UpdateUpstream(d *sql.DB, u *Upstream) error {
+	// 与 CreateUpstream 同理：合并后的（主格式, 附加端点）撞车在写库边界拒绝。
+	if err := ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
+		return err
+	}
 	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=?, extra_endpoints=? WHERE id=? AND is_active = 1`),
 		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints), u.ID)
 	if err != nil {
