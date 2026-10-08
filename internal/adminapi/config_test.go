@@ -748,6 +748,85 @@ func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
 	}
 }
 
+// TestConfigExportImport_Tag 盯住标记在配置传输里的往返：导出无条件写出
+// （与 extra_endpoints 同理——缺省在导入侧是「保留」，不写该键的导出文件永远
+// 改不了目标实例上的标记）；导入字段缺席保留现值（旧版导出文件没有该字段）、
+// 显式空串回默认官方、非法值整体 400。
+func TestConfigExportImport_Tag(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai", Tag: store.TagRelay,
+	})
+	store.CreateUpstream(d, &store.Upstream{Name: "plain", BaseURL: "https://p", APIKey: "k", Format: "openai"})
+
+	// 导出带出（不给标记的上游也要写，值就是默认官方）
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := out.Upstreams[0]["tag"]; !ok || v != store.TagRelay {
+		t.Fatalf("exported tag=%v (present=%v)", v, ok)
+	}
+	if v, ok := out.Upstreams[1]["tag"]; !ok || v != store.TagOfficial {
+		t.Fatalf("plain upstream tag=%v, want %q", v, store.TagOfficial)
+	}
+
+	// 字段缺席 → 保留现值（模拟旧版导出文件再导入）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai"},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Tag != store.TagRelay {
+		t.Fatalf("absent tag must be preserved: %q", got.Tag)
+	}
+
+	// 文件显式给出官方 → 覆盖
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai", "tag": store.TagOfficial},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("set import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q", got.Tag, store.TagOfficial)
+	}
+
+	// 显式空串 → 清回默认官方
+	if _, err := store.CreateUpstream(d, &store.Upstream{Name: "r2", BaseURL: "https://p", APIKey: "k", Format: "openai", Tag: store.TagRelay}); err != nil {
+		t.Fatal(err)
+	}
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "r2", "base_url": "https://p", "api_key": "k", "format": "openai", "tag": ""},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByName(d, "r2"); got.Tag != store.TagOfficial {
+		t.Fatalf("explicit empty tag=%q, want %q", got.Tag, store.TagOfficial)
+	}
+
+	// 非法值 → 整体 400，不写库（同文件前一个合法条目也不得落地）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "zzz", "base_url": "https://z", "api_key": "kz", "format": "openai"},
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k3", "format": "openai", "tag": "official-x"},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("invalid tag import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.APIKey != "k2" {
+		t.Fatalf("rejected import should not have landed: %+v", got)
+	}
+	if _, err := store.GetUpstreamByName(d, "zzz"); err == nil {
+		t.Fatal("earlier valid upstream must not have landed either")
+	}
+}
+
 // TestConfigImport_MergedFormatConflict 盯住合并校验缺口：文件改了主格式但
 // 缺省 extra_endpoints（= 保留库中现值）时，保留的附加端点可能与新主格式
 // 撞车（同一格式两个 URL）。validateImport 是纯文件校验看不到库，必须由导入
