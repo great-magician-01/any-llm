@@ -21,6 +21,8 @@ export interface ConfigUpstream {
   extra_endpoints?: { format: string; base_url: string }[]
   /** 选填备注；缺省保持现状，空串表示清除 */
   remark?: string
+  /** 上游标记（官方/中转）；缺省保持现状，空串表示清回默认的官方 */
+  tag?: string
   enabled?: boolean
   /** 有效期截止时刻；缺省保持现状，null 表示清除（恢复永久有效） */
   expires_at?: string | null

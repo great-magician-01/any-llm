@@ -26,7 +26,11 @@ type Upstream struct {
 	// 走主格式 + IR 转译。空 = 单格式上游（历史行为）。
 	ExtraEndpoints []UpstreamEndpoint `json:"extra_endpoints"`
 	// Remark 选填备注，纯管理端元数据（展示/导出用），网关路由与转发不读它。
-	Remark            string `json:"remark"`
+	Remark string `json:"remark"`
+	// Tag 上游标记：TagOfficial = 官方源站，TagRelay = 中转站；默认官方，
+	// 编辑时可改。与 remark 同地位——纯管理端元数据（列表展示/配置导出），
+	// 网关路由、转发、额度与别名解析一律不读它。
+	Tag               string `json:"tag"`
 	Enabled           bool   `json:"enabled"`
 	DailyTokenLimit   int    `json:"daily_token_limit"`
 	MonthlyTokenLimit int    `json:"monthly_token_limit"`
@@ -75,6 +79,26 @@ func ValidateExtraEndpoints(primaryFormat string, eps []UpstreamEndpoint) error 
 		seen[ep.Format] = true
 	}
 	return nil
+}
+
+// 上游标记的两个取值。TagOfficial 是默认值：没填、显式清空都归一到它。
+const (
+	TagOfficial = "official"
+	TagRelay    = "relay"
+)
+
+// NormalizeTag 归一上游标记：裁剪空白后 "" → 默认的 TagOfficial（创建未填、
+// 编辑显式清空），两个合法值原样返回，其余响亮拒绝——静默回落会让管理员以为
+// 自己存的标记生效了。与 ValidateExtraEndpoints 同地位：写库边界的最后一道关，
+// adminapi 提前校验只是体验优化（早 400 比裸 store error 更可操作）。
+func NormalizeTag(tag string) (string, error) {
+	switch strings.TrimSpace(tag) {
+	case "", TagOfficial:
+		return TagOfficial, nil
+	case TagRelay:
+		return TagRelay, nil
+	}
+	return "", fmt.Errorf("tag must be official or relay")
 }
 
 type UpstreamModel struct {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -629,6 +630,109 @@ func TestUpstreamRemark_API(t *testing.T) {
 	}
 	if u, _ := store.GetUpstreamByID(d, id); u.Remark != "" {
 		t.Fatalf("remark=%q, want cleared", u.Remark)
+	}
+}
+
+// TestUpstreamTag_API 覆盖管理端标记（官方/中转）的三态：创建带入与缺省默认、
+// PUT 显式改、字段缺省保留现状（只发 enabled 的开关 PATCH 尤其不能把标记抹回
+// 默认）、显式空串 = 清回默认官方，以及非法值 400。指针语义与 remark 一致。
+func TestUpstreamTag_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) int64 {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			ID  int64  `json:"id"`
+			Tag string `json:"tag"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID
+	}
+	createRaw := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 创建时带入中转
+	id := create(map[string]any{"name": "relay", "tag": store.TagRelay})
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("create tag=%q, want %q", u.Tag, store.TagRelay)
+	}
+	// 创建时不给：默认官方
+	plain := create(map[string]any{"name": "plain"})
+	if u, _ := store.GetUpstreamByID(d, plain); u.Tag != store.TagOfficial {
+		t.Fatalf("unset tag=%q, want %q", u.Tag, store.TagOfficial)
+	}
+	// 创建时非法值：400，且不落库
+	if w := createRaw(map[string]any{"name": "bad", "base_url": "https://x", "api_key": "k", "format": "openai", "tag": "official-x"}); w.Code != 400 {
+		t.Fatalf("create invalid tag status=%d, want 400", w.Code)
+	}
+	if _, err := store.GetUpstreamByName(d, "bad"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("invalid-tag upstream should not exist: err=%v", err)
+	}
+
+	// 字段缺省 → 保留现状
+	if w := do(id, map[string]any{"base_url": "https://y"}); w.Code != 200 {
+		t.Fatalf("patch status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("absent tag=%q, want preserved", u.Tag)
+	}
+
+	// 只发 enabled 的 PATCH（列表页开关走这条路）同样不得抹掉标记
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("enabled-only patch reset tag=%q", u.Tag)
+	}
+
+	// 显式改回官方
+	if w := do(id, map[string]any{"tag": store.TagOfficial}); w.Code != 200 {
+		t.Fatalf("set status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q", u.Tag, store.TagOfficial)
+	}
+
+	// 显式空串 → 清回默认官方（与 remark 的「空串 = 清空」同构）
+	id2 := create(map[string]any{"name": "relay2", "tag": store.TagRelay})
+	if w := do(id2, map[string]any{"tag": ""}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id2); u.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q after clear", u.Tag, store.TagOfficial)
+	}
+
+	// 非法值 400，且库里不变
+	if w := do(id2, map[string]any{"tag": "中转"}); w.Code != 400 {
+		t.Fatalf("invalid tag status=%d, want 400", w.Code)
+	}
+	if u, _ := store.GetUpstreamByID(d, id2); u.Tag != store.TagOfficial {
+		t.Fatalf("tag after rejected patch=%q", u.Tag)
 	}
 }
 

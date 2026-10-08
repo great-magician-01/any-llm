@@ -205,6 +205,128 @@ func TestUpstreamWriteValidation(t *testing.T) {
 	}
 }
 
+// TestUpstreamWriteValidation 之外，标记的往返由 TestUpstreamTag 覆盖（同款
+// 理由：UpdateUpstream 是全量覆盖，UPDATE 漏了 tag 会在每次保存——含只改
+// enabled 的开关 PATCH——时把标记静默抹回默认值）。
+func TestUpstreamTag(t *testing.T) {
+	d := testDB(t)
+	// 中转标记创建带入
+	relay, err := CreateUpstream(d, &Upstream{Name: "relay", BaseURL: "b", APIKey: "k", Format: "openai", Tag: TagRelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 没填标记的上游：默认官方（不是空串）
+	def, err := CreateUpstream(d, &Upstream{Name: "def", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := GetUpstreamByID(d, def); u.Tag != TagOfficial {
+		t.Fatalf("unset tag=%q, want %q", u.Tag, TagOfficial)
+	}
+
+	for _, got := range []struct {
+		name string
+		u    *Upstream
+	}{
+		{"byID", mustGet(t, d, relay)},
+		{"byName", mustGetByName(t, d, "relay")},
+	} {
+		if got.u.Tag != TagRelay {
+			t.Fatalf("%s tag=%q, want %q", got.name, got.u.Tag, TagRelay)
+		}
+	}
+	list, err := ListUpstreams(d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Tag != TagRelay || list[1].Tag != TagOfficial {
+		t.Fatalf("list tags=%q,%q (len=%d)", list[0].Tag, list[1].Tag, len(list))
+	}
+
+	// 全量保存不得抹掉标记
+	u := mustGet(t, d, relay)
+	u.BaseURL = "https://changed"
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	again := mustGet(t, d, relay)
+	if again.Tag != TagRelay || again.BaseURL != "https://changed" || again.Enabled {
+		t.Fatalf("after update=%+v", again)
+	}
+	// 改标记本身（中转 → 官方）也要落库
+	again.Tag = TagOfficial
+	if err := UpdateUpstream(d, again); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, d, relay); got.Tag != TagOfficial {
+		t.Fatalf("tag update=%q", got.Tag)
+	}
+	// 手拼字面量（Tag 为空串）落默认官方而不是报错：TestUpdateIgnoresSoftDeleted
+	// 走的正是这条路，空串必须是合法输入。
+	if err := UpdateUpstream(d, &Upstream{ID: def, Name: "def", BaseURL: "b", APIKey: "k", Format: "openai"}); err != nil {
+		t.Fatalf("update with empty tag rejected: %v", err)
+	}
+	if got := mustGet(t, d, def); got.Tag != TagOfficial {
+		t.Fatalf("empty tag update=%q, want %q", got.Tag, TagOfficial)
+	}
+	// 非法标记在写库边界被拒（两条路径都要）
+	if _, err := CreateUpstream(d, &Upstream{Name: "bad", BaseURL: "b", APIKey: "k", Format: "openai", Tag: "official " + "x"}); err == nil {
+		t.Fatal("create with invalid tag must fail")
+	}
+	bad := mustGet(t, d, def)
+	bad.Tag = "中转"
+	if err := UpdateUpstream(d, bad); err == nil {
+		t.Fatal("update with invalid tag must fail")
+	}
+}
+
+func TestNormalizeTag(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", TagOfficial},
+		{"   ", TagOfficial},
+		{TagOfficial, TagOfficial},
+		{" official ", TagOfficial},
+		{TagRelay, TagRelay},
+		{" relay ", TagRelay},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeTag(tc.in)
+		if err != nil {
+			t.Fatalf("NormalizeTag(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("NormalizeTag(%q)=%q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"official-x", "中转", "OFFICIAL", "relays"} {
+		if _, err := NormalizeTag(bad); err == nil {
+			t.Fatalf("NormalizeTag(%q): expected error", bad)
+		}
+	}
+}
+
+// TestReadTagDirty 脏数据（手改库写入的未知标记）按默认官方处理并 warn，与
+// parseExtraEndpoints 对坏 JSON 的容忍同款：一行坏数据不能让上游读不出来。
+func TestReadTagDirty(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":           TagOfficial,
+		"  ":         TagOfficial,
+		TagOfficial:  TagOfficial,
+		TagRelay:     TagRelay,
+		" relay ":    TagRelay,
+		"official-x": TagOfficial,
+		"中转":         TagOfficial,
+	} {
+		if got := readTag(raw); got != want {
+			t.Fatalf("readTag(%q)=%q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestValidateExtraEndpoints(t *testing.T) {
 	good := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}}
 	if err := ValidateExtraEndpoints("openai", good); err != nil {

@@ -65,6 +65,22 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at' AND "notnull"=0`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("upstreams.expires_at should be nullable: n=%d err=%v", n, err)
 	}
+	// 新库 upstreams 带标记列，且老库 ALTER 补列时依赖的这个默认值真的在
+	// （SQLite 的 ADD COLUMN NOT NULL 没有默认值是非法的）
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='tag'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.tag missing: n=%d err=%v", n, err)
+	}
+	var tag string
+	if err := db.QueryRow(`SELECT tag FROM upstreams WHERE id=0`).Scan(&tag); err == nil {
+		t.Fatalf("unexpected row: tag=%q", tag)
+	}
+	var dflt sql.NullString
+	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('upstreams') WHERE name='tag'`).Scan(&dflt); err != nil {
+		t.Fatalf("pragma tag: %v", err)
+	}
+	if !dflt.Valid || !strings.Contains(dflt.String, "official") {
+		t.Fatalf("upstreams.tag default=%v, want 'official'", dflt)
+	}
 }
 
 // 老库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 enabled/remark
@@ -321,6 +337,17 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	var upRemark string
 	if err := got.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
 		t.Fatalf("upstream remark backfill: v=%q err=%v", upRemark, err)
+	}
+	// tag 也一样由 extraCols 补列，但默认值是 'official' 而不是空串：老行读回来
+	// 必须是官方，且该列要活过表重建（否则同样要等下次重启才补）。
+	for _, name := range []string{"u1", "u2", "u3"} {
+		var tag string
+		if err := got.QueryRow(`SELECT tag FROM upstreams WHERE name=?`, name).Scan(&tag); err != nil {
+			t.Fatalf("tag dropped by rebuild for %s: %v", name, err)
+		}
+		if tag != "official" {
+			t.Fatalf("%s tag=%q, want official (column default)", name, tag)
+		}
 	}
 	// 补上的列真的能用：写一个到期时刻再读回
 	if _, err := got.Exec(`UPDATE upstreams SET expires_at=? WHERE name='u1'`, time.Now().Add(time.Hour)); err != nil {

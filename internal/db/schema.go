@@ -119,6 +119,13 @@ var schemaTables = []Table{
 			// 网关按入站 endpoint 格式优先命中附加端点做原生直通，未命中走主格式转译。
 			// 与 remark 同款：无 Len 不建索引，MySQL 保持 TEXT + 表达式默认值。
 			{Name: "extra_endpoints", Type: TypeText, Default: "''", LateAdd: true},
+			// 上游标记：official = 官方源站，relay = 中转站；默认 official。仅管理端
+			// 元数据（列表展示/配置导出），网关路由不读它（与 remark 同地位）。给 Len
+			// 是为了在 MySQL 上渲染成 VARCHAR：短枚举列的参照是 format（Len 32）与
+			// usage_records.status，TEXT + 表达式默认值是 remark 那种自由文本的路子。
+			// 默认值不是装饰——SQLite 的 ADD COLUMN NOT NULL 没有它就非法，老库迁移会挂。
+			// 声明在列清单末尾：老库靠 LateAdd ALTER 追加也在末尾，两种库物理列序一致。
+			{Name: "tag", Type: TypeText, Len: 16, Default: "'official'", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_upstreams_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
