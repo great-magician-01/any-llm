@@ -12,6 +12,9 @@ export interface Upstream {
   extra_endpoints?: UpstreamEndpoint[]
   /** 选填备注，仅管理端元数据（列表展示/配置导出用），网关路由与转发不读它 */
   remark?: string
+  /** 上游标记：official = 官方源站，relay = 中转站。缺省/未知值按默认的官方处理，
+   * 编辑时可改（显式空串 = 清回默认）。与 remark 同地位：仅管理端元数据。 */
+  tag?: string
   enabled: boolean
   daily_token_limit: number; monthly_token_limit: number
   max_concurrent: number

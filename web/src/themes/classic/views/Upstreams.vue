@@ -8,6 +8,7 @@ import { exportConfig, importConfig, type ConfigFile } from '@/api/config'
 import { configFileName, parseConfigFile, describeConfigFile, describeImportResult, downloadJSON } from '@/utils/configTransfer'
 import { balanceView, balanceSummary, balanceTooltip, formatFetchedAt } from '@/utils/balance'
 import { expiryLabel, expiryToISO, isoToExpiry } from '@/utils/upstreamStatus'
+import { UPSTREAM_TAG_OPTIONS, tagLabel, tagTone } from '@/utils/upstreamTag'
 import { connectivityView, type ConnectivityView } from '@/utils/connectivity'
 import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
@@ -24,7 +25,7 @@ const { upstreams, statusFilter, balancesByUpstream, load, setStatusFilter, togg
 const tableBox = ref<HTMLElement | null>(null)
 const { width: tableWidth } = useContainerWidth(tableBox)
 const showForm = ref(false)
-const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
+const form = ref<Upstream & { fetch_models?: boolean }>({ name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', tag: 'official', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true })
 // 日期选择器的 v-model 是 epoch ms（n-date-picker 默认行为），保存时再转成
 // ISO 字符串；null = 不填 = 永久有效。
 const expiryPicker = ref<number | null>(null)
@@ -228,13 +229,13 @@ async function save() {
     message.error('保存失败：' + errMsg(e))
   }
 }
-function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null; formExtraTestResults.value = [] }
+function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', tag: 'official', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null; formExtraTestResults.value = [] }
 // When editing, keep the masked key returned by the list endpoint as the
 // field value. The backend detects the masked placeholder and skips
 // overwriting the stored secret; if the user types a new key, it gets saved.
 // extra_endpoints 深拷贝进表单：直接引用列表行的数组会让编辑中的改动（含
 // 未保存就取消）直接写进列表数据。
-function edit(u: Upstream) { editing.value = u; form.value = { ...u, extra_endpoints: (u.extra_endpoints ?? []).map(e => ({ ...e })) }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; formExtraTestResults.value = []; showForm.value = true }
+function edit(u: Upstream) { editing.value = u; form.value = { ...u, tag: u.tag ?? 'official', extra_endpoints: (u.extra_endpoints ?? []).map(e => ({ ...e })) }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; formExtraTestResults.value = []; showForm.value = true }
 function add() { editing.value = null; resetForm(); formTestResult.value = null; showForm.value = true }
 async function del(id: number) { await deleteUpstream(id); await load() }
 async function fetchM(id: number) {
@@ -495,6 +496,14 @@ const columns = computed<DataTableColumns<Upstream>>(() => [
       ? h('span', { style: 'color: var(--text-2)' }, row.remark)
       : h('span', { style: 'color: var(--text-4)' }, '—')),
   },
+  // 标记（官方/中转）：快速分清中转站，纯展示（后端缓存/路由都不读它）。
+  // 缺省/未知值一律显示「官方」，与后端 readTag 的容忍口径一致
+  {
+    title: '标记',
+    key: 'tag',
+    width: colW.value.tag,
+    render: (row) => h(NTag, { type: tagTone(row.tag), bordered: false, size: 'small' }, { default: () => tagLabel(row.tag) }),
+  },
   { title: '状态', key: 'enabled', width: colW.value.status, render: (row) => h(NSwitch, {
       value: row.enabled, size: 'small', 'onUpdate:value': (v: boolean) => toggleEnabled(row, v) }) },
   {
@@ -691,6 +700,14 @@ onMounted(() => {
           </n-form-item>
           <n-form-item label="名称"><n-input v-model:value="form.name" /></n-form-item>
           <n-form-item label="备注"><n-input v-model:value="form.remark" placeholder="备注（可选）" /></n-form-item>
+          <n-form-item label="标记">
+            <n-radio-group v-model:value="form.tag">
+              <n-radio v-for="o in UPSTREAM_TAG_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</n-radio>
+            </n-radio-group>
+            <div style="margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--text-3)">
+              官方 = 厂商源站，中转 = 第三方转发。仅用于区分与展示，不影响路由与转发。
+            </div>
+          </n-form-item>
           <n-form-item label="Base URL"><n-input v-model:value="form.base_url" /></n-form-item>
           <n-form-item label="API Key">
             <n-input

@@ -5,8 +5,8 @@ import { onScopeDispose, readonly, ref, watch, type Ref } from 'vue'
  *
  * 旧方案是「宽/窄」两档：视口窄于 1400px 才把操作列从 440 收到 250。但布局
  * 内容区上限约 1486px（侧栏 228 + .page max-width 1600 + padding + 卡片内边距），
- * 而列宽总和 1880px——任何屏幕下表格都比容器宽，横向滚动条常驻，两档断点
- * 根本救不回来。
+ * 而列宽总和（UPSTREAM_FIT_COLUMNS 的 wide 之和）大于它——任何屏幕下表格都比
+ * 容器宽，横向滚动条常驻，两档断点根本救不回来。
  *
  * 现在的做法：用 ResizeObserver 量出表格容器的实际宽度，每列从理想宽度（wide）
  * 按比例压缩到各自下限（min）。压缩量按各列的「可压缩空间」（wide − min）分配，
@@ -39,6 +39,7 @@ export const UPSTREAM_FIT_COLUMNS: readonly FitColumn[] = [
   { key: 'expand', wide: 40, min: 40 },
   { key: 'name', wide: 130, min: 88 },
   { key: 'remark', wide: 150, min: 72 },
+  { key: 'tag', wide: 92, min: 72 },
   { key: 'status', wide: 80, min: 60 },
   { key: 'expiry', wide: 150, min: 110 },
   { key: 'baseUrl', wide: 180, min: 120 },

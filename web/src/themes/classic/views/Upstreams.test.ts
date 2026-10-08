@@ -30,6 +30,7 @@ function upstream(over: Partial<Upstream> = {}): Upstream {
     api_key: 'sk-***masked***',
     format: 'openai',
     remark: '',
+    tag: 'official',
     enabled: true,
     daily_token_limit: 0,
     monthly_token_limit: 0,
@@ -384,6 +385,40 @@ describe('Upstreams 页（经典皮肤）', () => {
     const puts = api.callsTo('put', '/upstreams/1')
     expect(puts).toHaveLength(1)
     expect(puts[0].data.extra_endpoints).toEqual([{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }])
+    // 没改过的标记原样带回
+    expect(puts[0].data.tag).toBe('official')
+    expect(messagesOf('success')).toContain('已保存')
+  })
+
+  // 规则：标记（官方/中转）随创建请求提交；编辑时把上游的标记回填进表单，
+  // 只发 enabled 的开关 PATCH 不带它（后端指针三态：nil = 保留现值）
+  it('标记：默认官方随创建提交，编辑可改成中转', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://x/v1')
+
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds' }) })
+    await clickButton('添加')
+    let posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    // 表单里没动标记，发出去的也是默认官方
+    expect(posts[0].data.tag).toBe('official')
+    // 列表给这一行渲染「官方」tag（后端没给 tag 的老数据同样落官方）
+    expect(bodyHas('官方')).toBe(true)
+
+    // 重新拉列表后编辑同一个上游：表单回填官方，切到「中转」再保存
+    await open()
+    await clickButton('编辑')
+    const relay = Array.from(document.querySelectorAll('.n-radio'))
+      .find(el => (el.textContent ?? '').replace(/\s+/g, '') === '中转') as HTMLElement
+    expect(relay).toBeTruthy()
+    relay.click()
+    await flush()
+    api.on('put', '/upstreams/1', { data: upstream({ id: 1, tag: 'relay' }) })
+    await clickButton('保存')
+    const puts = api.callsTo('put', '/upstreams/1')
+    expect(puts[puts.length - 1].data.tag).toBe('relay')
     expect(messagesOf('success')).toContain('已保存')
   })
 })
