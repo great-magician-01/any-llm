@@ -1,7 +1,7 @@
 import { onScopeDispose, readonly, ref, watch, type Ref } from 'vue'
 
 /**
- * 上游管理页表格的连续自适应（两套皮肤共用）。
+ * 宽表格页面的连续自适应（两套皮肤共用；目前用于上游管理与 API 密钥页）。
  *
  * 旧方案是「宽/窄」两档：视口窄于 1400px 才把操作列从 440 收到 250。但布局
  * 内容区上限约 1486px（侧栏 228 + .page max-width 1600 + padding + 卡片内边距），
@@ -50,6 +50,29 @@ export const UPSTREAM_FIT_COLUMNS: readonly FitColumn[] = [
   { key: 'monthlyLimit', wide: 120, min: 84 },
   { key: 'maxConcurrent', wide: 100, min: 72 },
   { key: 'actions', wide: 440, min: 128 },
+]
+
+/**
+ * API 密钥页的列宽规格。min 的取值依据：
+ *   - key：「all-sk-」+ 32 位 base62 在 12px 等宽下约 274px，加 chip 内边距、
+ *     复制按钮与单元格内边距得出理想值 340；该列不设宽时曾被 fixed 布局压到
+ *     不足一个字符宽，key 逐字竖排把行高撑爆（见 Keys.vue 的 key-chip 样式注）
+ *   - daily / monthly / allowed：「不限」「全部」「N 个」短文本，压到下限无碍
+ *   - usage：「日 1,000 / 100,000,000」约 160px，再窄由 word-break 折行消化
+ *   - remark：有 ellipsis + tooltip，压到下限只是截断更多
+ *   - actions：6 个 small 按钮一行约需 360；下限 128 约等于最宽按钮
+ *     （claude-code）占一行，NSpace 随列宽收窄把按钮折成多行
+ */
+export const KEYS_FIT_COLUMNS: readonly FitColumn[] = [
+  { key: 'label', wide: 120, min: 72 },
+  { key: 'key', wide: 340, min: 140 },
+  { key: 'enabled', wide: 80, min: 64 },
+  { key: 'dailyLimit', wide: 130, min: 96 },
+  { key: 'monthlyLimit', wide: 130, min: 96 },
+  { key: 'allowed', wide: 110, min: 76 },
+  { key: 'usage', wide: 200, min: 160 },
+  { key: 'remark', wide: 150, min: 72 },
+  { key: 'actions', wide: 360, min: 128 },
 ]
 
 /**
