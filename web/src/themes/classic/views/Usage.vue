@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { NTag } from 'naive-ui'
+import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { fetchSummary, fetchRecords, fetchDaily, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '@/utils/format'
@@ -8,8 +8,10 @@ import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import BarChart from '@/components/BarChart.vue'
 import DonutChart from '@/components/DonutChart.vue'
+import { errText } from '@/utils/errText'
 
 const groupBy = ref('model')
+const message = useMessage()
 const summaries = ref<UsageSummary[]>([])
 const records = ref<UsageRecord[]>([])
 const daily = ref<UsageDayStat[]>([])
@@ -52,15 +54,23 @@ function rangeParams(): { from?: string; to?: string } {
 }
 
 async function load() {
-  const { from, to } = rangeParams()
-  summaries.value = await fetchSummary(groupBy.value, from, to)
-  const r = await fetchRecords(page.value, pageSize)
-  records.value = r.data
-  total.value = r.total
+  try {
+    const { from, to } = rangeParams()
+    summaries.value = await fetchSummary(groupBy.value, from, to)
+    const r = await fetchRecords(page.value, pageSize)
+    records.value = r.data
+    total.value = r.total
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
 }
 
 async function loadDaily(from?: string, to?: string, days?: number) {
-  daily.value = await fetchDaily(days ?? trendDays.value, from, to)
+  try {
+    daily.value = await fetchDaily(days ?? trendDays.value, from, to)
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
 }
 
 // 选中日期范围（不超过窗口上限）时，趋势图对齐该范围；清除则回到近 N 天
@@ -140,11 +150,15 @@ const statusSlices = computed(() => [
 // 汇总接口不含缓存/推理 token，按当前范围从日聚合叠加得到
 const rangeExtras = ref({ cache: { read: 0 }, reasoning: 0 })
 async function loadRangeExtras() {
-  const { from, to } = rangeParams()
-  const all = await fetchDaily(90, from, to)
-  rangeExtras.value = {
-    cache: { read: all.reduce((a, d) => a + d.cache_read_tokens, 0) },
-    reasoning: all.reduce((a, d) => a + d.reasoning_tokens, 0),
+  try {
+    const { from, to } = rangeParams()
+    const all = await fetchDaily(90, from, to)
+    rangeExtras.value = {
+      cache: { read: all.reduce((a, d) => a + d.cache_read_tokens, 0) },
+      reasoning: all.reduce((a, d) => a + d.reasoning_tokens, 0),
+    }
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
   }
 }
 
@@ -253,7 +267,7 @@ onMounted(loadAll)
           </div>
         </template>
         <template #header-extra>
-          <n-radio-group v-model:value="trendDays" size="small" @update:value="loadDaily">
+          <n-radio-group v-model:value="trendDays" size="small" @update:value="() => loadDaily()">
             <n-radio-button :value="7">7 天</n-radio-button>
             <n-radio-button :value="14">14 天</n-radio-button>
             <n-radio-button :value="30">30 天</n-radio-button>

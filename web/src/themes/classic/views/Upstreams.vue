@@ -12,6 +12,7 @@ import { UPSTREAM_TAG_OPTIONS, tagLabel, tagTone } from '@/utils/upstreamTag'
 import { connectivityView, type ConnectivityView } from '@/utils/connectivity'
 import { presetSelectOptions, findPreset } from '@/utils/upstreamPresets'
 import { formatInt, formatTime } from '@/utils/format'
+import { errText } from '@/utils/errText'
 import { useUpstreamList } from '@/composables/useUpstreamList'
 import { useContainerWidth, fitColumns, fitScrollX, UPSTREAM_FIT_COLUMNS } from '@/composables/useTableFit'
 import AppIcon from '@/components/AppIcon.vue'
@@ -113,16 +114,6 @@ const CTX_PRESETS = [
   { label: '1M', value: 1000000 },
 ]
 
-function errMsg(e: any): string {
-  const r = e?.response
-  if (r?.data) {
-    if (typeof r.data === 'string') return r.data
-    if (r.data.error) return String(r.data.error)
-    return JSON.stringify(r.data)
-  }
-  return e?.message || String(e)
-}
-
 // Heuristic: detect cases where the upstream likely does not expose a
 // models-listing endpoint (e.g. anthropic-compat providers that only
 // implement /messages). Returns true when we should show a friendly
@@ -148,7 +139,7 @@ async function doExport() {
     downloadJSON(data, configFileName(new Date()))
     message.success(`已导出 ${data.upstreams.length} 个上游、${data.aliases.length} 个别名的配置（文件含 API Key，请妥善保管）`)
   } catch (e) {
-    message.error('导出失败：' + errMsg(e))
+    message.error('导出失败：' + errText(e))
   }
 }
 function chooseImportFile() { importInput.value?.click() }
@@ -182,7 +173,7 @@ async function doImport() {
     }
     await load()
   } catch (e) {
-    message.error('导入失败：' + errMsg(e))
+    message.error('导入失败：' + errText(e))
   } finally {
     importing.value = false
   }
@@ -226,7 +217,7 @@ async function save() {
       message.success('已添加')
     }
   } catch (e) {
-    message.error('保存失败：' + errMsg(e))
+    message.error('保存失败：' + errText(e))
   }
 }
 function resetForm() { form.value = { name: '', base_url: '', api_key: '', format: 'openai', extra_endpoints: [], remark: '', tag: 'official', enabled: true, daily_token_limit: 0, monthly_token_limit: 0, max_concurrent: 100, expires_at: null, fetch_models: true }; expiryPicker.value = null; presetKey.value = null; formExtraTestResults.value = [] }
@@ -237,15 +228,24 @@ function resetForm() { form.value = { name: '', base_url: '', api_key: '', forma
 // 未保存就取消）直接写进列表数据。
 function edit(u: Upstream) { editing.value = u; form.value = { ...u, tag: u.tag ?? 'official', extra_endpoints: (u.extra_endpoints ?? []).map(e => ({ ...e })) }; expiryPicker.value = isoToExpiry(u.expires_at); presetKey.value = null; formTestResult.value = null; formExtraTestResults.value = []; showForm.value = true }
 function add() { editing.value = null; resetForm(); formTestResult.value = null; showForm.value = true }
-async function del(id: number) { await deleteUpstream(id); await load() }
+async function del(id: number) {
+  try {
+    await deleteUpstream(id)
+    await load()
+  } catch (e) {
+    // 与 Keys/Aliases 的删除同款：失败必须提示，否则按钮看起来没反应
+    message.error('删除失败：' + errText(e))
+  }
+}
 async function fetchM(id: number) {
   if (fetchingId.value !== null) return
   fetchingId.value = id
   try {
     await fetchUpsModels(id)
     await load()
-    if (expandedRowKeys.value.includes(id)) await loadModels(id)
-    message.success('已拉取并更新模型列表')
+    let loaded = true
+    if (expandedRowKeys.value.includes(id)) loaded = await loadModels(id)
+    if (loaded) message.success('已拉取并更新模型列表')
   } catch (e) {
     if (isModelsEndpointUnsupported(e)) {
       message.warning(
@@ -257,18 +257,30 @@ async function fetchM(id: number) {
         await loadModels(id)
       }
     } else {
-      message.error('拉取模型失败：' + errMsg(e), { duration: 8000 })
+      message.error('拉取模型失败：' + errText(e), { duration: 8000 })
     }
   } finally {
     fetchingId.value = null
   }
 }
 
-async function loadModels(id: number) { modelsByUpstream.value[id] = await listModels(id) }
+async function loadModels(id: number): Promise<boolean> {
+  try {
+    modelsByUpstream.value[id] = await listModels(id)
+    return true
+  } catch (e) {
+    message.error('加载模型列表失败：' + errText(e))
+    return false
+  }
+}
 async function onExpand(keys: number[]) {
   expandedRowKeys.value = keys
   for (const id of keys) {
-    if (!modelsByUpstream.value[id]) await loadModels(id)
+    // 加载失败时置空数组占位，避免每次展开都重试同一个坏上游
+    if (!modelsByUpstream.value[id]) {
+      await loadModels(id)
+      if (!modelsByUpstream.value[id]) modelsByUpstream.value[id] = []
+    }
   }
 }
 async function addM(id: number) {
@@ -279,7 +291,7 @@ async function addM(id: number) {
     await addModel(id, name, opts.context_length, opts.max_output_length, opts.multimodal)
   } catch (e) {
     // 后端对已存在的同名模型回 409：必须把错误摆出来，否则按钮看似没反应
-    message.error('添加模型失败：' + errMsg(e))
+    message.error('添加模型失败：' + errText(e))
     return
   }
   newModelByUpstream.value[id] = ''
@@ -301,13 +313,17 @@ async function saveModel() {
     await loadModels(modelFormUpstreamId.value)
     message.success('已保存')
   } catch (e) {
-    message.error('保存失败：' + errMsg(e))
+    message.error('保存失败：' + errText(e))
   }
 }
 async function delM(id: number, mid: number) {
-  await deleteModel(id, mid)
-  await loadModels(id)
-  await load()
+  try {
+    await deleteModel(id, mid)
+    await loadModels(id)
+    await load()
+  } catch (e) {
+    message.error('删除模型失败：' + errText(e))
+  }
 }
 
 async function refreshB(id: number) {
@@ -318,7 +334,7 @@ async function refreshB(id: number) {
     balancesByUpstream.value = { ...balancesByUpstream.value, [id]: s }
     message.success('已刷新余额/额度')
   } catch (e) {
-    message.error('刷新余额/额度失败：' + errMsg(e))
+    message.error('刷新余额/额度失败：' + errText(e))
   } finally {
     refreshingId.value = null
   }
@@ -334,7 +350,7 @@ async function testRow(u: Upstream) {
     else if (v.type === 'warning') message.warning(text, { duration: 8000 })
     else message.error(text, { duration: 8000 })
   } catch (e) {
-    message.error('测试失败：' + errMsg(e))
+    message.error('测试失败：' + errText(e))
   } finally {
     testingId.value = null
   }
@@ -358,7 +374,7 @@ async function testForm() {
       : await testUpstreamConfig({ base_url: form.value.base_url, api_key: form.value.api_key, format: form.value.format })
     formTestResult.value = connectivityView(r)
   } catch (e) {
-    formTestResult.value = { type: 'error', text: '测试失败：' + errMsg(e) }
+    formTestResult.value = { type: 'error', text: '测试失败：' + errText(e) }
   }
   for (const ep of form.value.extra_endpoints ?? []) {
     if (!ep.base_url.trim()) continue
@@ -368,7 +384,7 @@ async function testForm() {
         : await testUpstreamConfig({ base_url: ep.base_url, api_key: form.value.api_key, format: ep.format })
       formExtraTestResults.value = [...formExtraTestResults.value, { format: ep.format, view: connectivityView(r) }]
     } catch (e) {
-      formExtraTestResults.value = [...formExtraTestResults.value, { format: ep.format, view: { type: 'error', text: '测试失败：' + errMsg(e) } }]
+      formExtraTestResults.value = [...formExtraTestResults.value, { format: ep.format, view: { type: 'error', text: '测试失败：' + errText(e) } }]
     }
   }
   formTesting.value = false
@@ -389,7 +405,7 @@ async function loadHistory() {
     historyRows.value = r.data
     historyTotal.value = r.total
   } catch (e) {
-    message.error('加载历史失败：' + errMsg(e))
+    message.error('加载历史失败：' + errText(e))
   } finally {
     historyLoading.value = false
   }

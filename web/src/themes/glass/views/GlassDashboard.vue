@@ -6,6 +6,7 @@ import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '
 import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
 import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
+import { errText } from '@/utils/errText'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
 import { useClipboard } from '@/composables/useClipboard'
 import StatCard from '@/components/StatCard.vue'
@@ -93,8 +94,8 @@ async function load(silent = false) {
     const bMap: Record<number, BalanceSnapshot> = {}
     for (const s of snaps) bMap[s.upstream_id] = s
     balancesByUpstream.value = bMap
-  } catch (e: any) {
-    if (!silent) message.error('加载概览失败：' + (e?.message || String(e)))
+  } catch (e) {
+    if (!silent) message.error('加载概览失败：' + errText(e))
   } finally {
     loading.value = false
   }

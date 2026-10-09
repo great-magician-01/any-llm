@@ -104,7 +104,9 @@ export async function deleteModel(upstreamId: number, modelId: number) {
   await client.delete(`/upstreams/${upstreamId}/models/${modelId}`)
 }
 
-export interface UsageTotals { daily_tokens: number; monthly_tokens: number }
+import type { UsageTotals } from './types'
+
+export type { UsageTotals }
 
 export async function getUpstreamUsage(id: number) {
   const { data } = await client.get(`/usage/upstream/${id}`)

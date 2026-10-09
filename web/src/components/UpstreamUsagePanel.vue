@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { Upstream, UsageTotals } from '@/api/upstreams'
 import { isExpired } from '@/utils/upstreamStatus'
 import { formatInt } from '@/utils/format'
+import { quotaPercent, quotaStatus, type QuotaStatus } from '@/utils/quota'
 
 const props = defineProps<{
   upstreams: Upstream[]
@@ -39,13 +40,12 @@ function quotas(u: Upstream): Quota[] {
   return [mk('日', t?.daily_tokens, u.daily_token_limit), mk('月', t?.monthly_tokens, u.monthly_token_limit)]
 }
 
-// 进度条状态阈值与 API 密钥页的「今日 / 本月用量」列一致
+// 进度条状态阈值与 API 密钥页共用 utils/quota 的公共口径
 function pct(q: Quota): number {
-  return Math.min(100, Math.round((q.used / q.limit) * 100))
+  return quotaPercent(q.used, q.limit)
 }
-function statusOf(q: Quota): 'success' | 'warning' | 'error' {
-  if (q.used >= q.limit) return 'error'
-  return q.used / q.limit >= 0.8 ? 'warning' : 'success'
+function statusOf(q: Quota): QuotaStatus {
+  return quotaStatus(q.used, q.limit)
 }
 </script>
 
