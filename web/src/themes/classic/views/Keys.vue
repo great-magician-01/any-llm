@@ -11,6 +11,7 @@ import { buildDshYaml } from '@/utils/dshConfig'
 import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
 import { useClipboard } from '@/composables/useClipboard'
+import { useContainerWidth, fitColumns, fitScrollX, KEYS_FIT_COLUMNS } from '@/composables/useTableFit'
 import { errText } from '@/utils/errText'
 import { quotaPercent, quotaStatus } from '@/utils/quota'
 import AppIcon from '@/components/AppIcon.vue'
@@ -64,19 +65,31 @@ const endpoints = computed(() => [
   { label: 'Anthropic base_url', url: origin.value },
 ])
 
+// 列宽集中在一处 computed：容器变窄时按比例压缩（操作列压缩空间最大，按钮
+// 随之换行），列宽规格两套皮肤共用（KEYS_FIT_COLUMNS）；scroll-x 取
+// min(列宽总和, 容器宽)，任何屏宽都不会出横向滚动条（同 Upstreams 页的模式）
+const tableBox = ref<HTMLElement | null>(null)
+const { width: tableWidth } = useContainerWidth(tableBox)
+const colW = computed(() => fitColumns(tableWidth.value, KEYS_FIT_COLUMNS))
+const scrollX = computed(() => fitScrollX(colW.value, tableWidth.value))
+
 const columns = computed<DataTableColumns<ExtKey>>(() => [
-  { title: '名称', key: 'label', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
+  { title: '名称', key: 'label', width: colW.value.label, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
   {
     title: 'Key',
     key: 'key',
-    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px' }, [
-      h('code', { class: 'mono key-chip' }, row.key),
+    width: colW.value.key,
+    // naive-ui 表格自带 word-break: break-word（允许任意点断行）：38 位 key
+    // 是无空格长串，列一旦被压窄就逐字竖排、行高爆炸。code 单行 + 省略号
+    // + min-width: 0 让它在 flex 里可收缩，复制按钮不压缩。
+    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px; min-width: 0' }, [
+      h('code', { class: 'mono key-chip', style: 'white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0' }, row.key),
       h(
         NTooltip,
         { trigger: 'hover' },
         {
           trigger: () =>
-            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyText(row.key, e) }, {
+            h(NButton, { size: 'tiny', quaternary: true, style: 'flex-shrink: 0', onClick: (e: MouseEvent) => copyText(row.key, e) }, {
               icon: () => h(AppIcon, { name: 'copy', size: 13 }),
             }),
           default: () => '复制 Key',
@@ -87,13 +100,13 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '状态',
     key: 'enabled',
-    width: 80,
+    width: colW.value.enabled,
     render: (row) => h(NTag, { type: row.enabled ? 'success' : 'default', bordered: false }, { default: () => row.enabled ? '启用' : '禁用' }),
   },
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: 130,
+    width: colW.value.dailyLimit,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -101,7 +114,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: 130,
+    width: colW.value.monthlyLimit,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -109,7 +122,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '模型限制',
     key: 'allowed_models',
-    width: 110,
+    width: colW.value.allowed,
     render: (row) => {
       const list = row.allowed_models ?? []
       if (list.length === 0) return h('span', { style: 'color: var(--text-4)' }, '全部')
@@ -122,7 +135,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '今日 / 本月用量',
     key: 'usage',
-    width: 200,
+    width: colW.value.usage,
     render: (row) => {
       const u = usageByKey.value[row.id]
       if (!u) return h('span', { style: 'color: var(--text-4)' }, '—')
@@ -149,7 +162,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '备注',
     key: 'remark',
-    width: 150,
+    width: colW.value.remark,
     ellipsis: { tooltip: true },
     render: (row) => (row.remark
       ? h('span', { style: 'color: var(--text-2)' }, row.remark)
@@ -158,7 +171,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 360,
+    width: colW.value.actions,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
@@ -368,7 +381,10 @@ onMounted(load)
           新增密钥
         </n-button>
       </template>
-      <n-data-table :bordered="false" :columns="columns" :data="keys" />
+      <!-- tableBox 量出表格可用宽度，驱动各列自适应（见 useTableFit） -->
+      <div ref="tableBox">
+        <n-data-table :bordered="false" :columns="columns" :data="keys" :scroll-x="scrollX" />
+      </div>
     </n-card>
 
     <n-modal :show="showCreateModal" @update:show="(s: boolean) => { showCreateModal = s }">
