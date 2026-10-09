@@ -86,17 +86,17 @@ func FetchBalance(ctx context.Context, httpClient *http.Client, u *store.Upstrea
 	if vendor == "" {
 		return "", nil, fmt.Errorf("balance fetch not supported for upstream %q", u.Name)
 	}
-	url, err := balanceURL(u, vendor)
+	target, err := balanceURL(u, vendor)
 	if err != nil {
 		return "", nil, err
 	}
-	body, err := fetchBalanceBody(ctx, httpClient, url, u)
+	body, err := fetchBalanceBody(ctx, httpClient, target, u)
 	if err != nil {
 		return "", nil, err
 	}
 	// 厂商会按用量状态增减返回的窗口（如 kimi 只在有活跃用量时返回 5h 窗口），
 	// 归一化会跳过缺失/无法解析的窗口——窗口对不上时用 debug 日志核对原始响应。
-	logger.Debug("fetch balance: raw vendor body", "vendor", vendor, "upstream", u.Name, "body", truncateFetch(string(body), 1024))
+	logger.Debug("fetch balance: raw vendor body", "vendor", vendor, "upstream", u.Name, "body", truncateLog(string(body), logDebugBodyCap))
 	var payload json.RawMessage
 	switch vendor {
 	case VendorDeepSeek:
@@ -129,17 +129,18 @@ func fetchBalanceBody(ctx context.Context, httpClient *http.Client, url string, 
 	// Cap the read (success and error paths alike): a misconfigured or
 	// hostile endpoint must not exhaust memory. A partial read surfaces as a
 	// decode error in the normalize step downstream.
+	// 错误 body 的读取错误可忽略：即使中途读失败，已读到的前缀仍用于日志与文案。
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
 	if resp.StatusCode >= 400 {
 		logger.Error("fetch balance: upstream error",
 			"url", url,
 			"upstream", u.Name,
 			"status", resp.StatusCode,
-			"body", truncateFetch(string(body), 512),
+			"body", truncateLog(string(body), logErrorBodyCap),
 		)
 		// Truncate in the returned error too: admin handlers relay it into
 		// the JSON response, where a full vendor error page (HTML) is noise.
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateFetch(string(body), 512))
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateLog(string(body), logErrorBodyCap))
 	}
 	return body, nil
 }
