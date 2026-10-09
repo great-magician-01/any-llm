@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -178,10 +177,8 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 	}
 	for _, spec := range sqliteSoftDeleteSpecs {
 		var sqlText string
+		// 表必然存在：migrateAll 先跑 migrateMain 建齐所有表，本函数随后执行。
 		if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, spec.table).Scan(&sqlText); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue // 表不存在（新库尚未建）：交给主迁移处理
-			}
 			return fmt.Errorf("read %s schema: %w", spec.table, err)
 		}
 		if !spec.rebuildIf(sqlText) {
@@ -304,11 +301,11 @@ func extKeyLabelIndexDDL(d Dialect) (string, error) {
 		return "", fmt.Errorf("ext_keys not in schema")
 	}
 	for _, ix := range tbl.Idx {
-		if ix.Name == "idx_ext_keys_label" {
+		if ix.Name == extKeyLabelIndexName {
 			return tbl.indexDef(d, ix, DDLConfig{IfNotExists: true})
 		}
 	}
-	return "", fmt.Errorf("idx_ext_keys_label not declared in schema")
+	return "", fmt.Errorf("%s not declared in schema", extKeyLabelIndexName)
 }
 
 // ensureExtKeyLabelIndex 在每次启动时尝试建立 label 唯一索引。历史库有重名活跃
@@ -320,7 +317,8 @@ func ensureExtKeyLabelIndex(d *sql.DB) {
 		// 检查，缺失时告警（被人为 DROP 掉时 PG/SQLite 会自愈，MySQL 不会）。
 		var n int
 		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
-			WHERE table_schema = DATABASE() AND table_name = 'ext_keys' AND index_name = 'idx_ext_keys_label'`).Scan(&n); err == nil && n == 0 {
+			WHERE table_schema = DATABASE() AND table_name = 'ext_keys' AND index_name = ?`,
+			extKeyLabelIndexName).Scan(&n); err == nil && n == 0 {
 			logger.Warn("db: ext_keys label 唯一键缺失（MySQL）；应用层检查仍生效，需人工补建")
 		}
 		return

@@ -250,7 +250,7 @@ func DeleteUpstream(d *sql.DB, id int64) error {
 const DefaultModelContextLength = 1000000
 const DefaultModelMaxOutputLength = 200000
 
-// DefaultMaxConcurrent 新建上游未显式给并发上限时的默认值（webapi 创建/配置
+// DefaultMaxConcurrent 新建上游未显式给并发上限时的默认值（adminapi 创建/配置
 // 导入缺省时应用；DB 列默认值同）。0 表示不限。
 const DefaultMaxConcurrent = 100
 

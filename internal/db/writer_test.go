@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func newTestWriter(t *testing.T, bufSize int) *Writer {
 	t.Helper()
-	d, err := OpenSQLite(t.TempDir() + "\\test.db")
+	d, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,7 @@ func TestRebindPostgresSkipsLiteralsAndComments(t *testing.T) {
 }
 
 func TestRebindSQLiteUnchanged(t *testing.T) {
-	d, err := OpenSQLite(t.TempDir() + "\\s.db")
+	d, err := OpenSQLite(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

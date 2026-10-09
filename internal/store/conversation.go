@@ -9,7 +9,8 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-// ConversationRecord 归档一次网关对话（仅 PostgreSQL 落库）。
+// ConversationRecord 归档一次网关对话（PostgreSQL 与 MySQL 落库；SQLite 走
+// 常量表降级，见 db.Dialect.SupportsConversationArchive）。
 // RequestIR/ResponseIR 是归一化 IR 的 JSON 文本（含工具调用与思维链）；
 // RequestRaw/ResponseRaw 是入站请求体与发给客户端的原始字节。
 type ConversationRecord struct {
@@ -73,7 +74,7 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 }
 
 // insertConversationInto 执行向指定分表的单行插入。table 必须已过
-// convShardNameRe 白名单或为 convBaseTable（本包内部保证），不接受外部输入。
+// convShards.nameRe 白名单或为 convBaseTable（本包内部保证），不接受外部输入。
 //
 // 列清单与占位符都由 db.ConversationShardCols() 驱动，避免两份清单漂移。MySQL
 // 没有序列，id 要显式传（计数器表）；PG 交 DEFAULT nextval 自动分配，不传 id。
