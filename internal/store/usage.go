@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -189,6 +190,10 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 	return nil
 }
 
+// ErrInvalidGroupBy 报告 group_by 参数不在白名单内；handler 据此回 400 而不是
+// 500（这是调用方的问题，不是服务端故障）。
+var ErrInvalidGroupBy = errors.New("invalid group_by")
+
 func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, error) {
 	// 每个维度给出三元组：展示表达式（即 group_key）、FROM 子句、GROUP BY 表达式。
 	fromClause := "usage_records u"
@@ -196,6 +201,8 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 	// idCol 仅 key 维度追加 u.ext_key_id（客户端用它区分同名行），其它维度为空。
 	idCol := ""
 	switch groupBy {
+	case "", "model":
+		// 默认（历史行为）：按 model 分组，selectCol/groupCol 已预置。
 	case "key":
 		// 展示密钥名称而非 id。仍按 ext_key_id 分组（同名 key 不合并成一行），
 		// 名称从 ext_keys 关联读出——软删除的行保留，历史用量照样显示名称。
@@ -211,6 +218,10 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		idCol = ", u.ext_key_id"
 	case "upstream":
 		selectCol, groupCol = "u.upstream_name", "u.upstream_name"
+	default:
+		// 未知维度响亮失败（handler 转 400）而不是静默回退 model 分组：
+		// 静默回退会让客户端把 model 汇总当成它要的维度用。
+		return nil, fmt.Errorf("%w: %q (want model, key or upstream)", ErrInvalidGroupBy, groupBy)
 	}
 	q := fmt.Sprintf(`SELECT %s AS gk%s, COUNT(*), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens),
 		SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),
@@ -232,6 +243,9 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		if err != nil {
 			return nil, fmt.Errorf("usage summary: invalid to: %w", err)
 		}
+		// to 是闭区间上界（前端传当日 23:59:59，见 web/src/themes/usageRange.test.ts
+		// 的 expectCurrentMonth）。与 UsageDailyStats 的排他午夜上界（<）有意不同：
+		// 那里的 to 是日期语义，由服务端换算成次日零点。不要把两处「统一」。
 		conditions = append(conditions, "u.created_at <= ?")
 		args = append(args, t)
 	}
@@ -258,7 +272,7 @@ func UsageSummaryByGroup(d *sql.DB, groupBy, from, to string) ([]UsageSummary, e
 		}
 		out = append(out, s)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // parseTimeParam parses a from/to query parameter into a time.Time. It
@@ -280,12 +294,7 @@ func parseTimeParam(s string) (time.Time, error) {
 }
 
 func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 50
-	}
+	page, size = normalizePage(page, size)
 	var total int
 	if err := d.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count usage: %w", err)

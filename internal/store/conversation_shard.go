@@ -243,6 +243,35 @@ func EnsureSessionShard(d *sql.DB, t time.Time) error { return sessShards.ensure
 // 跨分表分页（两组分表共用）
 // ---------------------------------------------------------------------------
 
+// pageAcrossShards 是跨分表分页的公共管线：各分表行数（一条 UNION ALL）→
+// 全局页映射为各分表窗口 → 只查命中的分表、按新→旧拼接。对话记录
+// （ConversationRecordsList）与会话聚合（ConversationSessionsList）共用，
+// 差异只在「取单张分表一页」的查询本身。
+func pageAcrossShards[T any](d *sql.DB, shards []string, page, size int, listFrom func(table string, limit, offset int) ([]T, error)) ([]T, int, error) {
+	if len(shards) == 0 {
+		return []T{}, 0, nil
+	}
+	countBy, err := countConversationsByShard(d, shards)
+	if err != nil {
+		return nil, 0, err
+	}
+	counts := make([]int, len(shards))
+	total := 0
+	for i, t := range shards {
+		counts[i] = countBy[t]
+		total += counts[i]
+	}
+	out := make([]T, 0, size)
+	for _, w := range convPageWindows(counts, (page-1)*size, size) {
+		rows, err := listFrom(shards[w.shard], w.limit, w.offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, rows...)
+	}
+	return out, total, nil
+}
+
 // convWindow 描述一页结果在某张分表上的截取范围。
 type convWindow struct {
 	shard  int // 分表在清单（新→旧）中的下标

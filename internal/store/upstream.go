@@ -190,7 +190,7 @@ func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 		row.finish()
 		out = append(out, u)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
@@ -271,7 +271,7 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 		m.Multimodal = multimodal != 0
 		out = append(out, m)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ErrModelExists 表示要添加的模型在该上游已有活跃同名行。AddModel 用它拒绝
@@ -440,6 +440,12 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 			return fmt.Errorf("snapshot models: %w", err)
 		}
 		prev[name] = snapshot{cl, ml, mm != 0, manual != 0 && active != 0}
+	}
+	// 迭代错误必须在这里拦截：prev 不完整会让下面把仍在列表里的模型当成
+	// 「上游已移除」而软删除。
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("snapshot models: %w", err)
 	}
 	rows.Close()
 	// 同步删除改为软删除：行保留，若模型随后重新出现在上游列表里可复活，

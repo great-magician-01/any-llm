@@ -59,7 +59,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
-	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	if !store.IsKnownFormat(req.Format) {
 		logger.Warn("admin: create upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
@@ -200,7 +200,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
 		return
 	}
-	if req.Format != "" && req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	if req.Format != "" && !store.IsKnownFormat(req.Format) {
 		logger.Warn("admin: update upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
@@ -332,7 +332,7 @@ func (a *API) testUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "base_url is required"})
 		return
 	}
-	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	if !store.IsKnownFormat(req.Format) {
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
 	}
@@ -371,7 +371,7 @@ func (a *API) testUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		u.APIKey = req.APIKey
 	}
 	if req.Format != "" {
-		if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+		if !store.IsKnownFormat(req.Format) {
 			writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 			return
 		}

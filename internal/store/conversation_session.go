@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ func findSessionByLastResp(d *sql.DB, respID string) (*ConversationSession, stri
 		err := d.QueryRow(db.Rebind(d,
 			`SELECT id, session_id FROM `+shard+` WHERE last_response_id = ?`), respID).
 			Scan(&s.ID, &s.SessionID)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
@@ -184,7 +185,7 @@ func findSessionBy(d *sql.DB, col, val string) (*ConversationSession, string, er
 	for _, shard := range shards {
 		row, err := scanOneSession(d.QueryRow(db.Rebind(d,
 			`SELECT `+sessMetaCols+`, messages FROM `+shard+` WHERE `+col+` = ?`), val))
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
@@ -420,38 +421,14 @@ func scanOneSession(row *sql.Row) (*ConversationSession, error) {
 // 分表按月份新→旧拼接；跨月续聊的会话留在首轮月份的分表里）。只含元数据列。
 // page/size 规范化与 ConversationRecordsList 一致。
 func ConversationSessionsList(d *sql.DB, page, size int) ([]ConversationSession, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 50
-	}
+	page, size = normalizePage(page, size)
 	shards, err := sessShardSnapshot(d)
 	if err != nil {
 		return nil, 0, fmt.Errorf("session shards: %w", err)
 	}
-	if len(shards) == 0 {
-		return []ConversationSession{}, 0, nil
-	}
-	countBy, err := countConversationsByShard(d, shards)
-	if err != nil {
-		return nil, 0, err
-	}
-	counts := make([]int, len(shards))
-	total := 0
-	for i, t := range shards {
-		counts[i] = countBy[t]
-		total += counts[i]
-	}
-	out := make([]ConversationSession, 0, size)
-	for _, w := range convPageWindows(counts, (page-1)*size, size) {
-		rows, err := listSessionsFrom(d, shards[w.shard], w.limit, w.offset)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, rows...)
-	}
-	return out, total, nil
+	return pageAcrossShards(d, shards, page, size, func(table string, limit, offset int) ([]ConversationSession, error) {
+		return listSessionsFrom(d, table, limit, offset)
+	})
 }
 
 // listSessionsFrom 查单张分表的一页（last_active_at 新→旧；秒级精度，

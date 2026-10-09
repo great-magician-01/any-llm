@@ -196,12 +196,7 @@ func scanConversation(scan func(dest ...any) error, r *ConversationRecord, withI
 // page/size 规范化与 UsageRecordsList 一致。PG/MySQL 下跨分表按块翻页
 // （见 conversation_shard.go）；SQLite 走单表（仅单测使用）。
 func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 50
-	}
+	page, size = normalizePage(page, size)
 	if !db.DialectOf(d).SupportsConversationArchive() {
 		total, err := countConversations(d, convBaseTable)
 		if err != nil {
@@ -215,30 +210,9 @@ func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, i
 	if err != nil {
 		return nil, 0, fmt.Errorf("conversation shards: %w", err)
 	}
-	if len(shards) == 0 {
-		return []ConversationRecord{}, 0, nil
-	}
-	// 各分表行数：一条 UNION ALL 取回，按表名归位（UNION ALL 不保证输出顺序）。
-	countBy, err := countConversationsByShard(d, shards)
-	if err != nil {
-		return nil, 0, err
-	}
-	counts := make([]int, len(shards))
-	total := 0
-	for i, t := range shards {
-		counts[i] = countBy[t]
-		total += counts[i]
-	}
-	// 全局页 → 各分表窗口，只查命中的分表，按新→旧拼接。
-	out := make([]ConversationRecord, 0, size)
-	for _, w := range convPageWindows(counts, (page-1)*size, size) {
-		records, err := listConversationsFrom(d, shards[w.shard], w.limit, w.offset)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, records...)
-	}
-	return out, total, nil
+	return pageAcrossShards(d, shards, page, size, func(table string, limit, offset int) ([]ConversationRecord, error) {
+		return listConversationsFrom(d, table, limit, offset)
+	})
 }
 
 // countConversationsByShard 用一条 UNION ALL 查询取各分表行数（key 为表名）。

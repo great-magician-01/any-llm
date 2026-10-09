@@ -273,7 +273,7 @@ func validateImport(in *configFile) error {
 			return fmt.Errorf("upstreams[%d]: duplicate name %q", i, u.Name)
 		}
 		seenUpstreams[u.Name] = true
-		if u.Format != "openai" && u.Format != "anthropic" && u.Format != "responses" {
+		if !store.IsKnownFormat(u.Format) {
 			return fmt.Errorf("upstreams[%d]: format must be openai, anthropic or responses", i)
 		}
 		if u.ExtraEndpoints != nil {
