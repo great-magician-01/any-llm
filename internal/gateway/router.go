@@ -22,8 +22,8 @@ type Gateway struct {
 	conc     *concManager
 }
 
-func New(db *sql.DB, writer *db.Writer, client *upstream.Client) *Gateway {
-	return &Gateway{db: db, writer: writer, client: client, sessions: NewSessionStore(db, sessionTTL), conc: newConcManager()}
+func New(sqlDB *sql.DB, writer *db.Writer, client *upstream.Client) *Gateway {
+	return &Gateway{db: sqlDB, writer: writer, client: client, sessions: NewSessionStore(sqlDB, sessionTTL), conc: newConcManager()}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,22 +41,23 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
-	// /v1/models 与完成端点同级，同样强制 ext key 鉴权；受限 key 只看到
-	// 白名单内的模型（直连名与别名）。
+// authenticate 校验 ext key（Authorization: Bearer 或 x-api-key）并异步刷新
+// last_used_at；校验失败时按 inFormat 写出 401 并返回 nil。错误响应的格式随
+// 调用端点（/v1/models 按 openai 出）。
+func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request, inFormat string) *store.ExtKey {
 	extKey := extractKey(r)
 	if extKey == "" {
-		WriteError(w, 401, "openai", "missing API key", "authentication_error")
-		return
+		WriteError(w, 401, inFormat, "missing API key", "authentication_error")
+		return nil
 	}
 	if !store.IsValidKeyFormat(extKey) {
-		WriteError(w, 401, "openai", "invalid API key format", "authentication_error")
-		return
+		WriteError(w, 401, inFormat, "invalid API key format", "authentication_error")
+		return nil
 	}
 	k, err := store.CachedExtKey(g.db, extKey)
 	if err != nil || !k.Enabled {
-		WriteError(w, 401, "openai", "invalid API key", "authentication_error")
-		return
+		WriteError(w, 401, inFormat, "invalid API key", "authentication_error")
+		return nil
 	}
 	if g.writer != nil {
 		g.writer.DoAsync(func(d *sql.DB) error { return store.TouchExtKey(d, k.ID) })
@@ -64,6 +65,16 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		if err := store.TouchExtKey(g.db, k.ID); err != nil {
 			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
 		}
+	}
+	return k
+}
+
+func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
+	// /v1/models 与完成端点同级，同样强制 ext key 鉴权；受限 key 只看到
+	// 白名单内的模型（直连名与别名）。
+	k := g.authenticate(w, r, "openai")
+	if k == nil {
+		return
 	}
 
 	upstreams, err := store.ListUpstreams(g.db, nil)
@@ -132,30 +143,15 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	if err := json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data}); err != nil {
+		logger.Warn("gateway: encode models response failed", "err", err)
+	}
 }
 
 func (g *Gateway) handleCompletion(w http.ResponseWriter, r *http.Request, inFormat string) {
-	extKey := extractKey(r)
-	if extKey == "" {
-		WriteError(w, 401, inFormat, "missing API key", "authentication_error")
+	k := g.authenticate(w, r, inFormat)
+	if k == nil {
 		return
-	}
-	if !store.IsValidKeyFormat(extKey) {
-		WriteError(w, 401, inFormat, "invalid API key format", "authentication_error")
-		return
-	}
-	k, err := store.CachedExtKey(g.db, extKey)
-	if err != nil || !k.Enabled {
-		WriteError(w, 401, inFormat, "invalid API key", "authentication_error")
-		return
-	}
-	if g.writer != nil {
-		g.writer.DoAsync(func(d *sql.DB) error { return store.TouchExtKey(d, k.ID) })
-	} else {
-		if err := store.TouchExtKey(g.db, k.ID); err != nil {
-			logger.Warn("gateway: touch ext key failed", "key_id", k.ID, "err", err)
-		}
 	}
 
 	body, err := readBody(r)
@@ -297,62 +293,45 @@ func (g *Gateway) writeLimitError(w http.ResponseWriter, inFormat string, k *sto
 	return true
 }
 
-// checkKeyLimits verifies the ext key is within its daily and monthly token
-// quotas. A limit of 0 means unbounded. Returns a *limitError when exceeded,
-// or a wrapped error on DB failure.
-func (g *Gateway) checkKeyLimits(k *store.ExtKey) error {
+// checkTokenLimits verifies the ext key or upstream quota owner is within its
+// daily and monthly token quotas. Exactly one of keyID/upstreamID is non-nil;
+// scope ("ext_key" | "upstream") and subject ("API key" | "upstream") name the
+// owner in the limitError. A limit of 0 means unbounded. Returns a *limitError
+// when exceeded, or a wrapped error on DB failure.
+func (g *Gateway) checkTokenLimits(keyID, upstreamID *int64, daily, monthly int, scope, subject string) error {
 	dayStart, dayEnd, monthStart, monthEnd := store.TokenWindows(time.Now())
 
-	if k.DailyTokenLimit > 0 {
-		used, err := store.SumTokens(g.db, &k.ID, nil, dayStart, dayEnd)
+	if daily > 0 {
+		used, err := store.SumTokens(g.db, keyID, upstreamID, dayStart, dayEnd)
 		if err != nil {
 			return err
 		}
-		if used >= k.DailyTokenLimit {
-			return &limitError{scope: "ext_key_daily", used: used, limit: k.DailyTokenLimit,
-				message: "daily token limit exceeded for API key"}
+		if used >= daily {
+			return &limitError{scope: scope + "_daily", used: used, limit: daily,
+				message: "daily token limit exceeded for " + subject}
 		}
 	}
-	if k.MonthlyTokenLimit > 0 {
-		used, err := store.SumTokens(g.db, &k.ID, nil, monthStart, monthEnd)
+	if monthly > 0 {
+		used, err := store.SumTokens(g.db, keyID, upstreamID, monthStart, monthEnd)
 		if err != nil {
 			return err
 		}
-		if used >= k.MonthlyTokenLimit {
-			return &limitError{scope: "ext_key_monthly", used: used, limit: k.MonthlyTokenLimit,
-				message: "monthly token limit exceeded for API key"}
+		if used >= monthly {
+			return &limitError{scope: scope + "_monthly", used: used, limit: monthly,
+				message: "monthly token limit exceeded for " + subject}
 		}
 	}
 	return nil
 }
 
-// checkUpstreamLimits verifies the upstream is within its daily and monthly
-// token quotas. A limit of 0 means unbounded. Returns a *limitError when
-// exceeded, or a wrapped error on DB failure.
-func (g *Gateway) checkUpstreamLimits(u *store.Upstream) error {
-	dayStart, dayEnd, monthStart, monthEnd := store.TokenWindows(time.Now())
+// checkKeyLimits / checkUpstreamLimits 是 checkTokenLimits 的两个口径封装，
+// 保留调用点可读性（谁被检查一眼可见）。
+func (g *Gateway) checkKeyLimits(k *store.ExtKey) error {
+	return g.checkTokenLimits(&k.ID, nil, k.DailyTokenLimit, k.MonthlyTokenLimit, "ext_key", "API key")
+}
 
-	if u.DailyTokenLimit > 0 {
-		used, err := store.SumTokens(g.db, nil, &u.ID, dayStart, dayEnd)
-		if err != nil {
-			return err
-		}
-		if used >= u.DailyTokenLimit {
-			return &limitError{scope: "upstream_daily", used: used, limit: u.DailyTokenLimit,
-				message: "daily token limit exceeded for upstream"}
-		}
-	}
-	if u.MonthlyTokenLimit > 0 {
-		used, err := store.SumTokens(g.db, nil, &u.ID, monthStart, monthEnd)
-		if err != nil {
-			return err
-		}
-		if used >= u.MonthlyTokenLimit {
-			return &limitError{scope: "upstream_monthly", used: used, limit: u.MonthlyTokenLimit,
-				message: "monthly token limit exceeded for upstream"}
-		}
-	}
-	return nil
+func (g *Gateway) checkUpstreamLimits(u *store.Upstream) error {
+	return g.checkTokenLimits(nil, &u.ID, u.DailyTokenLimit, u.MonthlyTokenLimit, "upstream", "upstream")
 }
 
 func extractKey(r *http.Request) string {
@@ -375,9 +354,5 @@ func splitModel(m string) (name, model string, ok bool) {
 
 func readBody(r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
-	return readAll(r.Body)
-}
-
-func readAll(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
+	return io.ReadAll(r.Body)
 }

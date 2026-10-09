@@ -18,7 +18,7 @@ export function isExpired(u: Upstream, now: number = Date.now()): boolean {
 }
 
 /** 截止时刻；未设置为 null。 */
-export function expiryTime(u: Upstream): number | null {
+export function expiryTime(u: Pick<Upstream, 'expires_at'>): number | null {
   if (!u.expires_at) return null
   const t = new Date(u.expires_at).getTime()
   return isNaN(t) ? null : t
@@ -50,5 +50,5 @@ export function expiryToISO(ms: number | null): string | null {
 }
 
 export function isoToExpiry(iso: string | null | undefined): number | null {
-  return expiryTime({ expires_at: iso } as Upstream)
+  return expiryTime({ expires_at: iso })
 }

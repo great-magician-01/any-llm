@@ -10,11 +10,16 @@ import { buildOmpYaml } from '@/utils/ompConfig'
 import { buildDshYaml } from '@/utils/dshConfig'
 import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
+import { useClipboard } from '@/composables/useClipboard'
+import { errText } from '@/utils/errText'
+import { quotaPercent, quotaStatus } from '@/utils/quota'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
 import ClaudeCodeExportDialog from '@/components/ClaudeCodeExportDialog.vue'
 
 const message = useMessage()
+// 复制走共享实现（useClipboard）：本页此前有一份等价的本地拷贝，已合并。
+const { copyText } = useClipboard()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
 const showDoc = ref(false)
@@ -71,7 +76,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
         { trigger: 'hover' },
         {
           trigger: () =>
-            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyKey(row.key, e) }, {
+            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyText(row.key, e) }, {
               icon: () => h(AppIcon, { name: 'copy', size: 13 }),
             }),
           default: () => '复制 Key',
@@ -127,8 +132,8 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
           limit > 0
             ? h(NProgress, {
                 type: 'line',
-                percentage: Math.min(100, Math.round((used / limit) * 100)),
-                status: used >= limit ? 'error' : used / limit >= 0.8 ? 'warning' : 'success',
+                percentage: quotaPercent(used, limit),
+                status: quotaStatus(used, limit),
                 height: 5,
                 showIndicator: false,
                 borderRadius: '3px',
@@ -210,7 +215,12 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
 ])
 
 async function load() {
-  keys.value = await listKeys()
+  try {
+    keys.value = await listKeys()
+  } catch (e) {
+    message.error('加载密钥失败：' + errText(e))
+    return
+  }
   // load usage in parallel
   const results = await Promise.all(keys.value.map(k => getKeyUsage(k.id).catch(() => null)))
   usageByKey.value = {}
@@ -271,7 +281,7 @@ async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): 
 async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const json = await buildOpencodeConfig(apiKey, allowedModels)
-    await copyKey(json, evt)
+    await copyText(json, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -280,7 +290,7 @@ async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | nul
 async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const yaml = await buildOmpConfig(apiKey, allowedModels)
-    await copyKey(yaml, evt)
+    await copyText(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -297,7 +307,7 @@ async function buildDshConfig(apiKey: string, allowedModels?: string[] | null): 
 async function copyDshConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const yaml = await buildDshConfig(apiKey, allowedModels)
-    await copyKey(yaml, evt)
+    await copyText(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -312,75 +322,6 @@ function openClaudeCodeExport(apiKey: string, allowedModels?: string[] | null) {
   claudeCodeKey.value = apiKey
   claudeCodeAllowed.value = allowedModels ?? null
   claudeCodeShow.value = true
-}
-
-async function copyKey(key: string, evt?: MouseEvent) {
-  // prefer the modern async clipboard API (HTTPS / localhost only)
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(key)
-      message.success('已复制到剪贴板')
-      return
-    } catch {
-      // permission denied or non-secure context — fall through
-    }
-  }
-  // legacy fallback for HTTP non-localhost:
-  // the temp textarea must live INSIDE the modal (otherwise naive-ui's focus
-  // trap steals focus and clears the selection before execCommand runs).
-  // We also intercept the copy event to force the correct data in, in case
-  // the selection is still lost.
-  const anchor = (evt?.currentTarget as HTMLElement | undefined) || (document.activeElement as HTMLElement) || document.body
-  let ok = false
-  try {
-    ok = execCopy(key, anchor)
-  } catch {
-    ok = false
-  }
-  if (ok) {
-    message.success('已复制到剪贴板')
-  } else {
-    message.error('复制失败，请手动选择复制')
-  }
-}
-
-function execCopy(text: string, anchor: HTMLElement): boolean {
-  // mount the textarea inside the same modal/card as the clicked button
-  // so the modal's focus trap does not steal focus from it.
-  const container = anchor.parentElement || document.body
-  const ta = document.createElement('textarea')
-  ta.setAttribute('readonly', '')
-  ta.value = text
-  ta.style.position = 'absolute'
-  ta.style.left = '-9999px'
-  ta.style.top = '0'
-  ta.style.width = '1px'
-  ta.style.height = '1px'
-  ta.style.opacity = '0'
-  container.appendChild(ta)
-
-  let ok = false
-  // safety net: force the clipboard payload even if the selection is cleared
-  const onCopy = (e: ClipboardEvent) => {
-    try {
-      e.preventDefault()
-      e.clipboardData?.setData('text/plain', text)
-      ok = true
-    } catch {
-      // ignore
-    }
-  }
-  document.addEventListener('copy', onCopy)
-  try {
-    ta.focus()
-    ta.select()
-    ta.setSelectionRange(0, text.length)
-    document.execCommand('copy')
-  } finally {
-    document.removeEventListener('copy', onCopy)
-    try { container.removeChild(ta) } catch { /* already removed */ }
-  }
-  return ok
 }
 
 onMounted(load)
@@ -412,7 +353,7 @@ onMounted(load)
         <n-input-group v-for="ep in endpoints" :key="ep.url">
           <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center; height: auto; align-self: stretch">{{ ep.label }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
-          <n-button type="primary" @click="copyKey(ep.url, $event)">
+          <n-button type="primary" @click="copyText(ep.url, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制
           </n-button>
@@ -466,7 +407,7 @@ onMounted(load)
           </n-alert>
           <n-input-group>
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
-            <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
+            <n-button type="primary" @click="copyText(newlyCreatedKey, $event)">复制</n-button>
           </n-input-group>
           <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>

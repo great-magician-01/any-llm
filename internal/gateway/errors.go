@@ -23,14 +23,12 @@ func WriteError(w http.ResponseWriter, status int, inFormat, message, errType st
 		})
 	}
 	w.Write(body)
-	if status >= 400 {
-		logger.Warn("gateway error response",
-			"format", inFormat,
-			"status", status,
-			"type", errType,
-			"message", truncate(message, 500),
-		)
-	}
+	logger.Warn("gateway error response",
+		"format", inFormat,
+		"status", status,
+		"type", errType,
+		"message", truncate(message, 500),
+	)
 }
 
 // mapErrorType maps an upstream HTTP status code to an error type string
@@ -55,9 +53,7 @@ func mapErrorType(inFormat string, status int, upstreamType string) string {
 		case 529:
 			return "overloaded_error"
 		}
-		if status >= 500 {
-			return "api_error"
-		}
+		// Anthropic 的 api_error 同时覆盖 5xx 与其它未列出状态。
 		return "api_error"
 	default:
 		switch status {

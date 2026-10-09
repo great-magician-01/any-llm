@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -16,6 +17,10 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 	to := r.URL.Query().Get("to")
 	summaries, err := store.UsageSummaryByGroup(a.db, groupBy, from, to)
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidGroupBy) {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		logger.Error("admin: usage summary failed", "group_by", groupBy, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
@@ -25,8 +30,7 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 
 // usageRecords serves GET /api/admin/usage/records?page=&size=.
 func (a *API) usageRecords(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	page, size := pageParams(r)
 	records, total, err := store.UsageRecordsList(a.db, page, size)
 	if err != nil {
 		logger.Error("admin: usage records list failed", "page", page, "size", size, "err", err)

@@ -135,7 +135,7 @@ const linePts = computed(() => {
       const cy = padT + plotH.value - ((v - props.lineMin) / span) * plotH.value
       return { x: cx, y: cy, i }
     })
-    .filter(Boolean) as { x: number; y: number; i: number }[]
+    .filter((p): p is { x: number; y: number; i: number } => p !== null)
 })
 const linePath = computed(() =>
   linePts.value.length ? 'M' + linePts.value.map((p) => `${p.x} ${p.y}`).join('L') : '',

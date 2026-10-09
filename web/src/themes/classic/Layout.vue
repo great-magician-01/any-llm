@@ -11,7 +11,11 @@ const router = useRouter()
 const route = useRoute()
 
 async function logout() {
-  await client.post('/logout')
+  try {
+    await client.post('/logout')
+  } catch {
+    // 登出接口失败也要清本地态并回登录页，否则用户卡在一个即将失效的会话里
+  }
   localStorage.removeItem('authed')
   router.push('/login')
 }

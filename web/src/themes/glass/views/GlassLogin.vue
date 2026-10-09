@@ -5,6 +5,7 @@ import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
+import { errText } from '@/utils/errText'
 import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
@@ -22,8 +23,11 @@ async function login() {
     await client.post('/login', { password: password.value })
     localStorage.setItem('authed', '1')
     await goAfterLogin()
-  } catch {
-    error.value = '密码错误'
+  } catch (e) {
+    // 区分「密码错误」与网络/服务端故障：一律显示密码错误会把运维问题
+    // 误导成凭据问题（400/401 之外的失败不是用户输入的问题）。
+    const status = (e as { response?: { status?: number } })?.response?.status
+    error.value = status === 401 ? '密码错误' : '登录失败：' + errText(e)
   } finally {
     loading.value = false
   }

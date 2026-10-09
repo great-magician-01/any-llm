@@ -118,50 +118,67 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 }
 
 func encodeBlocks(blocks []translate.ContentBlock) []map[string]any {
-	var parts []map[string]any
+	parts := make([]map[string]any, 0, len(blocks))
 	for _, b := range blocks {
-		switch b.Type {
-		case "text":
-			parts = append(parts, map[string]any{"type": "text", "text": b.Text})
-		case "image":
-			parts = append(parts, map[string]any{"type": "image", "source": anthropicImageSource(b.Image)})
-		case "thinking":
-			m := map[string]any{"type": "thinking", "thinking": b.Thinking}
-			if b.Signature != "" {
-				m["signature"] = b.Signature
-			}
-			parts = append(parts, m)
-		case "redacted_thinking":
-			parts = append(parts, map[string]any{"type": "redacted_thinking", "data": b.Data})
-		case "tool_use":
-			parts = append(parts, map[string]any{
-				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
-			})
-		case "tool_result":
-			parts = append(parts, map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": b.ToolResult.ToolUseID,
-				"content":     encodeResultContent(b.ToolResult.Content),
-				"is_error":    b.ToolResult.IsError,
-			})
-		default:
-			// 未知块类型（含 hosted server 块）原样透传。
-			m := map[string]any{"type": b.Type}
-			for k, v := range b.Extra {
-				if _, exists := m[k]; !exists {
-					m[k] = v
-				}
-			}
-			parts = append(parts, m)
-		}
+		parts = append(parts, blockToMap(b))
 	}
 	return parts
 }
 
+// blockToMap 把 IR 内容块渲染成 Anthropic 块对象：请求编码（encodeBlocks）、
+// 响应编码（EncodeResponse）与流式 content_block_start 帧三处共用，避免同一
+// 映射三份各自演化。nil 子结构（上游遗漏 start 的合成块）退化为只带 type 的
+// 最小块；未知类型（hosted server 块等）原样透传 Extra。
+func blockToMap(b translate.ContentBlock) map[string]any {
+	switch b.Type {
+	case "text":
+		return map[string]any{"type": "text", "text": b.Text}
+	case "image":
+		if src := anthropicImageSource(b.Image); src != nil {
+			return map[string]any{"type": "image", "source": src}
+		}
+		return map[string]any{"type": "image"}
+	case "thinking":
+		m := map[string]any{"type": "thinking", "thinking": b.Thinking}
+		if b.Signature != "" {
+			m["signature"] = b.Signature
+		}
+		return m
+	case "redacted_thinking":
+		return map[string]any{"type": "redacted_thinking", "data": b.Data}
+	case "tool_use":
+		if b.ToolUse == nil {
+			return map[string]any{"type": "tool_use"}
+		}
+		return map[string]any{
+			"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
+		}
+	case "tool_result":
+		if b.ToolResult == nil {
+			return map[string]any{"type": "tool_result"}
+		}
+		return map[string]any{
+			"type":        "tool_result",
+			"tool_use_id": b.ToolResult.ToolUseID,
+			"content":     encodeResultContent(b.ToolResult.Content),
+			"is_error":    b.ToolResult.IsError,
+		}
+	}
+	// 未知块类型（server_tool_use / web_search_tool_result 等 hosted 工具块）
+	// 原样透传 Extra 里的原始字段。
+	m := map[string]any{"type": b.Type}
+	for k, v := range b.Extra {
+		if _, exists := m[k]; !exists {
+			m[k] = v
+		}
+	}
+	return m
+}
+
 // anthropicImageSource 把 IR 图片渲染成 Anthropic 的 image source：内联数据走
-// base64 source，其余走 url source。原实现无条件输出 base64 source，于是
-// OpenAI/Responses 来的 URL 图片会变成 {"type":"base64","media_type":"","data":""}
-// —— 一个上游必然拒绝的非法载荷。
+// base64 source，URL 走 url source；两者皆无（空图）返回 nil，由调用方退化为
+// 最小块——老实现回退 {"type":"base64","media_type":"","data":""}，那是上游
+// 必然拒绝的非法载荷。
 func anthropicImageSource(img *translate.Image) map[string]any {
 	if mediaType, payload, ok := img.Base64Payload(); ok {
 		return map[string]any{"type": "base64", "media_type": mediaType, "data": payload}
@@ -169,7 +186,7 @@ func anthropicImageSource(img *translate.Image) map[string]any {
 	if url := img.SourceURL(); url != "" {
 		return map[string]any{"type": "url", "url": url}
 	}
-	return map[string]any{"type": "base64", "media_type": "", "data": ""}
+	return nil
 }
 
 func encodeResultContent(blocks []translate.ContentBlock) any {
@@ -184,37 +201,9 @@ func encodeResultContent(blocks []translate.ContentBlock) any {
 
 // EncodeResponse produces a non-stream Anthropic message response.
 func EncodeResponse(resp *translate.Response) ([]byte, error) {
-	var content []map[string]any
+	content := make([]map[string]any, 0, len(resp.Content))
 	for _, b := range resp.Content {
-		switch b.Type {
-		case "text":
-			content = append(content, map[string]any{"type": "text", "text": b.Text})
-		case "thinking":
-			m := map[string]any{"type": "thinking", "thinking": b.Thinking}
-			if b.Signature != "" {
-				m["signature"] = b.Signature
-			}
-			content = append(content, m)
-		case "redacted_thinking":
-			content = append(content, map[string]any{"type": "redacted_thinking", "data": b.Data})
-		case "tool_use":
-			content = append(content, map[string]any{
-				"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input),
-			})
-		case "image":
-			// 响应侧同样要有 image 分支：原实现落到 default，把图片当成
-			// hosted server 块透传（只剩 {"type":"image"}，source 丢失）。
-			content = append(content, map[string]any{"type": "image", "source": anthropicImageSource(b.Image)})
-		default:
-			// hosted server 块（web_search_tool_result 等）原样透传。
-			m := map[string]any{"type": b.Type}
-			for k, v := range b.Extra {
-				if _, exists := m[k]; !exists {
-					m[k] = v
-				}
-			}
-			content = append(content, m)
-		}
+		content = append(content, blockToMap(b))
 	}
 	out := map[string]any{
 		"id":          resp.ID,
@@ -244,6 +233,10 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 	return b, nil
 }
 
+// mapStopReasonToAnthropic 把 IR 停止原因映射为 Anthropic 词表。Anthropic
+// 没有 content_filter 的对应值，归到 end_turn（信号在跨格式桥接下丢失是
+// 已知折衷）；未识别的值原样透传——SDK 对未知 stop_reason 宽容，保留原始
+// 信息比兜底成 end_turn 更有诊断价值（与 openai 编码器的兜底策略有意不同）。
 func mapStopReasonToAnthropic(reason string) string {
 	switch reason {
 	case "stop":

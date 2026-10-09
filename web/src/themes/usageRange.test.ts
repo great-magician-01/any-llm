@@ -6,13 +6,22 @@
  * 主题各跑一遍——经典的 /usage 与毛玻璃的 /glass/usage 是逐行重复的实现，
  * 「只改了一边」要在这里变成红灯。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NDatePicker } from 'naive-ui'
 import type { Component } from 'vue'
 import ClassicUsage from './classic/views/Usage.vue'
 import GlassUsage from './glass/views/GlassUsage.vue'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { flush, mountPage } from '@/test/ui'
+
+// useMessage 换成本地记录器（与 Upstreams 页测试同款）：Usage 页新增了加载
+// 失败的 message.error，挂载时必须有 message 上下文。
+vi.mock('naive-ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('naive-ui')>()
+  const { messageApi } = await import('@/test/naiveMessage')
+  return { ...actual, useMessage: () => messageApi }
+})
+
 
 let api: ApiMock
 let wrapper: ReturnType<typeof mountPage> | null = null

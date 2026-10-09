@@ -8,6 +8,20 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
+// 测试专用入口：分表注册表（convShards）的内部方法在测试里的短别名。
+// 这些包装没有生产调用方，就不占生产代码的符号位。
+var convShardNameRe = convShards.nameRe
+
+// convShardNameToKey 把表名转回月份键；调用前需已过 convShardNameRe。
+func convShardNameToKey(name string) string { return convShards.nameToKey(name) }
+
+// registerConvShard 把新分表注册进缓存，保持 months 新→旧有序。幂等。
+func registerConvShard(key, name string) { convShards.register(key, name) }
+
+// convShardDDL 生成一张分表的完整 DDL（共享序列 + 建表 + 索引）。
+// 表名必须已过 convShardNameRe 白名单。
+func convShardDDL(d db.Dialect, name string) ([]string, error) { return convShards.ddl(d, name) }
+
 func TestConvShardName(t *testing.T) {
 	ts := time.Date(2026, 9, 12, 15, 30, 0, 0, time.Local)
 	if got := ConvShardName(ts); got != "conversation_records_2026_09" {

@@ -190,7 +190,7 @@ func ListUpstreams(d *sql.DB, enabled *bool) ([]Upstream, error) {
 		row.finish()
 		out = append(out, u)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // UpdateUpstream 全量覆盖行内字段。u 必须先 Get 再改再存——不要用字面量构造
@@ -214,6 +214,19 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	// 别名候选里内嵌的就是这一行，上游任何字段变了绑定链都得重解析，故逐出上游
 	// 缓存 + 整份刷新别名缓存。
 	evictUpstream(u.ID, u.Name)
+	return nil
+}
+
+// SetUpstreamEnabled 只切换启用位（「新建即禁用」「配置导入里 enabled: false」
+// 等场景）。单条 UPDATE，不走「读回整行 → 改一位 → 全量覆盖」——那种读-改-写
+// 会把并发写刚落的其它字段覆盖回旧值。缓存逐出与 UpdateUpstream 同口径：
+// 上游行内嵌在别名候选链里，任何字段变化都要让候选链重解析。
+func SetUpstreamEnabled(d *sql.DB, id int64, enabled bool) error {
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET enabled=?, updated_at=? WHERE id=? AND is_active = 1`), b2i(enabled), time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("set upstream %d enabled=%v: %w", id, enabled, err)
+	}
+	evictUpstream(id, "")
 	return nil
 }
 
@@ -250,7 +263,7 @@ func DeleteUpstream(d *sql.DB, id int64) error {
 const DefaultModelContextLength = 1000000
 const DefaultModelMaxOutputLength = 200000
 
-// DefaultMaxConcurrent 新建上游未显式给并发上限时的默认值（webapi 创建/配置
+// DefaultMaxConcurrent 新建上游未显式给并发上限时的默认值（adminapi 创建/配置
 // 导入缺省时应用；DB 列默认值同）。0 表示不限。
 const DefaultMaxConcurrent = 100
 
@@ -271,7 +284,7 @@ func ListModels(d *sql.DB, upstreamID int64) ([]UpstreamModel, error) {
 		m.Multimodal = multimodal != 0
 		out = append(out, m)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ErrModelExists 表示要添加的模型在该上游已有活跃同名行。AddModel 用它拒绝
@@ -440,6 +453,12 @@ func ReplaceModels(d *sql.DB, upstreamID int64, names []string) error {
 			return fmt.Errorf("snapshot models: %w", err)
 		}
 		prev[name] = snapshot{cl, ml, mm != 0, manual != 0 && active != 0}
+	}
+	// 迭代错误必须在这里拦截：prev 不完整会让下面把仍在列表里的模型当成
+	// 「上游已移除」而软删除。
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("snapshot models: %w", err)
 	}
 	rows.Close()
 	// 同步删除改为软删除：行保留，若模型随后重新出现在上游列表里可复活，

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/store"
@@ -94,8 +95,8 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 		return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
 	}
 
-	url := endpointURL(u, path)
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	target := endpointURL(u, path)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", target, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -115,7 +116,7 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		logger.Error("upstream call failed", "url", url, "err", err)
+		logger.Error("upstream call failed", "url", target, "err", err)
 		return nil, fmt.Errorf("call upstream: %w", err)
 	}
 
@@ -125,12 +126,12 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 		// 回给客户端毫无意义（fetch.go / balance.go 同样用 1 MiB 上限 + 512 截断日志）。
 		errBody, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBody))
 		if err != nil {
-			logger.Warn("upstream error: failed to read error body", "url", url, "status", resp.StatusCode, "err", err)
+			logger.Warn("upstream error: failed to read error body", "url", target, "status", resp.StatusCode, "err", err)
 		}
 		logger.Error("upstream returned error",
-			"url", url,
+			"url", target,
 			"status", resp.StatusCode,
-			"body", truncateUpstream(string(errBody), 512),
+			"body", truncateLog(string(errBody), logErrorBodyCap),
 		)
 		return nil, &UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Format: u.Format}
 	}
@@ -154,19 +155,7 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 		if len(body) > maxNonStreamJSONBody {
 			return nil, fmt.Errorf("non-stream JSON response exceeds %d bytes", maxNonStreamJSONBody)
 		}
-		var irResp *translate.Response
-		switch u.Format {
-		case "openai":
-			irResp, err = openai.DecodeResponse(body)
-		case "anthropic":
-			irResp, err = anthropic.DecodeResponse(body)
-		case "responses":
-			irResp, err = responses.DecodeResponse(body)
-		default:
-			// 正常到不了这里（Call 开头的 format switch 已拦），但库里若混进
-			// 未知 format 的行，必须响亮报错而不是 nil deref。
-			return nil, fmt.Errorf("unknown upstream format: %s", u.Format)
-		}
+		irResp, err := decodeResponseByFormat(u.Format, body)
 		if err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -181,15 +170,7 @@ func (c *Client) Call(ctx context.Context, u *store.Upstream, irReq *translate.R
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		var irResp *translate.Response
-		switch u.Format {
-		case "openai":
-			irResp, err = openai.DecodeResponse(respBody)
-		case "anthropic":
-			irResp, err = anthropic.DecodeResponse(respBody)
-		case "responses":
-			irResp, err = responses.DecodeResponse(respBody)
-		}
+		irResp, err := decodeResponseByFormat(u.Format, respBody)
 		if err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -249,7 +230,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 		case "openai":
 			events, err := oaiDec.Decode([]byte(data))
 			if err != nil {
-				logger.Warn("stream decode error", "format", "openai", "err", err, "data", truncateUpstream(data, 256))
+				logger.Warn("stream decode error", "format", "openai", "err", err, "data", truncateLog(data, logSSELineCap))
 				continue
 			}
 			for _, ev := range events {
@@ -269,10 +250,10 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 				}
 			}
 		case "anthropic":
-			logger.FileOnly().Info("raw upstream SSE", "format", "anthropic", "data", truncateUpstream(data, 256))
+			logger.FileOnly().Info("raw upstream SSE", "format", "anthropic", "data", truncateLog(data, logSSELineCap))
 			ev, err := anthropic.DecodeStreamEvent([]byte(data))
 			if err != nil {
-				logger.Warn("stream decode error", "format", "anthropic", "err", err, "data", truncateUpstream(data, 256))
+				logger.Warn("stream decode error", "format", "anthropic", "err", err, "data", truncateLog(data, logSSELineCap))
 				continue
 			}
 			if ev == nil {
@@ -320,7 +301,7 @@ func (c *Client) streamLoop(ctx context.Context, resp *http.Response, format str
 		case "responses":
 			events, err := rspDec.Decode([]byte(data))
 			if err != nil {
-				logger.Warn("stream decode error", "format", "responses", "err", err, "data", truncateUpstream(data, 256))
+				logger.Warn("stream decode error", "format", "responses", "err", err, "data", truncateLog(data, logSSELineCap))
 				continue
 			}
 			for _, ev := range events {
@@ -395,8 +376,10 @@ type UpstreamError struct {
 	Format     string
 }
 
+// Error 会进日志（handler 的 candidate call failed 等），body 上限 1 MiB，
+// 与日志侧同口径截断；完整 body 仍在 Body 字段里供 Message() 提取。
 func (e *UpstreamError) Error() string {
-	return fmt.Sprintf("upstream returned %d: %s", e.StatusCode, string(e.Body))
+	return fmt.Sprintf("upstream returned %d: %s", e.StatusCode, truncateLog(string(e.Body), logErrorBodyCap))
 }
 
 // Message extracts a human-readable error message from the upstream response
@@ -446,11 +429,40 @@ func isJSONContentType(ct string) bool {
 	return strings.Contains(ct, "application/json") || strings.Contains(ct, "+json")
 }
 
-func truncateUpstream(s string, n int) string {
+// decodeResponseByFormat 按上游格式解码完整（非流式）响应体。
+// Call 开头的 format switch 已拦未知格式，这里的 default 是防御：库里若混进
+// 未知 format 的行，必须响亮报错而不是返回 nil 响应。
+func decodeResponseByFormat(format string, body []byte) (*translate.Response, error) {
+	switch format {
+	case "openai":
+		return openai.DecodeResponse(body)
+	case "anthropic":
+		return anthropic.DecodeResponse(body)
+	case "responses":
+		return responses.DecodeResponse(body)
+	}
+	return nil, fmt.Errorf("unknown upstream format: %s", format)
+}
+
+// 日志/错误文案里的上游内容截断长度：错误 body 512、调试级原始 body 1024、
+// 单条 SSE 数据行 256。正常行远小于此，截断只为兜住异常或恶意上游。
+const (
+	logErrorBodyCap = 512
+	logDebugBodyCap = 1024
+	logSSELineCap   = 256
+)
+
+// truncateLog 把 s 截到最多 n 字节并加截断标记。按 rune 边界截断：上游
+// body/SSE 行里中文与 emoji 常见，按字节切会往日志写入非法 UTF-8，采集端会报错。
+func truncateLog(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "...(truncated)"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...(truncated)"
 }
 
 // copyForwardableHeaders copies inbound client request headers onto the

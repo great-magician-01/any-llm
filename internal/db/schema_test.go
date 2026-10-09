@@ -209,11 +209,11 @@ func TestSchemaMySQLRejectsIndexedTextWithoutLen(t *testing.T) {
 	}
 }
 
-// TestSchemaMySQLPartialUniqueSurvivesIndexSuffix 盯住一处容易漂移的地方：生成列
-// 名由「已套用月份后缀的索引名」派生，而 KEY 引用的也必须是同一个名字。两侧各自
-// 取后缀就会生成一份引用了未定义列的 DDL。现有分表没有部分唯一索引，所以这是
-// 潜伏问题 —— 用一张合成表把它钉死。
-func TestSchemaMySQLPartialUniqueSurvivesIndexSuffix(t *testing.T) {
+// TestSchemaMySQLPartialUniqueGeneratedColumnName 盯住一处容易漂移的地方：部分
+// 唯一索引在 MySQL 上降级为「生成列 + 普通唯一键」，生成列名由索引名派生，KEY
+// 引用的必须是同一个名字。两侧各自取名就会生成一份引用了未定义列的 DDL。
+// 用一张合成分表（索引名带月份后缀）把它钉死。
+func TestSchemaMySQLPartialUniqueGeneratedColumnName(t *testing.T) {
 	tbl := Table{
 		Name: "conv_shard",
 		Cols: []Column{
@@ -222,27 +222,21 @@ func TestSchemaMySQLPartialUniqueSurvivesIndexSuffix(t *testing.T) {
 			{Name: "is_active", Type: TypeInt, Default: "1"},
 		},
 		Idx: []Index{
-			{Name: "idx_conv_{}_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
+			{Name: "idx_conv_2026_09_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
 		},
 	}
-	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[0]
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
 	// 生成列与 KEY 必须用同一个名字。
 	if !strings.Contains(ddl, "`g_idx_conv_2026_09_name` VARCHAR(255) GENERATED ALWAYS AS") {
-		t.Errorf("generated column missing the suffix:\n%s", ddl)
+		t.Errorf("generated column missing:\n%s", ddl)
 	}
 	if !strings.Contains(ddl, "UNIQUE KEY `idx_conv_2026_09_name` (`g_idx_conv_2026_09_name`)") {
-		t.Errorf("KEY does not reference the suffixed generated column:\n%s", ddl)
+		t.Errorf("KEY does not reference the generated column:\n%s", ddl)
 	}
-	// 没套后缀的旧名字一个都不许出现。
-	for _, bad := range []string{"g_idx_conv{}_name", "`g_idx_conv_name`", "`idx_conv{}_name`"} {
-		if strings.Contains(ddl, bad) {
-			t.Errorf("DDL still contains un-suffixed %q:\n%s", bad, ddl)
-		}
-	}
-	// SQLite/PG 侧同样要套后缀。
-	idx := joinDDL(mustDDL(t, tbl, DialectPostgres, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[1:])
+	// PG/SQLite 侧仍渲染为普通的部分唯一索引。
+	idx := joinDDL(mustDDL(t, tbl, DialectPostgres, DDLConfig{IfNotExists: true})[1:])
 	if !strings.Contains(idx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_2026_09_name") {
-		t.Errorf("postgres index name missing the suffix:\n%s", idx)
+		t.Errorf("postgres index statement malformed:\n%s", idx)
 	}
 }
 

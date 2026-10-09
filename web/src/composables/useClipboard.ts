@@ -2,8 +2,7 @@ import { useMessage } from 'naive-ui'
 
 /**
  * 复制文本到剪贴板并弹出反馈。优先 navigator.clipboard（仅 HTTPS / localhost 可用），
- * 失败时退化到 execCommand。使用文档抽屉和两套概览页共用这一份
- * （两个 Keys 皮肤仍各有一份等价的本地实现，待后续合并）。
+ * 失败时退化到 execCommand。使用文档抽屉、概览页与两个 Keys 皮肤共用这一份。
  *
  * msgs 允许调用方覆盖提示文案：复制的内容本身就是用户需要的信息时（如 Base URL），
  * 失败提示要把原文带上，用户才知道该手动复制什么。

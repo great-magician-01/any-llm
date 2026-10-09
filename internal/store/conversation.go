@@ -9,7 +9,8 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-// ConversationRecord 归档一次网关对话（仅 PostgreSQL 落库）。
+// ConversationRecord 归档一次网关对话（PostgreSQL 与 MySQL 落库；SQLite 走
+// 常量表降级，见 db.Dialect.SupportsConversationArchive）。
 // RequestIR/ResponseIR 是归一化 IR 的 JSON 文本（含工具调用与思维链）；
 // RequestRaw/ResponseRaw 是入站请求体与发给客户端的原始字节。
 type ConversationRecord struct {
@@ -73,7 +74,7 @@ func InsertConversation(d *sql.DB, r *ConversationRecord) error {
 }
 
 // insertConversationInto 执行向指定分表的单行插入。table 必须已过
-// convShardNameRe 白名单或为 convBaseTable（本包内部保证），不接受外部输入。
+// convShards.nameRe 白名单或为 convBaseTable（本包内部保证），不接受外部输入。
 //
 // 列清单与占位符都由 db.ConversationShardCols() 驱动，避免两份清单漂移。MySQL
 // 没有序列，id 要显式传（计数器表）；PG 交 DEFAULT nextval 自动分配，不传 id。
@@ -195,12 +196,7 @@ func scanConversation(scan func(dest ...any) error, r *ConversationRecord, withI
 // page/size 规范化与 UsageRecordsList 一致。PG/MySQL 下跨分表按块翻页
 // （见 conversation_shard.go）；SQLite 走单表（仅单测使用）。
 func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 50
-	}
+	page, size = normalizePage(page, size)
 	if !db.DialectOf(d).SupportsConversationArchive() {
 		total, err := countConversations(d, convBaseTable)
 		if err != nil {
@@ -214,30 +210,9 @@ func ConversationRecordsList(d *sql.DB, page, size int) ([]ConversationRecord, i
 	if err != nil {
 		return nil, 0, fmt.Errorf("conversation shards: %w", err)
 	}
-	if len(shards) == 0 {
-		return []ConversationRecord{}, 0, nil
-	}
-	// 各分表行数：一条 UNION ALL 取回，按表名归位（UNION ALL 不保证输出顺序）。
-	countBy, err := countConversationsByShard(d, shards)
-	if err != nil {
-		return nil, 0, err
-	}
-	counts := make([]int, len(shards))
-	total := 0
-	for i, t := range shards {
-		counts[i] = countBy[t]
-		total += counts[i]
-	}
-	// 全局页 → 各分表窗口，只查命中的分表，按新→旧拼接。
-	out := make([]ConversationRecord, 0, size)
-	for _, w := range convPageWindows(counts, (page-1)*size, size) {
-		records, err := listConversationsFrom(d, shards[w.shard], w.limit, w.offset)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, records...)
-	}
-	return out, total, nil
+	return pageAcrossShards(d, shards, page, size, func(table string, limit, offset int) ([]ConversationRecord, error) {
+		return listConversationsFrom(d, table, limit, offset)
+	})
 }
 
 // countConversationsByShard 用一条 UNION ALL 查询取各分表行数（key 为表名）。

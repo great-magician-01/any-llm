@@ -40,8 +40,19 @@ type PGConfig struct {
 	Schema   string
 }
 
+// OpenSQLite 打开（必要时创建）SQLite 库并执行迁移。
+//
+// busy_timeout / journal_mode 走 DSN 的 _pragma 参数而不是开库后的 d.Exec：
+// 它们是连接级设置，Exec 只作用于池里恰好被选中的那一条连接，之后新建的
+// 连接拿不到（busy_timeout 退化为 0，并发写直接 SQLITE_BUSY）。DSN 参数由
+// 驱动在每条新连接上执行，语义才是「对整池生效」。
+//
+// foreign_keys 不放 DSN：软删除升级要重建含 REFERENCES 的旧表，约束启用时
+// DROP/重建会受限（见 migrateSoftDeleteSQLite 注释），只能等迁移完成后开；
+// 当前 schema 没有外键声明，这条 PRAGMA 是对历史库残留 REFERENCES 的尽力
+// 而为（池内单连接生效）。
 func OpenSQLite(path string) (*sql.DB, error) {
-	d, err := sql.Open("sqlite", path)
+	d, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
 	}
@@ -49,19 +60,9 @@ func OpenSQLite(path string) (*sql.DB, error) {
 		d.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	// 去外键/软删除升级放在 foreign_keys=ON 之前：SQLite 重建期间 REFERENCES
-	// 改写只受 legacy_alter_table 控制，但约束启用后 DROP/重建会受限。
 	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-	if _, err := d.Exec("PRAGMA journal_mode = WAL"); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("enable WAL mode: %w", err)
-	}
-	if _, err := d.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
 	return d, nil
 }

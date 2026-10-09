@@ -79,16 +79,15 @@ type Table struct {
 // DDLConfig 控制一次渲染的行为。
 type DDLConfig struct {
 	IfNotExists bool
-	// IndexSuffix 把索引名里的 "{}" 替换成它，用于「同一份索引定义要渲染出多个
-	// 带区分后缀的名字」（索引名 schema 级唯一）。注意：对话归档月分表**不走这条路**
-	// —— 它的索引名由 convShardIndexes(suffix) 直接拼好，故当前没有调用方设它。
-	// 保留是为了让渲染器自身保持自洽：三处取索引名的地方（SQLite/PG 索引语句、
-	// MySQL 内联 KEY、生成列名）共用 resolveIndexName，后缀要么都应用、要么都不应用。
-	IndexSuffix string
 	// ColumnDefaults 覆盖单列的默认值表达式（键为列名）。分表的 id 列在 PG 上
 	// 是 DEFAULT nextval('<共享序列>')，MySQL 上交给计数器表显式分配、无默认值。
 	ColumnDefaults map[string]string
 }
+
+// extKeyLabelIndexName 是 ext_keys.label 唯一索引（Tolerant）的名字：
+// ensureExtKeyLabelIndex 的渲染查找、MySQL 的 information_schema 存在性检查
+// 都按这个名字定位它，集中一处定义防止改名漏改。
+const extKeyLabelIndexName = "idx_ext_keys_label"
 
 var schemaTables = []Table{
 	{
@@ -171,7 +170,7 @@ var schemaTables = []Table{
 		},
 		Idx: []Index{
 			{Name: "idx_ext_keys_key", Columns: []string{"key"}, Unique: true, Where: "is_active = 1"},
-			{Name: "idx_ext_keys_label", Columns: []string{"label"}, Unique: true, Where: "is_active = 1 AND label <> ''", Tolerant: true},
+			{Name: extKeyLabelIndexName, Columns: []string{"label"}, Unique: true, Where: "is_active = 1 AND label <> ''", Tolerant: true},
 		},
 	},
 	{
@@ -341,8 +340,7 @@ var conversationSessionsCols = []Column{
 }
 
 // convShardIndexes 返回一张月分表的索引定义。索引名带月份后缀（schema 级唯一），
-// 故由调用方按表名生成而非复用固定定义（后缀由 suffix 参数直接内联，不走
-// DDLConfig.IndexSuffix 的 "{}" 替换路径）。
+// 故由调用方按表名生成而非复用固定定义（后缀由 suffix 参数直接内联进名字）。
 func convShardIndexes(suffix string) []Index {
 	return []Index{
 		{Name: "idx_conv_" + suffix + "_created", Columns: []string{"created_at"}},
@@ -587,10 +585,6 @@ func (t Table) indexDef(d Dialect, ix Index, cfg DDLConfig) (string, error) {
 	if err := ix.validate(t); err != nil {
 		return "", err
 	}
-	cols := make([]string, len(ix.Columns))
-	for i, c := range ix.Columns {
-		cols[i] = c
-	}
 	unique := ""
 	if ix.Unique {
 		unique = "UNIQUE "
@@ -603,9 +597,8 @@ func (t Table) indexDef(d Dialect, ix Index, cfg DDLConfig) (string, error) {
 	if ix.Where != "" {
 		where = " WHERE " + ix.Where
 	}
-	name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 	return fmt.Sprintf("CREATE %sINDEX %s%s ON %s(%s)%s",
-		unique, notExists, name, t.Name, strings.Join(cols, ", "), where), nil
+		unique, notExists, ix.Name, t.Name, strings.Join(ix.Columns, ", "), where), nil
 }
 
 // validate 校验索引引用的列都存在。
@@ -658,7 +651,7 @@ func (t Table) createTableMySQL(cfg DDLConfig) (string, error) {
 		lines = append(lines, def)
 	}
 	// 部分唯一索引的生成列跟在真实列后面。
-	gen, err := t.partialUniqueColumns(cfg)
+	gen, err := t.partialUniqueColumns()
 	if err != nil {
 		return "", err
 	}
@@ -667,7 +660,7 @@ func (t Table) createTableMySQL(cfg DDLConfig) (string, error) {
 	// 主键已内联在列定义上（columnDefMySQL），这里只加索引，避免重复声明主键。
 	var keys []string
 	for _, ix := range t.Idx {
-		def, err := t.indexDefMySQL(ix, cfg)
+		def, err := t.indexDefMySQL(ix)
 		if err != nil {
 			return "", err
 		}
@@ -710,22 +703,21 @@ func (t Table) columnDefMySQL(c Column, cfg DDLConfig) (string, error) {
 }
 
 // indexDefMySQL 渲染 MySQL 的一条内联索引。
-func (t Table) indexDefMySQL(ix Index, cfg DDLConfig) (string, error) {
+func (t Table) indexDefMySQL(ix Index) (string, error) {
 	if err := ix.validate(t); err != nil {
 		return "", err
 	}
-	name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 	kind := "  KEY"
 	if ix.Unique {
 		kind = "  UNIQUE KEY"
 	}
-	// 生成列名由「已套用后缀的索引名」派生，所以要把 name 传下去 —— 两侧用同一个
-	// 名字，否则分表上一旦出现部分唯一索引，KEY 会引用一个没被定义的生成列。
-	return fmt.Sprintf("%s `%s` (%s)", kind, name, t.indexColumnsMySQL(ix, name)), nil
+	// 生成列名由索引名派生，所以要把 name 传下去 —— 两侧用同一个名字，否则
+	// 部分唯一索引的 KEY 会引用一个没被定义的生成列。
+	return fmt.Sprintf("%s `%s` (%s)", kind, ix.Name, t.indexColumnsMySQL(ix, ix.Name)), nil
 }
 
 // indexColumnsMySQL 渲染 MySQL 的索引列清单：部分唯一索引的最后一列换成生成列。
-// name 必须是已套用 IndexSuffix 的索引名（见 indexDefMySQL）。
+// name 是索引名（见 indexDefMySQL）。
 // "id DESC" 这类声明里的排序方向要保留（渲染成 `id` DESC）——validate 只取列名
 // 部分是校验需要，渲染若也丢掉方向，MySQL 内联索引就与 PG/SQLite 的 CREATE INDEX
 // 静默分叉了（MySQL 8.0.13+ 原生支持 DESC 索引）。
@@ -746,7 +738,7 @@ func (t Table) indexColumnsMySQL(ix Index, name string) string {
 }
 
 // partialUniqueColumns 渲染部分唯一索引所需的生成列。
-func (t Table) partialUniqueColumns(cfg DDLConfig) ([]string, error) {
+func (t Table) partialUniqueColumns() ([]string, error) {
 	var out []string
 	for _, ix := range t.Idx {
 		if !ix.Unique || ix.Where == "" {
@@ -763,21 +755,10 @@ func (t Table) partialUniqueColumns(cfg DDLConfig) ([]string, error) {
 		}
 		// 谓词不成立 → NULL → 不参与唯一性比较（软删除行不占名额）。
 		// 谓词整段塞进 IF() 即可覆盖 "is_active = 1 AND label <> ''" 这类复合谓词。
-		name := resolveIndexName(ix.Name, cfg.IndexSuffix)
 		out = append(out, fmt.Sprintf("  `%s` %s GENERATED ALWAYS AS (IF(%s, `%s`, NULL)) STORED",
-			generatedColName(name), typ, ix.Where, strings.Fields(last)[0]))
+			generatedColName(ix.Name), typ, ix.Where, strings.Fields(last)[0]))
 	}
 	return out, nil
-}
-
-// resolveIndexName 把索引名里的 "{}" 换成 IndexSuffix（按月分表用）。三处渲染
-// （SQLite/PG 索引语句、MySQL 内联 KEY、生成列名）必须走同一个函数，否则后缀会
-// 只应用在其中一两处。
-func resolveIndexName(name, suffix string) string {
-	if suffix == "" {
-		return name
-	}
-	return strings.ReplaceAll(name, "{}", suffix)
 }
 
 // generatedColName 是部分唯一索引降级用的生成列名。MySQL 标识符上限 64 字符，
@@ -788,8 +769,8 @@ func generatedColName(indexName string) string { return "g_" + indexName }
 // TypeText 列一旦要建索引或作主键，MySQL 根本建不出来，直接报错并说清怎么改 ——
 // 而不是等建表时才吐一句没头没尾的语法错误。
 //
-// 带默认值不算错：那种列在 MySQL 上渲染成 TEXT 并丢掉默认值（见 effectiveDefault），
-// 写入方恒给值，缺值会响亮失败。
+// 带默认值不算错：那种列在 MySQL 上渲染成 TEXT，默认值由 effectiveDefault
+// 包成表达式（DEFAULT ('…')），语义不受影响；写入方照常给值。
 func (t Table) validateMySQL() error {
 	for _, c := range t.Cols {
 		if c.Type != TypeText || c.Len > 0 {

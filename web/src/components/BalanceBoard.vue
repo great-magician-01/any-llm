@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Upstream } from '@/api/upstreams'
 import type { BalanceSnapshot } from '@/api/balances'
+import { quotaPercentFromString, quotaStatusFromString, type QuotaStatus } from '@/utils/quota'
 import { balanceView, balanceTooltip, formatFetchedAt, type BalanceView, type QuotaWindowView } from '@/utils/balance'
 import { isExpired } from '@/utils/upstreamStatus'
 
@@ -47,16 +48,13 @@ const rows = computed<BoardRow[]>(() =>
   }),
 )
 
-// 进度条状态阈值与上游用量面板一致：跑满为错误，>=80% 警告
+// 进度条状态阈值与上游用量面板共用 utils/quota 的公共口径（厂商返回的是
+// 百分比字符串，走字符串版本）
 function pctOf(w: QuotaWindowView): number {
-  const p = parseFloat(w.percent ?? '')
-  return Number.isNaN(p) ? 0 : Math.min(100, Math.round(p))
+  return quotaPercentFromString(w.percent)
 }
-function statusOf(w: QuotaWindowView): 'success' | 'warning' | 'error' {
-  const p = parseFloat(w.percent ?? '')
-  if (Number.isNaN(p)) return 'success'
-  if (p >= 100) return 'error'
-  return p >= 80 ? 'warning' : 'success'
+function statusOf(w: QuotaWindowView): QuotaStatus {
+  return quotaStatusFromString(w.percent)
 }
 </script>
 

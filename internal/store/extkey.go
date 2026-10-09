@@ -39,10 +39,14 @@ func CreateExtKey(d *sql.DB, label, remark string, dailyLimit, monthlyLimit int,
 		return nil, err
 	}
 	now := time.Now()
+	allowedRaw, err := marshalAllowedModels(allowedModels)
+	if err != nil {
+		return nil, err
+	}
 	// key 列要按方言引用：MySQL 的 key 是保留字，不包反引号会语法错误。
 	keyCol := db.QuoteIdent(d, "key")
 	id, err := db.InsertReturningID(d, `INSERT INTO ext_keys (`+keyCol+`, label, remark, daily_token_limit, monthly_token_limit, allowed_models, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id`,
-		key, label, remark, dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), now)
+		key, label, remark, dailyLimit, monthlyLimit, allowedRaw, now)
 	if err != nil {
 		return nil, fmt.Errorf("create ext key: %w", err)
 	}
@@ -64,79 +68,86 @@ func generateKey() (string, error) {
 	return keyPrefix + string(b), nil
 }
 
+// extKeyCols 是 ext_keys 表读取用的列清单，顺序与 extKeyRow.targets 一一对应，
+// 三个读取站点（按 key 直查、按 ID 直查、列表）共用这一份，加列只改这里与
+// extKeyRow，不再多处手写漂移。key 列在 MySQL 是保留字，按方言引用。
+func extKeyCols(d *sql.DB) string {
+	return "id, " + db.QuoteIdent(d, "key") + ", label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at"
+}
+
+// extKeyRow 是 extKeyCols 一行的扫描载体：targets 给出 Scan 目标，finish 把
+// 整型布尔、可空时间与白名单 JSON 文本列落到 ExtKey 字段上。
+type extKeyRow struct {
+	k          *ExtKey
+	enabled    int
+	lastUsed   sql.NullTime
+	allowedRaw string
+}
+
+func (r *extKeyRow) targets() []any {
+	return []any{&r.k.ID, &r.k.Key, &r.k.Label, &r.k.Remark, &r.enabled,
+		&r.k.DailyTokenLimit, &r.k.MonthlyTokenLimit, &r.allowedRaw, &r.k.CreatedAt, &r.lastUsed}
+}
+
+func (r *extKeyRow) finish() error {
+	r.k.Enabled = r.enabled != 0
+	models, err := parseAllowedModels(r.allowedRaw)
+	if err != nil {
+		return err
+	}
+	r.k.AllowedModels = models
+	if r.lastUsed.Valid {
+		t := r.lastUsed.Time
+		r.k.LastUsedAt = &t
+	}
+	return nil
+}
+
 func GetExtKey(d *sql.DB, key string) (*ExtKey, error) {
 	keyCol := db.QuoteIdent(d, "key")
-	k := &ExtKey{}
-	var enabled int
-	var lastUsed sql.NullTime
-	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, `+keyCol+`, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE `+keyCol+`=? AND is_active = 1`), key).
-		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	row := &extKeyRow{k: &ExtKey{}}
+	err := d.QueryRow(db.Rebind(d, `SELECT `+extKeyCols(d)+` FROM ext_keys WHERE `+keyCol+`=? AND is_active = 1`), key).
+		Scan(row.targets()...)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
 	}
-	k.Enabled = enabled != 0
-	k.AllowedModels, err = parseAllowedModels(allowed)
-	if err != nil {
+	if err := row.finish(); err != nil {
 		return nil, fmt.Errorf("get ext key: %w", err)
 	}
-	if lastUsed.Valid {
-		t := lastUsed.Time
-		k.LastUsedAt = &t
-	}
-	return k, nil
+	return row.k, nil
 }
 
 func GetExtKeyByID(d *sql.DB, id int64) (*ExtKey, error) {
-	keyCol := db.QuoteIdent(d, "key")
-	k := &ExtKey{}
-	var enabled int
-	var lastUsed sql.NullTime
-	var allowed string
-	err := d.QueryRow(db.Rebind(d, `SELECT id, `+keyCol+`, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE id=? AND is_active = 1`), id).
-		Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed)
+	row := &extKeyRow{k: &ExtKey{}}
+	err := d.QueryRow(db.Rebind(d, `SELECT `+extKeyCols(d)+` FROM ext_keys WHERE id=? AND is_active = 1`), id).
+		Scan(row.targets()...)
 	if err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
 	}
-	k.Enabled = enabled != 0
-	k.AllowedModels, err = parseAllowedModels(allowed)
-	if err != nil {
+	if err := row.finish(); err != nil {
 		return nil, fmt.Errorf("get ext key by id %d: %w", id, err)
 	}
-	if lastUsed.Valid {
-		t := lastUsed.Time
-		k.LastUsedAt = &t
-	}
-	return k, nil
+	return row.k, nil
 }
 
 func ListExtKeys(d *sql.DB) ([]ExtKey, error) {
-	keyCol := db.QuoteIdent(d, "key")
-	rows, err := d.Query(`SELECT id, ` + keyCol + `, label, remark, enabled, daily_token_limit, monthly_token_limit, allowed_models, created_at, last_used_at FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
+	rows, err := d.Query(`SELECT ` + extKeyCols(d) + ` FROM ext_keys WHERE is_active = 1 ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list ext keys: %w", err)
 	}
 	defer rows.Close()
 	out := make([]ExtKey, 0)
 	for rows.Next() {
-		var k ExtKey
-		var enabled int
-		var lastUsed sql.NullTime
-		var allowed string
-		if err := rows.Scan(&k.ID, &k.Key, &k.Label, &k.Remark, &enabled, &k.DailyTokenLimit, &k.MonthlyTokenLimit, &allowed, &k.CreatedAt, &lastUsed); err != nil {
+		row := &extKeyRow{k: &ExtKey{}}
+		if err := rows.Scan(row.targets()...); err != nil {
 			return nil, err
 		}
-		k.Enabled = enabled != 0
-		if k.AllowedModels, err = parseAllowedModels(allowed); err != nil {
+		if err := row.finish(); err != nil {
 			return nil, err
 		}
-		if lastUsed.Valid {
-			t := lastUsed.Time
-			k.LastUsedAt = &t
-		}
-		out = append(out, k)
+		out = append(out, *row.k)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // DeleteExtKey 软删除：置 is_active=0 后该 key 立即失效（认证查询过滤），
@@ -169,8 +180,12 @@ func UpdateExtKey(d *sql.DB, id int64, label, remark string, enabled bool, daily
 			return ErrExtKeyLabelTaken
 		}
 	}
-	_, err := d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
-		label, remark, b2i(enabled), dailyLimit, monthlyLimit, marshalAllowedModels(allowedModels), id)
+	allowedRaw, err := marshalAllowedModels(allowedModels)
+	if err != nil {
+		return err
+	}
+	_, err = d.Exec(db.Rebind(d, `UPDATE ext_keys SET label=?, remark=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, allowed_models=? WHERE id=? AND is_active = 1`),
+		label, remark, b2i(enabled), dailyLimit, monthlyLimit, allowedRaw, id)
 	if err != nil {
 		return fmt.Errorf("update ext key %d: %w", id, err)
 	}
@@ -242,13 +257,15 @@ func parseAllowedModels(s string) ([]string, error) {
 }
 
 // marshalAllowedModels 把白名单写成 ext_keys.allowed_models 列文本：空 = 不限。
-func marshalAllowedModels(models []string) string {
+// 与 parseAllowedModels 的「宁可响亮失败」口径一致：写侧失败也返回错误而不是
+// 空串——读侧把空串解释为不限，静默吞掉会把权限放大成「全部允许」。
+func marshalAllowedModels(models []string) (string, error) {
 	if len(models) == 0 {
-		return ""
+		return "", nil
 	}
 	b, err := json.Marshal(models)
-	if err != nil { // []string 不会失败，防御分支
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("marshal allowed_models: %w", err)
 	}
-	return string(b)
+	return string(b), nil
 }

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
@@ -19,8 +18,7 @@ func (a *API) listConversations(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": []any{}, "total": 0, "disabled": true})
 		return
 	}
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	page, size := pageParams(r)
 	records, total, err := store.ConversationRecordsList(a.db, page, size)
 	if err != nil {
 		logger.Error("admin: conversation list failed", "page", page, "size", size, "err", err)

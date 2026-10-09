@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed, onMounted, h, type VNode } from 'vue'
 import { useMessage, NPopconfirm, NButton, NTag, NSpace, NModal, NCard, NForm, NFormItem, NInput, NSelect, NTooltip } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listAliases, createAlias, updateAlias, deleteAlias, type ModelAlias } from '@/api/aliases'
@@ -7,6 +7,8 @@ import { listUpstreams, listModels, type Upstream, type UpstreamModel } from '@/
 import AppIcon from '@/components/AppIcon.vue'
 import { aliasUpstreamOptions } from '@/utils/aliasOptions'
 import { isExpired } from '@/utils/upstreamStatus'
+import { formatTime } from '@/utils/format'
+import { errText } from '@/utils/errText'
 
 const message = useMessage()
 const aliases = ref<ModelAlias[]>([])
@@ -60,7 +62,7 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
     key: 'bindings',
     render(row) {
       if (!row.bindings?.length) return h('span', { style: 'color: var(--text-4)' }, '—')
-      const nodes: any[] = []
+      const nodes: VNode[] = []
       row.bindings.forEach((b, i) => {
         if (i > 0) nodes.push(h(AppIcon, { name: 'arrow', size: 12, style: 'color: var(--text-4); flex: none' }))
         const dead = !b.upstream_name
@@ -100,7 +102,7 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
     title: '创建时间',
     key: 'created_at',
     width: 170,
-    render: (row) => h('span', { style: 'color: var(--text-3); font-size: 12px' }, (row.created_at || '').replace('T', ' ').slice(0, 19)),
+    render: (row) => h('span', { style: 'color: var(--text-3); font-size: 12px' }, formatTime(row.created_at || '')),
   },
   {
     title: '操作',
@@ -125,9 +127,13 @@ const columns = computed<DataTableColumns<ModelAlias>>(() => [
 ])
 
 async function load() {
-  const [as, us] = await Promise.all([listAliases(), listUpstreams()])
-  aliases.value = as
-  upstreams.value = us
+  try {
+    const [as, us] = await Promise.all([listAliases(), listUpstreams()])
+    aliases.value = as
+    upstreams.value = us
+  } catch (e) {
+    message.error('加载别名失败：' + errText(e))
+  }
 }
 
 function openCreate() {
@@ -195,8 +201,8 @@ async function save() {
     showModal.value = false
     editing.value = null
     await load()
-  } catch (e: any) {
-    message.error('保存失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  } catch (e) {
+    message.error('保存失败：' + errText(e))
   }
 }
 

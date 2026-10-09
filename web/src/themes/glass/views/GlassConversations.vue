@@ -5,7 +5,8 @@ import type { DataTableColumns } from 'naive-ui'
 import { fetchConversations, fetchConversation, type ConversationListItem, type ConversationDetail,
   fetchConvSessions, fetchConvSession, type ConvSessionListItem, type ConvSessionDetail } from '@/api/conversations'
 import { formatCompact, formatInt, formatTime } from '@/utils/format'
-import { parseIR, type IRRequest, type IRResponse } from '@/utils/ir'
+import { parseIR, type IRContentBlock, type IRRequest, type IRResponse } from '@/utils/ir'
+import { errText } from '@/utils/errText'
 import AppIcon from '@/components/AppIcon.vue'
 import IrContent from '@/components/IrContent.vue'
 
@@ -23,8 +24,8 @@ async function load() {
     rows.value = r.data
     total.value = r.total
     disabled.value = !!r.disabled
-  } catch (e: any) {
-    message.error('加载失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  } catch (e) {
+    message.error('加载失败：' + errText(e))
   }
 }
 
@@ -80,9 +81,9 @@ async function openDetail(row: ConversationListItem) {
   showRaw.value = false
   try {
     detail.value = await fetchConversation(row.id)
-  } catch (e: any) {
+  } catch (e) {
     showDrawer.value = false
-    message.error('加载详情失败：' + (e?.response?.data?.error || e?.message || String(e)))
+    message.error('加载详情失败：' + errText(e))
   }
 }
 
@@ -109,8 +110,8 @@ async function loadSessions() {
     sessTotal.value = r.total
     if (r.disabled) disabled.value = true
     sessLoaded.value = true
-  } catch (e: any) {
-    message.error('加载失败：' + (e?.response?.data?.error || e?.message || String(e)))
+  } catch (e) {
+    message.error('加载失败：' + errText(e))
   }
 }
 
@@ -157,7 +158,7 @@ const sessColumns: DataTableColumns<ConvSessionListItem> = [
 const showSessDrawer = ref(false)
 const sessDetail = ref<ConvSessionDetail | null>(null)
 
-interface SessionMessage { Role: string; Content?: any[] }
+interface SessionMessage { Role: string; Content?: IRContentBlock[] }
 const sessMessages = computed<SessionMessage[]>(() => {
   if (!sessDetail.value?.messages) return []
   try {
@@ -169,7 +170,7 @@ const sessMessages = computed<SessionMessage[]>(() => {
 })
 
 function markerText(m: SessionMessage): string {
-  return (m.Content?.[0] as any)?.Text || '历史已压缩'
+  return m.Content?.[0]?.Text || '历史已压缩'
 }
 
 async function openSession(row: ConvSessionListItem) {
@@ -177,9 +178,9 @@ async function openSession(row: ConvSessionListItem) {
   sessDetail.value = null
   try {
     sessDetail.value = await fetchConvSession(row.id)
-  } catch (e: any) {
+  } catch (e) {
     showSessDrawer.value = false
-    message.error('加载会话失败：' + (e?.response?.data?.error || e?.message || String(e)))
+    message.error('加载会话失败：' + errText(e))
   }
 }
 

@@ -15,6 +15,31 @@ func b2i(b bool) int {
 	return 0
 }
 
+// 分页参数钳制的公共口径：页码从 1 起；页大小限定 [1, maxPageSize]，越界回落
+// 到 defaultPageSize。四个分页列表（用量记录、余额快照、对话记录、会话列表）
+// 共用，防止各自的边界口径漂移。
+const (
+	defaultPageSize = 50
+	maxPageSize     = 200
+)
+
+func normalizePage(page, size int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > maxPageSize {
+		size = defaultPageSize
+	}
+	return page, size
+}
+
+// IsKnownFormat 报告 format 是否在协议白名单内（上游主格式与附加端点格式）。
+// 校验分散在 adminapi 各入口与 ValidateExtraEndpoints，白色清单集中在这里——
+// 新增格式（如 Google）只改这一处与各格式包的编解码实现。
+func IsKnownFormat(format string) bool {
+	return format == "openai" || format == "anthropic" || format == "responses"
+}
+
 type Upstream struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -64,7 +89,7 @@ type UpstreamEndpoint struct {
 func ValidateExtraEndpoints(primaryFormat string, eps []UpstreamEndpoint) error {
 	seen := make(map[string]bool, len(eps))
 	for i, ep := range eps {
-		if ep.Format != "openai" && ep.Format != "anthropic" && ep.Format != "responses" {
+		if !IsKnownFormat(ep.Format) {
 			return fmt.Errorf("extra_endpoints[%d]: format must be openai, anthropic or responses", i)
 		}
 		if strings.TrimSpace(ep.BaseURL) == "" {
