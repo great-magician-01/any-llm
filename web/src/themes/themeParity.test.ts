@@ -31,6 +31,7 @@ vi.mock('naive-ui', async (importOriginal) => {
 /** 两边都必须从共享实现引入的业务函数（页面私有实现一律算回归） */
 const SHARED_IMPORTS = [
   '@/composables/useUpstreamList',
+  '@/composables/useUpstreamColumns',
   '@/composables/useTableFit',
   './composables/useUpstreamList',
   '../composables/useUpstreamList',
@@ -133,11 +134,15 @@ describe('双主题 parity：上游管理页', () => {
   it('两套视图共用同一批 composable / utils，且不在页面内私藏业务实现', () => {
     for (const [name, src] of [['classic', CLASSIC_SRC], ['glass', GLASS_SRC]] as const) {
       expect(src, `${name} 必须调用共享的 useUpstreamList`).toContain('useUpstreamList()')
-      // 关键共享纯函数两边都要引，任何一个页面自己写一份都会在这里露馅
+      expect(src, `${name} 必须调用共享的 useUpstreamColumns`).toContain('useUpstreamColumns(')
+      // 关键共享纯函数两边都要引，任何一个页面自己写一份都会在这里露馅。
+      // 表格列（含展开行模型管理面板、余额列）已整体下沉到 useUpstreamColumns，
+      // 其中的 expiryLabel/balanceView/formatInt/formatTime 由该共享文件使用，
+      // 页面侧不再直接调用，故不在此清单里。
       for (const fn of [
         'connectivityView(', 'parseConfigFile(', 'describeConfigFile(', 'describeImportResult(',
-        'downloadJSON(', 'expiryLabel(', 'expiryToISO(', 'isoToExpiry(', 'presetSelectOptions(',
-        'findPreset(', 'balanceView(', 'formatInt(', 'formatTime(', 'fitColumns(', 'fitScrollX(',
+        'downloadJSON(', 'expiryToISO(', 'isoToExpiry(', 'presetSelectOptions(',
+        'findPreset(', 'fitColumns(', 'fitScrollX(',
         'useContainerWidth(', 'UPSTREAM_FIT_COLUMNS',
       ]) {
         expect(src, `${name} 必须使用共享实现 ${fn}`).toContain(fn)
