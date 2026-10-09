@@ -83,7 +83,7 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 			InputSchema: t.Parameters,
 		})
 	}
-	req.Extra = mergeExtra(req.Extra, extractExtra(all))
+	req.Extra = mergeExtra(req.Extra, translate.ExtractExtra(all, knownRequestKeys))
 	return req, nil
 }
 

@@ -74,7 +74,7 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 	if len(known.Stop) > 0 {
 		req.Stop = decodeStop(known.Stop)
 	}
-	req.Extra = extractExtra(all)
+	req.Extra = translate.ExtractExtra(all, knownRequestKeys)
 	return req, nil
 }
 
@@ -160,22 +160,6 @@ var knownRequestKeys = map[string]bool{
 	"model": true, "messages": true, "tools": true, "tool_choice": true,
 	"max_tokens": true, "temperature": true, "top_p": true, "stream": true,
 	"stop": true,
-}
-
-func extractExtra(all map[string]any) map[string]any {
-	if len(all) == 0 {
-		return nil
-	}
-	extra := map[string]any{}
-	for k, v := range all {
-		if !knownRequestKeys[k] {
-			extra[k] = v
-		}
-	}
-	if len(extra) == 0 {
-		return nil
-	}
-	return extra
 }
 
 func DecodeResponse(body []byte) (*translate.Response, error) {

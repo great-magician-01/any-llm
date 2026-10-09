@@ -74,9 +74,9 @@ func ResponseStreamEvents(r *Response) []*StreamEvent {
 	// Same-format pass-through: carry fields like `safeguard_results` from
 	// the non-stream response into the synthesized message_delta.
 	if len(r.Extra) > 0 {
-		if sr, ok := r.Extra["safeguard_results"]; ok {
+		if sr, ok := r.Extra[KeySafeguardResults]; ok {
 			if raw, ok := sr.(json.RawMessage); ok {
-				evs[len(evs)-1].DeltaExtras = map[string]json.RawMessage{"safeguard_results": raw}
+				evs[len(evs)-1].DeltaExtras = map[string]json.RawMessage{KeySafeguardResults: raw}
 			}
 		}
 	}

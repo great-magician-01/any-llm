@@ -140,7 +140,7 @@ func EncodeStreamEvent(evt *translate.StreamEvent) ([]byte, error) {
 	case "content_block_start":
 		payload["index"] = evt.Index
 		if evt.Block != nil {
-			payload["content_block"] = blockToRaw(*evt.Block)
+			payload["content_block"] = blockToMap(*evt.Block)
 		}
 	case "content_block_delta":
 		payload["index"] = evt.Index
@@ -259,44 +259,6 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 	return [][]byte{b}, nil
 }
 
-func blockToRaw(b translate.ContentBlock) map[string]any {
-	switch b.Type {
-	case "text":
-		return map[string]any{"type": "text", "text": b.Text}
-	case "thinking":
-		m := map[string]any{"type": "thinking", "thinking": b.Thinking}
-		if b.Signature != "" {
-			m["signature"] = b.Signature
-		}
-		return m
-	case "redacted_thinking":
-		return map[string]any{"type": "redacted_thinking", "data": b.Data}
-	case "image":
-		// 图片块没有 delta 形态，source 全在 start 帧里：缺这个分支时图片块
-		// 落到 default（Extra 为空）被编成 {"type":"image"} 空壳，source 丢失。
-		if b.Image == nil {
-			return map[string]any{"type": "image"}
-		}
-		return map[string]any{"type": "image", "source": anthropicImageSource(b.Image)}
-	case "tool_use":
-		if b.ToolUse == nil {
-			// Synthesized block (upstream omitted content_block_start): only
-			// the type is known. Emit a minimal block instead of panicking.
-			return map[string]any{"type": "tool_use"}
-		}
-		return map[string]any{"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": json.RawMessage(b.ToolUse.Input)}
-	}
-	// Unknown block types (server_tool_use / web_search_tool_result 等 hosted
-	// 工具块)：透传 Extra 里的原始字段。
-	m := map[string]any{"type": b.Type}
-	for k, v := range b.Extra {
-		if _, exists := m[k]; !exists {
-			m[k] = v
-		}
-	}
-	return m
-}
-
 // decodeStreamContentBlock decodes a single content_block object from an SSE
 // content_block_start event. Unlike decodeBlocks (which expects a JSON array),
 // SSE events carry a single object.
@@ -313,13 +275,17 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 	switch head.Type {
 	case "text":
 		var tp rawTextPart
-		_ = json.Unmarshal(raw, &tp)
+		if err := json.Unmarshal(raw, &tp); err != nil {
+			return nil, fmt.Errorf("anthropic stream: malformed text block: %w", err)
+		}
 		return &translate.ContentBlock{Type: "text", Text: tp.Text}, nil
 	case "image":
 		// 流式 content_block_start 也要认图片，否则图片块落到 default 被当成
 		// 未知块塞进 Extra（source 丢失）。
 		var ip rawImagePart
-		_ = json.Unmarshal(raw, &ip)
+		if err := json.Unmarshal(raw, &ip); err != nil {
+			return nil, fmt.Errorf("anthropic stream: malformed image block: %w", err)
+		}
 		return &translate.ContentBlock{Type: "image", Image: anthropicImage(ip.Source)}, nil
 	case "thinking":
 		var tb struct {
@@ -327,15 +293,21 @@ func decodeStreamContentBlock(raw json.RawMessage) (*translate.ContentBlock, err
 			Thinking  string `json:"thinking"`
 			Signature string `json:"signature"`
 		}
-		_ = json.Unmarshal(raw, &tb)
+		if err := json.Unmarshal(raw, &tb); err != nil {
+			return nil, fmt.Errorf("anthropic stream: malformed thinking block: %w", err)
+		}
 		return &translate.ContentBlock{Type: "thinking", Thinking: tb.Thinking, Signature: tb.Signature}, nil
 	case "redacted_thinking":
 		var rb rawRedactedThinkingPart
-		_ = json.Unmarshal(raw, &rb)
+		if err := json.Unmarshal(raw, &rb); err != nil {
+			return nil, fmt.Errorf("anthropic stream: malformed redacted_thinking block: %w", err)
+		}
 		return &translate.ContentBlock{Type: "redacted_thinking", Data: rb.Data}, nil
 	case "tool_use":
 		var tu rawToolUsePart
-		_ = json.Unmarshal(raw, &tu)
+		if err := json.Unmarshal(raw, &tu); err != nil {
+			return nil, fmt.Errorf("anthropic stream: malformed tool_use block: %w", err)
+		}
 		return &translate.ContentBlock{Type: "tool_use", ToolUse: &translate.ToolUse{
 			ID: tu.ID, Name: tu.Name, Input: tu.Input,
 		}}, nil

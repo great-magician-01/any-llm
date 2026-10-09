@@ -309,168 +309,19 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		if evt.Block == nil {
 			return nil, nil
 		}
-		idx := e.remapIndex(evt.Index)
-		switch evt.Block.Type {
-		case "text":
-			e.blockKind[idx] = "text"
-			itemID := "msg_" + randHex(8)
-			e.itemIDs[idx] = itemID
-			frames = append(frames,
-				sseFrame("response.output_item.added", map[string]any{
-					"output_index": idx,
-					"item": map[string]any{
-						"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{},
-					},
-				}),
-				sseFrame("response.content_part.added", map[string]any{
-					"item_id": itemID, "output_index": idx, "content_index": 0,
-					"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-				}),
-			)
-		case "thinking":
-			e.blockKind[idx] = "thinking"
-			itemID := "rs_" + randHex(8)
-			e.itemIDs[idx] = itemID
-			frames = append(frames, sseFrame("response.output_item.added", map[string]any{
-				"output_index": idx,
-				"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
-			}))
-		case "tool_use":
-			e.blockKind[idx] = "tool_use"
-			itemID := "fc_" + randHex(8)
-			e.itemIDs[idx] = itemID
-			e.toolMeta[idx] = evt.Block.ToolUse
-			// 防御：上游可能发来无 ToolUse 的 tool_use 块，与 stop 分支的 tm != nil 一致
-			tm := evt.Block.ToolUse
-			callID, name := "", ""
-			if tm != nil {
-				callID, name = tm.ID, tm.Name
-			}
-			frames = append(frames, sseFrame("response.output_item.added", map[string]any{
-				"output_index": idx,
-				"item": map[string]any{
-					"id": itemID, "type": "function_call",
-					"call_id": callID, "name": name, "arguments": "",
-				},
-			}))
-			// Anthropic 上游的 start 块自带完整 input：立即转发，避免 arguments 截断
-			input := ""
-			if tm != nil {
-				input = string(tm.Input)
-			}
-			if input != "" && input != "{}" {
-				e.toolArgs[idx] = input
-				frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
-					"item_id": itemID, "output_index": idx, "delta": input,
-				}))
-			}
-		}
-		return frames, nil
+		return append(frames, e.blockStartFrames(evt)...), nil
 
 	case "content_block_delta":
 		if evt.Delta == nil {
 			return nil, nil
 		}
-		idx := e.remapIndex(evt.Index)
-		switch evt.Delta.Type {
-		case "text_delta":
-			// ensureItemStarted 返回合成的 added/part 帧，必须排在 delta 之前
-			// （否则接收方解码器会因 item 未打开而丢弃本 delta）。
-			// 注意用 append：帧开头可能已有合成的 response.created/in_progress，
-			// 直接赋值会丢掉它们。
-			frames = append(frames, e.ensureItemStarted(idx, "text")...)
-			e.textBuf[idx] += evt.Delta.Text
-			frames = append(frames, sseFrame("response.output_text.delta", map[string]any{
-				"item_id": e.itemIDs[idx], "output_index": idx, "content_index": 0, "delta": evt.Delta.Text,
-			}))
-			return frames, nil
-		case "input_json_delta":
-			frames = append(frames, e.ensureItemStarted(idx, "tool_use")...)
-			e.toolArgs[idx] += evt.Delta.PartialJSON
-			frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
-				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.PartialJSON,
-			}))
-			return frames, nil
-		case "thinking_delta":
-			frames = append(frames, e.ensureItemStarted(idx, "thinking")...)
-			e.thinkBuf[idx] += evt.Delta.Thinking
-			frames = append(frames, sseFrame("response.reasoning_summary_text.delta", map[string]any{
-				"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.Thinking,
-			}))
-			return frames, nil
-		case "signature_delta":
-			// Responses 无签名概念
-			return nil, nil
-		}
-		return nil, nil
+		return append(frames, e.blockDeltaFrames(evt)...), nil
 
 	case "content_block_stop":
-		idx := e.remapIndex(evt.Index)
-		switch e.blockKind[idx] {
-		case "text":
-			text := e.textBuf[idx]
-			itemID := e.itemIDs[idx]
-			frames = append(frames,
-				sseFrame("response.output_text.done", map[string]any{
-					"item_id": itemID, "output_index": idx, "content_index": 0, "text": text,
-				}),
-				sseFrame("response.content_part.done", map[string]any{
-					"item_id": itemID, "output_index": idx, "content_index": 0,
-					"part": map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
-				}),
-			)
-			item := map[string]any{
-				"type": "message", "id": itemID, "status": "completed", "role": "assistant",
-				"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
-			}
-			e.items[idx] = item
-			frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
-		case "thinking":
-			itemID := e.itemIDs[idx]
-			summary := []any{map[string]any{"type": "summary_text", "text": e.thinkBuf[idx]}}
-			frames = append(frames, sseFrame("response.reasoning_summary_text.done", map[string]any{
-				"item_id": itemID, "output_index": idx, "summary": summary,
-			}))
-			item := map[string]any{"type": "reasoning", "id": itemID, "summary": summary, "content": []any{}}
-			e.items[idx] = item
-			frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
-		case "tool_use":
-			itemID := e.itemIDs[idx]
-			args := e.toolArgs[idx]
-			frames = append(frames, sseFrame("response.function_call_arguments.done", map[string]any{
-				"item_id": itemID, "output_index": idx, "arguments": args,
-			}))
-			tm := e.toolMeta[idx]
-			callID, name := "", ""
-			if tm != nil {
-				callID, name = tm.ID, tm.Name
-			}
-			item := map[string]any{
-				"type": "function_call", "id": itemID, "call_id": callID, "name": name, "arguments": args,
-			}
-			e.items[idx] = item
-			frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
-		}
-		return frames, nil
+		return append(frames, e.blockStopFrames(evt)...), nil
 
 	case "message_delta":
-		e.usageOut = evt.OutputTokens
-		// OpenAI 与 Responses 上游的提示 token 只随最后一个 usage-only chunk /
-		// completed 事件到达（即这里的 message_delta）——Anthropic 上游才会在
-		// message_start 里给出。不在这里读，OpenAI→Responses 的流式
-		// response.completed.usage.input_tokens 会恒为 0。
-		if evt.InputTokens > 0 {
-			e.usageIn = evt.InputTokens
-		}
-		if evt.CacheReadTokens > 0 {
-			e.cacheRead = evt.CacheReadTokens
-		}
-		if evt.ReasoningTokens > 0 {
-			e.reasoning = evt.ReasoningTokens
-		}
-		if evt.StopReason != "" {
-			e.stopReason = evt.StopReason
-		}
+		e.absorbUsage(evt)
 		return nil, nil
 
 	case "message_stop":
@@ -483,6 +334,174 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 	return nil, nil
 }
 
+// blockStartFrames 处理 content_block_start：为块打开 item（added/part 帧）。
+// tool_use 额外转发 start 块自带的完整 input——Anthropic 上游的 start 帧就带
+// 全量 input，落成 delta 会让 arguments 截断。
+func (e *StreamEncoder) blockStartFrames(evt *translate.StreamEvent) [][]byte {
+	var frames [][]byte
+	idx := e.remapIndex(evt.Index)
+	switch evt.Block.Type {
+	case "text":
+		e.blockKind[idx] = "text"
+		itemID := newItemID(itemIDMessage)
+		e.itemIDs[idx] = itemID
+		frames = append(frames,
+			sseFrame("response.output_item.added", map[string]any{
+				"output_index": idx,
+				"item": map[string]any{
+					"id": itemID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{},
+				},
+			}),
+			sseFrame("response.content_part.added", map[string]any{
+				"item_id": itemID, "output_index": idx, "content_index": 0,
+				"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+			}),
+		)
+	case "thinking":
+		e.blockKind[idx] = "thinking"
+		itemID := newItemID(itemIDReasoning)
+		e.itemIDs[idx] = itemID
+		frames = append(frames, sseFrame("response.output_item.added", map[string]any{
+			"output_index": idx,
+			"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
+		}))
+	case "tool_use":
+		e.blockKind[idx] = "tool_use"
+		itemID := newItemID(itemIDFunctionCall)
+		e.itemIDs[idx] = itemID
+		e.toolMeta[idx] = evt.Block.ToolUse
+		// 防御：上游可能发来无 ToolUse 的 tool_use 块，与 stop 分支的 tm != nil 一致
+		tm := evt.Block.ToolUse
+		callID, name := "", ""
+		if tm != nil {
+			callID, name = tm.ID, tm.Name
+		}
+		frames = append(frames, sseFrame("response.output_item.added", map[string]any{
+			"output_index": idx,
+			"item": map[string]any{
+				"id": itemID, "type": "function_call",
+				"call_id": callID, "name": name, "arguments": "",
+			},
+		}))
+		// Anthropic 上游的 start 块自带完整 input：立即转发，避免 arguments 截断
+		input := ""
+		if tm != nil {
+			input = string(tm.Input)
+		}
+		if input != "" && input != "{}" {
+			e.toolArgs[idx] = input
+			frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
+				"item_id": itemID, "output_index": idx, "delta": input,
+			}))
+		}
+	}
+	return frames
+}
+
+// blockDeltaFrames 处理 content_block_delta：累积内容并转发 delta 帧。缺失
+// start 的块由 ensureItemStarted 补合成的 added/part 帧（必须排在 delta 之前，
+// 否则接收方解码器会因 item 未打开而丢弃本 delta）。
+func (e *StreamEncoder) blockDeltaFrames(evt *translate.StreamEvent) [][]byte {
+	var frames [][]byte
+	idx := e.remapIndex(evt.Index)
+	switch evt.Delta.Type {
+	case "text_delta":
+		frames = append(frames, e.ensureItemStarted(idx, "text")...)
+		e.textBuf[idx] += evt.Delta.Text
+		frames = append(frames, sseFrame("response.output_text.delta", map[string]any{
+			"item_id": e.itemIDs[idx], "output_index": idx, "content_index": 0, "delta": evt.Delta.Text,
+		}))
+	case "input_json_delta":
+		frames = append(frames, e.ensureItemStarted(idx, "tool_use")...)
+		e.toolArgs[idx] += evt.Delta.PartialJSON
+		frames = append(frames, sseFrame("response.function_call_arguments.delta", map[string]any{
+			"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.PartialJSON,
+		}))
+	case "thinking_delta":
+		frames = append(frames, e.ensureItemStarted(idx, "thinking")...)
+		e.thinkBuf[idx] += evt.Delta.Thinking
+		frames = append(frames, sseFrame("response.reasoning_summary_text.delta", map[string]any{
+			"item_id": e.itemIDs[idx], "output_index": idx, "delta": evt.Delta.Thinking,
+		}))
+	case "signature_delta":
+		// Responses 无签名概念
+	}
+	return frames
+}
+
+// blockStopFrames 处理 content_block_stop：按块类型补 done 帧，并把完整 item
+// 记入 e.items（response.completed 的 output 从这里取）。
+func (e *StreamEncoder) blockStopFrames(evt *translate.StreamEvent) [][]byte {
+	var frames [][]byte
+	idx := e.remapIndex(evt.Index)
+	switch e.blockKind[idx] {
+	case "text":
+		text := e.textBuf[idx]
+		itemID := e.itemIDs[idx]
+		frames = append(frames,
+			sseFrame("response.output_text.done", map[string]any{
+				"item_id": itemID, "output_index": idx, "content_index": 0, "text": text,
+			}),
+			sseFrame("response.content_part.done", map[string]any{
+				"item_id": itemID, "output_index": idx, "content_index": 0,
+				"part": map[string]any{"type": "output_text", "text": text, "annotations": []any{}},
+			}),
+		)
+		item := map[string]any{
+			"type": "message", "id": itemID, "status": "completed", "role": "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
+		}
+		e.items[idx] = item
+		frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
+	case "thinking":
+		itemID := e.itemIDs[idx]
+		summary := []any{map[string]any{"type": "summary_text", "text": e.thinkBuf[idx]}}
+		frames = append(frames, sseFrame("response.reasoning_summary_text.done", map[string]any{
+			"item_id": itemID, "output_index": idx, "summary": summary,
+		}))
+		item := map[string]any{"type": "reasoning", "id": itemID, "summary": summary, "content": []any{}}
+		e.items[idx] = item
+		frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
+	case "tool_use":
+		itemID := e.itemIDs[idx]
+		args := e.toolArgs[idx]
+		frames = append(frames, sseFrame("response.function_call_arguments.done", map[string]any{
+			"item_id": itemID, "output_index": idx, "arguments": args,
+		}))
+		tm := e.toolMeta[idx]
+		callID, name := "", ""
+		if tm != nil {
+			callID, name = tm.ID, tm.Name
+		}
+		item := map[string]any{
+			"type": "function_call", "id": itemID, "call_id": callID, "name": name, "arguments": args,
+		}
+		e.items[idx] = item
+		frames = append(frames, sseFrame("response.output_item.done", map[string]any{"output_index": idx, "item": item}))
+	}
+	return frames
+}
+
+// absorbUsage 汇总 message_delta 上的 usage：OpenAI 与 Responses 上游的提示
+// token 只随最后一个 usage-only chunk / completed 事件到达（即 message_delta）
+// ——Anthropic 上游才会在 message_start 里给出。不在这里读，OpenAI→Responses
+// 的流式 response.completed.usage.input_tokens 会恒为 0。
+func (e *StreamEncoder) absorbUsage(evt *translate.StreamEvent) {
+	e.usageOut = evt.OutputTokens
+	if evt.InputTokens > 0 {
+		e.usageIn = evt.InputTokens
+	}
+	if evt.CacheReadTokens > 0 {
+		e.cacheRead = evt.CacheReadTokens
+	}
+	if evt.ReasoningTokens > 0 {
+		e.reasoning = evt.ReasoningTokens
+	}
+	if evt.StopReason != "" {
+		e.stopReason = evt.StopReason
+	}
+}
+
 // ensureItemStarted 为缺失 content_block_start 的块补合成 added（+part）事件，
 // 返回的合成帧由 delta 分支直接前置到本帧输出前（同一次 Encode 调用内完成）。
 func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
@@ -492,7 +511,7 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
 	e.blockKind[idx] = kind
 	switch kind {
 	case "text":
-		itemID := "msg_" + randHex(8)
+		itemID := newItemID(itemIDMessage)
 		e.itemIDs[idx] = itemID
 		return [][]byte{
 			sseFrame("response.output_item.added", map[string]any{
@@ -505,16 +524,16 @@ func (e *StreamEncoder) ensureItemStarted(idx int, kind string) [][]byte {
 			}),
 		}
 	case "thinking":
-		// 注意：item id 前缀必须与 kind 匹配（rs_/fc_/msg_），后续 delta 帧
-		// 用 e.itemIDs[idx] 引用同一个 id。
-		itemID := "rs_" + randHex(8)
+		// item id 前缀必须与 kind 匹配（newItemID 的常量已绑定 kind），
+		// 后续 delta 帧用 e.itemIDs[idx] 引用同一个 id。
+		itemID := newItemID(itemIDReasoning)
 		e.itemIDs[idx] = itemID
 		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
 			"item":         map[string]any{"id": itemID, "type": "reasoning", "summary": []any{}, "content": []any{}},
 		})}
 	case "tool_use":
-		itemID := "fc_" + randHex(8)
+		itemID := newItemID(itemIDFunctionCall)
 		e.itemIDs[idx] = itemID
 		return [][]byte{sseFrame("response.output_item.added", map[string]any{
 			"output_index": idx,
@@ -557,17 +576,12 @@ func (e *StreamEncoder) completedFrames() [][]byte {
 		resp["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
 	}
 	if e.usageIn > 0 || e.usageOut > 0 {
-		usage := map[string]any{
-			"input_tokens": e.usageIn, "output_tokens": e.usageOut,
-			"total_tokens": e.usageIn + e.usageOut,
-		}
-		if e.cacheRead > 0 {
-			usage["input_tokens_details"] = map[string]any{"cached_tokens": e.cacheRead}
-		}
-		if e.reasoning > 0 {
-			usage["output_tokens_details"] = map[string]any{"reasoning_tokens": e.reasoning}
-		}
-		resp["usage"] = usage
+		resp["usage"] = usageMap(translate.Usage{
+			InputTokens:     e.usageIn,
+			OutputTokens:    e.usageOut,
+			CacheReadTokens: e.cacheRead,
+			ReasoningTokens: e.reasoning,
+		})
 	}
 	return [][]byte{sseFrame("response.completed", map[string]any{"response": resp})}
 }

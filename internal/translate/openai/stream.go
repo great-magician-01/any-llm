@@ -36,28 +36,45 @@ func NewStreamDecoder() *StreamDecoder {
 // Pass []byte("[DONE]") to signal stream end.
 func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 	if strings.TrimSpace(string(data)) == "[DONE]" {
-		var evs []*translate.StreamEvent
-		evs = append(evs, d.closeThinking()...)
-		if d.textOpen {
-			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
-			d.textOpen = false
-		}
-		evs = append(evs, d.closeAllTools()...)
-		if d.finished && !d.deltaSent {
-			d.deltaSent = true
-			evs = append(evs, &translate.StreamEvent{
-				Type:       "message_delta",
-				StopReason: d.stopReason,
-			})
-		}
-		evs = append(evs, &translate.StreamEvent{Type: "message_stop"})
-		return evs, nil
+		return d.decodeDone(), nil
 	}
-
 	var ch rawChunk
 	if err := json.Unmarshal(data, &ch); err != nil {
 		return nil, fmt.Errorf("openai stream decode: %w", err)
 	}
+	return d.decodeChunk(&ch), nil
+}
+
+// closeText 关闭打开中的文本块（幂等）：无打开块时返回 nil。
+func (d *StreamDecoder) closeText() []*translate.StreamEvent {
+	if !d.textOpen {
+		return nil
+	}
+	d.textOpen = false
+	return []*translate.StreamEvent{{Type: "content_block_stop", Index: d.textIndex}}
+}
+
+// decodeDone 处理 [DONE]：关闭所有打开中的块，补发尚未发出的 message_delta
+// （携带 stop_reason），以 message_stop 收尾。
+func (d *StreamDecoder) decodeDone() []*translate.StreamEvent {
+	var evs []*translate.StreamEvent
+	evs = append(evs, d.closeThinking()...)
+	evs = append(evs, d.closeText()...)
+	evs = append(evs, d.closeAllTools()...)
+	if d.finished && !d.deltaSent {
+		d.deltaSent = true
+		evs = append(evs, &translate.StreamEvent{
+			Type:       "message_delta",
+			StopReason: d.stopReason,
+		})
+	}
+	evs = append(evs, &translate.StreamEvent{Type: "message_stop"})
+	return evs
+}
+
+// decodeChunk 处理单个 chat.completion.chunk，按 reasoning → text → tool_calls
+// → finish_reason 的顺序产事件。
+func (d *StreamDecoder) decodeChunk(ch *rawChunk) []*translate.StreamEvent {
 	var evs []*translate.StreamEvent
 
 	// message_start on first chunk that has a role or model
@@ -81,59 +98,74 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			d.deltaSent = true
 			evs = append(evs, d.messageDeltaEvent())
 		}
-		return evs, nil
+		return evs
 	}
 
 	c := ch.Choices[0]
+	evs = append(evs, d.reasoningEvents(c)...)
+	evs = append(evs, d.textEvents(c)...)
+	evs = append(evs, d.toolCallEvents(c)...)
+	evs = append(evs, d.finishEvents(c, ch.Usage)...)
+	return evs
+}
 
-	// reasoning content delta (DeepSeek streams thinking here, before content
-	// and tool_calls). Converted to an Anthropic thinking block.
-	if c.Delta.ReasoningContent != "" {
-		if !d.thinkingOpen {
-			d.thinkingOpen = true
-			d.thinkingIndex = d.nextBlockIndex()
-			evs = append(evs, &translate.StreamEvent{
-				Type:  "content_block_start",
-				Index: d.thinkingIndex,
-				Block: &translate.ContentBlock{Type: "thinking"},
-			})
-		}
+// reasoningEvents 处理 DeepSeek 风格的 reasoning_content 增量（在 content 与
+// tool_calls 之前到达），转换为 Anthropic thinking 块。
+func (d *StreamDecoder) reasoningEvents(c rawChunkChoice) []*translate.StreamEvent {
+	if c.Delta.ReasoningContent == "" {
+		return nil
+	}
+	var evs []*translate.StreamEvent
+	if !d.thinkingOpen {
+		d.thinkingOpen = true
+		d.thinkingIndex = d.nextBlockIndex()
 		evs = append(evs, &translate.StreamEvent{
-			Type:  "content_block_delta",
+			Type:  "content_block_start",
 			Index: d.thinkingIndex,
-			Delta: &translate.Delta{Type: "thinking_delta", Thinking: c.Delta.ReasoningContent},
+			Block: &translate.ContentBlock{Type: "thinking"},
 		})
 	}
+	evs = append(evs, &translate.StreamEvent{
+		Type:  "content_block_delta",
+		Index: d.thinkingIndex,
+		Delta: &translate.Delta{Type: "thinking_delta", Thinking: c.Delta.ReasoningContent},
+	})
+	return evs
+}
 
-	// text content delta
-	if c.Delta.Content != "" {
-		// content starts after reasoning: close the thinking block first
-		evs = append(evs, d.closeThinking()...)
-		if !d.textOpen {
-			d.textOpen = true
-			d.textIndex = d.nextBlockIndex()
-			evs = append(evs, &translate.StreamEvent{
-				Type:  "content_block_start",
-				Index: d.textIndex,
-				Block: &translate.ContentBlock{Type: "text"},
-			})
-		}
+// textEvents 处理正文增量；正文在 reasoning 之后开始时先关闭 thinking 块。
+func (d *StreamDecoder) textEvents(c rawChunkChoice) []*translate.StreamEvent {
+	if c.Delta.Content == "" {
+		return nil
+	}
+	var evs []*translate.StreamEvent
+	evs = append(evs, d.closeThinking()...)
+	if !d.textOpen {
+		d.textOpen = true
+		d.textIndex = d.nextBlockIndex()
 		evs = append(evs, &translate.StreamEvent{
-			Type:  "content_block_delta",
+			Type:  "content_block_start",
 			Index: d.textIndex,
-			Delta: &translate.Delta{Type: "text_delta", Text: c.Delta.Content},
+			Block: &translate.ContentBlock{Type: "text"},
 		})
 	}
+	evs = append(evs, &translate.StreamEvent{
+		Type:  "content_block_delta",
+		Index: d.textIndex,
+		Delta: &translate.Delta{Type: "text_delta", Text: c.Delta.Content},
+	})
+	return evs
+}
 
-	// tool_calls
+// toolCallEvents 处理 tool_calls 增量：带 id 的条目开启新块（先关闭
+// thinking/text），不带 id 的片段路由到该 OpenAI index 已打开的 IR 块。
+func (d *StreamDecoder) toolCallEvents(c rawChunkChoice) []*translate.StreamEvent {
+	var evs []*translate.StreamEvent
 	for _, tc := range c.Delta.ToolCalls {
 		if tc.ID != "" {
 			// new tool call: close thinking and text blocks if open
 			evs = append(evs, d.closeThinking()...)
-			if d.textOpen {
-				evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
-				d.textOpen = false
-			}
+			evs = append(evs, d.closeText()...)
 			// if a tool with the same OpenAI index is already open, close it first
 			if blockIdx, ok := d.openTools[tc.Index]; ok {
 				evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: blockIdx})
@@ -173,27 +205,28 @@ func (d *StreamDecoder) Decode(data []byte) ([]*translate.StreamEvent, error) {
 			})
 		}
 	}
+	return evs
+}
 
-	// finish_reason
-	if c.FinishReason != nil && *c.FinishReason != "" {
-		evs = append(evs, d.closeThinking()...)
-		if d.textOpen {
-			evs = append(evs, &translate.StreamEvent{Type: "content_block_stop", Index: d.textIndex})
-			d.textOpen = false
-		}
-		evs = append(evs, d.closeAllTools()...)
-		d.finished = true
-		d.stopReason = mapStopReasonFromOpenAI(*c.FinishReason)
-		// If usage is in this same chunk or was seen earlier, emit message_delta
-		// immediately. Otherwise defer until the usage-only chunk or [DONE].
-		d.applyUsage(ch.Usage)
-		if d.inputTokens > 0 || d.outputTokens > 0 || d.cacheRead > 0 || d.reasoning > 0 {
-			d.deltaSent = true
-			evs = append(evs, d.messageDeltaEvent())
-		}
+// finishEvents 处理 finish_reason：关闭全部打开中的块，记录 stop_reason。
+// chunk 内已带 usage（或 usage 此前已到达）时立即发 message_delta，否则延迟到
+// usage-only chunk 或 [DONE]。
+func (d *StreamDecoder) finishEvents(c rawChunkChoice, usage *rawUsage) []*translate.StreamEvent {
+	if c.FinishReason == nil || *c.FinishReason == "" {
+		return nil
 	}
-
-	return evs, nil
+	var evs []*translate.StreamEvent
+	evs = append(evs, d.closeThinking()...)
+	evs = append(evs, d.closeText()...)
+	evs = append(evs, d.closeAllTools()...)
+	d.finished = true
+	d.stopReason = mapStopReasonFromOpenAI(*c.FinishReason)
+	d.applyUsage(usage)
+	if d.inputTokens > 0 || d.outputTokens > 0 || d.cacheRead > 0 || d.reasoning > 0 {
+		d.deltaSent = true
+		evs = append(evs, d.messageDeltaEvent())
+	}
+	return evs
 }
 
 // nextBlockIndex assigns the next IR block index for text/thinking blocks.
@@ -298,7 +331,7 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 	case "message_start":
 		e.id = evt.MessageID
 		if e.id == "" {
-			e.id = "chatcmpl-anylem"
+			e.id = "chatcmpl-anyllm"
 		}
 		ch := map[string]any{
 			"id":      e.id,
@@ -369,21 +402,12 @@ func (e *StreamEncoder) Encode(evt *translate.StreamEvent) ([][]byte, error) {
 		choice := map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": mapStopReasonToOpenAI(evt.StopReason)}
 		ch := map[string]any{"id": e.id, "object": "chat.completion.chunk", "choices": []map[string]any{choice}}
 		if evt.InputTokens > 0 || evt.OutputTokens > 0 || evt.CacheReadTokens > 0 || evt.ReasoningTokens > 0 {
-			usage := map[string]any{
-				"prompt_tokens": evt.InputTokens, "completion_tokens": evt.OutputTokens,
-				"total_tokens": evt.InputTokens + evt.OutputTokens,
-			}
-			if evt.CacheReadTokens > 0 {
-				usage["prompt_tokens_details"] = map[string]any{"cached_tokens": evt.CacheReadTokens}
-				usage["prompt_cache_hit_tokens"] = evt.CacheReadTokens
-				if miss := evt.InputTokens - evt.CacheReadTokens; miss > 0 {
-					usage["prompt_cache_miss_tokens"] = miss
-				}
-			}
-			if evt.ReasoningTokens > 0 {
-				usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": evt.ReasoningTokens}
-			}
-			ch["usage"] = usage
+			ch["usage"] = buildRawUsage(translate.Usage{
+				InputTokens:     evt.InputTokens,
+				OutputTokens:    evt.OutputTokens,
+				CacheReadTokens: evt.CacheReadTokens,
+				ReasoningTokens: evt.ReasoningTokens,
+			})
 		}
 		return [][]byte{frame(ch)}, nil
 

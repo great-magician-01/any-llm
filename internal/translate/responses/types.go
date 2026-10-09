@@ -107,19 +107,3 @@ type rawInputTokensDetails struct {
 type rawOutputTokensDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
-
-func extractExtra(all map[string]any) map[string]any {
-	if len(all) == 0 {
-		return nil
-	}
-	extra := map[string]any{}
-	for k, v := range all {
-		if !knownRequestKeys[k] {
-			extra[k] = v
-		}
-	}
-	if len(extra) == 0 {
-		return nil
-	}
-	return extra
-}
