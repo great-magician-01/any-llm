@@ -217,6 +217,19 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	return nil
 }
 
+// SetUpstreamEnabled 只切换启用位（「新建即禁用」「配置导入里 enabled: false」
+// 等场景）。单条 UPDATE，不走「读回整行 → 改一位 → 全量覆盖」——那种读-改-写
+// 会把并发写刚落的其它字段覆盖回旧值。缓存逐出与 UpdateUpstream 同口径：
+// 上游行内嵌在别名候选链里，任何字段变化都要让候选链重解析。
+func SetUpstreamEnabled(d *sql.DB, id int64, enabled bool) error {
+	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET enabled=?, updated_at=? WHERE id=? AND is_active = 1`), b2i(enabled), time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("set upstream %d enabled=%v: %w", id, enabled, err)
+	}
+	evictUpstream(id, "")
+	return nil
+}
+
 // DeleteUpstream 软删除上游及其模型：置 is_active=0 后网关按名称解析即失败，
 // 行保留供用量/归档历史关联。部分唯一索引不占名额，同名可重建。
 // 上游的别名绑定一并软删（网关解析别名时本就会跳过不活跃上游的绑定，这里

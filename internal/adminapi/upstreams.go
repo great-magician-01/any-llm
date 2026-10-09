@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
@@ -102,34 +103,28 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
 		id, e = store.CreateUpstream(d, u)
-		return e
+		if e != nil {
+			return e
+		}
+		// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
+		// 配置好模型与别名后再上线」的流程。与创建同一个写入闭包，客户端看不到
+		// 「先启用后被禁用」的中间态。
+		if req.Enabled != nil && !*req.Enabled {
+			return store.SetUpstreamEnabled(d, id, false)
+		}
+		return nil
 	}); err != nil {
 		logger.Error("admin: create upstream DB write failed", "name", req.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
 	}
-	// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
-	// 配置好模型与别名后再上线」的流程。读回完整行再改存，遵守 UpdateUpstream
-	// 的「先 Get 再存」约定。
-	if req.Enabled != nil && !*req.Enabled {
-		if err := a.writeSync(func(d *sql.DB) error {
-			nu, e := store.GetUpstreamByID(d, id)
-			if e != nil {
-				return e
-			}
-			nu.Enabled = false
-			return store.UpdateUpstream(d, nu)
-		}); err != nil {
-			logger.Error("admin: disable new upstream failed", "id", id, "err", err)
-			writeSyncErr(w, 400, err)
-			return
-		}
-	}
 	if req.FetchModels && a.client != nil {
 		u.ID = id
 		names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
 		if err == nil {
-			a.writeSync(func(d *sql.DB) error { return store.ReplaceModels(d, id, names) })
+			if err := a.writeSync(func(d *sql.DB) error { return store.ReplaceModels(d, id, names) }); err != nil {
+				logger.Warn("admin: create upstream sync models failed", "name", req.Name, "id", id, "err", err)
+			}
 		} else {
 			logger.Warn("admin: create upstream fetch models failed", "name", req.Name, "id", id, "err", err)
 		}
@@ -214,7 +209,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if err := a.writeSync(func(d *sql.DB) error {
 		u, e := store.GetUpstreamByID(d, id)
 		if e != nil {
-			return e // 预检之后又被并发软删：报 400，列表重拉即消失
+			return e // 预检之后又被并发软删：闭包外映射成 404（与预检同口径）
 		}
 		if req.Name != "" {
 			u.Name = req.Name
@@ -274,6 +269,12 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		merged = u
 		return store.UpdateUpstream(d, u)
 	}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// 预检通过后被并发软删：与预检同报 404，而不是把裸 store 错误当 400。
+			logger.Warn("admin: update upstream vanished concurrently", "id", id)
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
 		logger.Error("admin: update upstream DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)
 		return
@@ -498,6 +499,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// pageParams 取分页查询参数（page/size）。解析失败按 0 交给 store 的
+// normalizePage 钳到默认值，与 store 侧口径一致。
+func pageParams(r *http.Request) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	return page, size
 }
 
 func mask(s string) string {

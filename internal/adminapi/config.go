@@ -330,56 +330,62 @@ func validateImport(in *configFile) error {
 	return nil
 }
 
+// applyConfigUpstream 把配置文件里给出的可选字段合并进目标上游。字段级合并：
+// nil = 保留现值（同名覆盖不是全行替换），显式空值 = 清空/回默认。标记在合并时
+// 归一，非法值响亮拒绝。新建与同名覆盖两条分支共用，防止合并口径各自演化。
+func applyConfigUpstream(dst *store.Upstream, u *configUpstream) error {
+	if u.ExtraEndpoints != nil {
+		dst.ExtraEndpoints = *u.ExtraEndpoints
+	}
+	if u.Remark != nil {
+		dst.Remark = *u.Remark
+	}
+	// 标记缺省（nil）时不赋值：新建时由 CreateUpstream 把空串归一成默认官方，
+	// 正是「文件没提这个字段的新建上游就该拿默认值」的语义；给了才按文件落
+	// （含显式空串 = 回官方）。
+	if u.Tag != nil {
+		t, err := store.NormalizeTag(*u.Tag)
+		if err != nil {
+			return fmt.Errorf("upstream %q: %w", u.Name, err)
+		}
+		dst.Tag = t
+	}
+	if u.Enabled != nil {
+		dst.Enabled = *u.Enabled
+	}
+	if u.DailyTokenLimit != nil {
+		dst.DailyTokenLimit = *u.DailyTokenLimit
+	}
+	if u.MonthlyTokenLimit != nil {
+		dst.MonthlyTokenLimit = *u.MonthlyTokenLimit
+	}
+	if u.MaxConcurrent != nil {
+		dst.MaxConcurrent = *u.MaxConcurrent
+	}
+	if u.ExpiresAt.set {
+		dst.ExpiresAt = u.ExpiresAt.value()
+	}
+	return nil
+}
+
 // upsertUpstream 按名覆盖或创建上游，返回（ID, 是否新建）。遵循
-// UpdateUpstream「先 Get 再改再存」的约定；文件缺省的 enabled/限额保留现状。
+// UpdateUpstream「先 Get 再改再存」的约定；文件缺省的字段保留现状。
 func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	ex, err := store.GetUpstreamByName(d, u.Name)
 	if errors.Is(err, sql.ErrNoRows) {
 		nu := &store.Upstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Enabled: true,
 			MaxConcurrent: store.DefaultMaxConcurrent}
-		if u.ExtraEndpoints != nil {
-			nu.ExtraEndpoints = *u.ExtraEndpoints
-		}
-		if u.Remark != nil {
-			nu.Remark = *u.Remark
-		}
-		// 标记缺省时不赋值：CreateUpstream 会把空串归一成默认官方，正是「文件没提
-		// 这个字段的新建上游就该拿默认值」的语义；给了才按文件落（含显式空串）。
-		if u.Tag != nil {
-			t, err := store.NormalizeTag(*u.Tag)
-			if err != nil {
-				return 0, false, fmt.Errorf("upstream %q: %w", u.Name, err)
-			}
-			nu.Tag = t
-		}
-		if u.Enabled != nil {
-			nu.Enabled = *u.Enabled
-		}
-		if u.DailyTokenLimit != nil {
-			nu.DailyTokenLimit = *u.DailyTokenLimit
-		}
-		if u.MonthlyTokenLimit != nil {
-			nu.MonthlyTokenLimit = *u.MonthlyTokenLimit
-		}
-		if u.MaxConcurrent != nil {
-			nu.MaxConcurrent = *u.MaxConcurrent
-		}
-		if u.ExpiresAt.set {
-			nu.ExpiresAt = u.ExpiresAt.value()
+		if err := applyConfigUpstream(nu, u); err != nil {
+			return 0, false, err
 		}
 		id, err := store.CreateUpstream(d, nu)
 		if err != nil {
 			return 0, false, fmt.Errorf("create upstream %q: %w", u.Name, err)
 		}
-		// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用）；显式
-		// enabled=false 需读回再改存（与 createUpstream 同套路）。
+		// CreateUpstream 的 INSERT 用 DB 默认（启用）；显式 enabled=false 补一条
+		// 只改启用位的 UPDATE（与 createUpstream 同套路）。
 		if u.Enabled != nil && !*u.Enabled {
-			stored, err := store.GetUpstreamByID(d, id)
-			if err != nil {
-				return 0, false, fmt.Errorf("reload upstream %q: %w", u.Name, err)
-			}
-			stored.Enabled = false
-			if err := store.UpdateUpstream(d, stored); err != nil {
+			if err := store.SetUpstreamEnabled(d, id, false); err != nil {
 				return 0, false, fmt.Errorf("disable upstream %q: %w", u.Name, err)
 			}
 		}
@@ -391,34 +397,8 @@ func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
 	ex.BaseURL = u.BaseURL
 	ex.APIKey = u.APIKey
 	ex.Format = u.Format
-	if u.ExtraEndpoints != nil {
-		ex.ExtraEndpoints = *u.ExtraEndpoints
-	}
-	if u.Remark != nil {
-		ex.Remark = *u.Remark
-	}
-	// 标记 nil = 保留现值（同名覆盖是字段级合并，不是全行替换）；显式空串回官方。
-	if u.Tag != nil {
-		t, err := store.NormalizeTag(*u.Tag)
-		if err != nil {
-			return 0, false, fmt.Errorf("upstream %q: %w", u.Name, err)
-		}
-		ex.Tag = t
-	}
-	if u.Enabled != nil {
-		ex.Enabled = *u.Enabled
-	}
-	if u.DailyTokenLimit != nil {
-		ex.DailyTokenLimit = *u.DailyTokenLimit
-	}
-	if u.MonthlyTokenLimit != nil {
-		ex.MonthlyTokenLimit = *u.MonthlyTokenLimit
-	}
-	if u.MaxConcurrent != nil {
-		ex.MaxConcurrent = *u.MaxConcurrent
-	}
-	if u.ExpiresAt.set {
-		ex.ExpiresAt = u.ExpiresAt.value()
+	if err := applyConfigUpstream(ex, u); err != nil {
+		return 0, false, err
 	}
 	if err := store.UpdateUpstream(d, ex); err != nil {
 		return 0, false, fmt.Errorf("update upstream %q: %w", u.Name, err)

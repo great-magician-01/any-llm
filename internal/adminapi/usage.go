@@ -30,8 +30,7 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 
 // usageRecords serves GET /api/admin/usage/records?page=&size=.
 func (a *API) usageRecords(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	page, size := pageParams(r)
 	records, total, err := store.UsageRecordsList(a.db, page, size)
 	if err != nil {
 		logger.Error("admin: usage records list failed", "page", page, "size", size, "err", err)

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/store"
@@ -76,6 +77,11 @@ func balanceURL(u *store.Upstream, vendor string) (string, error) {
 	}
 	return "", fmt.Errorf("unsupported vendor: %s", vendor)
 }
+
+// VendorClient 是厂商侧短调用（余额/用量查询、连通性测试等管理端触发的 GET）
+// 的共享 HTTP 客户端：自带 15s 超时——网关自己的客户端（Client.HTTP()）故意
+// 不设超时，它要承载长连接的 SSE 流。超时口径集中在这一处，别各包再造一份。
+var VendorClient = &http.Client{Timeout: 15 * time.Second}
 
 // FetchBalance calls the vendor's balance/quota endpoint and returns the
 // vendor id plus a normalized JSON payload (kind=balance|quota). The vendor
