@@ -3,6 +3,7 @@ package gateway
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,8 +23,8 @@ type SessionStore struct {
 	ttl time.Duration
 }
 
-func NewSessionStore(db *sql.DB, ttl time.Duration) *SessionStore {
-	return &SessionStore{db: db, ttl: ttl}
+func NewSessionStore(sqlDB *sql.DB, ttl time.Duration) *SessionStore {
+	return &SessionStore{db: sqlDB, ttl: ttl}
 }
 
 // Get 返回累积会话消息。已过期（空闲超过 ttl）视为未命中并删除。
@@ -33,14 +34,16 @@ func (s *SessionStore) Get(id string) ([]translate.Message, bool, error) {
 	err := s.db.QueryRow(
 		db.Rebind(s.db, `SELECT messages, last_used_at FROM response_sessions WHERE id = ?`), id,
 	).Scan(&msgsJSON, &lastUsed)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("session get: %w", err)
 	}
 	if time.Since(lastUsed) > s.ttl {
-		_, _ = s.db.Exec(db.Rebind(s.db, `DELETE FROM response_sessions WHERE id = ?`), id)
+		if _, err := s.db.Exec(db.Rebind(s.db, `DELETE FROM response_sessions WHERE id = ?`), id); err != nil {
+			logger.Warn("session expired delete failed", "id", id, "err", err)
+		}
 		return nil, false, nil
 	}
 	if _, err := s.db.Exec(db.Rebind(s.db, `UPDATE response_sessions SET last_used_at = ? WHERE id = ?`), time.Now(), id); err != nil {

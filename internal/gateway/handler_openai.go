@@ -16,6 +16,16 @@ import (
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
 
+// concurrencyLimitMessage 是全部候选都因上游并发上限被跳过时的 429 文案，
+// 非流式与流式两条路径共用（SDK 会据此自动重试）。
+const concurrencyLimitMessage = "upstream concurrency limit reached, please retry later"
+
+// logConcurrencySkip 记录一次因上游并发上限被跳过的候选：非流式失败转移、
+// 流式预占、流式失败转移三处共用同一组日志字段。
+func logConcurrencySkip(msg string, i int, t *store.AliasTarget) {
+	logger.Info(msg, "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "max_concurrent", t.Upstream.MaxConcurrent)
+}
+
 // dispatch 按候选链依次尝试调用上游。直连路由是单候选的特例；别名路由可含
 // 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
 // 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
@@ -98,8 +108,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			// 并发已达上限的候选直接跳过（未发起上游调用，不记 usage），
 			// 故障转移到下一候选；全部候选都满则在循环后统一回 429。
 			busy++
-			logger.Info("candidate skipped: upstream concurrency limit reached",
-				"alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "max_concurrent", t.Upstream.MaxConcurrent)
+			logConcurrencySkip("candidate skipped: upstream concurrency limit reached", i, t)
 			continue
 		}
 		irReq.Model = t.ModelName
@@ -122,12 +131,12 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		if sess != nil {
 			result.Response.ID = sess.respID
 		}
-		g.handleNonStream(w, inFormat, result, key, eu, t.ModelName, irReq.Stream, sess, rec, callDur)
+		g.handleNonStream(w, inFormat, result, key, eu, t.ModelName, sess, rec, callDur)
 		return
 	}
 	if busy == len(targets) {
 		// 所有候选都因并发上限被跳过：没有真实上游错误可回，回 429 让客户端重试。
-		WriteError(w, 429, inFormat, "upstream concurrency limit reached, please retry later", "rate_limit_error")
+		WriteError(w, 429, inFormat, concurrencyLimitMessage, "rate_limit_error")
 		return
 	}
 	if ue, ok := lastErr.(*upstream.UpstreamError); ok {
@@ -145,7 +154,7 @@ func bodyHasStream(body []byte) bool {
 	return probe.Stream
 }
 
-func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *store.ExtKey, u *store.Upstream, realModel string, stream bool, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
+func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result *upstream.Result, key *store.ExtKey, u *store.Upstream, realModel string, sess *sessionCtx, rec *convCtx, callDur time.Duration) {
 	var out []byte
 	var err error
 	switch inFormat {
@@ -236,11 +245,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			heldIdx, heldRelease = i, rel
 			break
 		}
-		logger.Info("stream candidate skipped: upstream concurrency limit reached",
-			"alias_candidate", i, "upstream", targets[i].Upstream.Name, "model", targets[i].ModelName, "max_concurrent", targets[i].Upstream.MaxConcurrent)
+		logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, &targets[i])
 	}
 	if heldRelease == nil {
-		WriteError(w, 429, inFormat, "upstream concurrency limit reached, please retry later", "rate_limit_error")
+		WriteError(w, 429, inFormat, concurrencyLimitMessage, "rate_limit_error")
 		return
 	}
 	// 命中候选的并发槽持有到本函数结束（流式期间上游连接一直存活）。
@@ -259,7 +267,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 	streamStart := time.Now()
 	logger.Info("stream header flushed", "upstream", targets[0].Upstream.Name, "model", targets[0].ModelName, "candidates", len(targets))
@@ -301,8 +309,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		} else {
 			rel, ok := g.conc.tryAcquire(t.Upstream)
 			if !ok {
-				logger.Info("stream candidate skipped: upstream concurrency limit reached",
-					"alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "max_concurrent", t.Upstream.MaxConcurrent)
+				logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, t)
 				continue
 			}
 			release = rel
@@ -640,14 +647,12 @@ func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, i
 		Stream:              stream,
 		Status:              status,
 	}
-	if key != nil {
-		kid := key.ID
-		rec.ExtKeyID = &kid
-	}
-	if u != nil {
-		uid := u.ID
-		rec.UpstreamID = &uid
-	}
+	// key 与 u 的所有调用点都保证非 nil（鉴权失败早已返回），这里直接取值；
+	// 用局部变量而非 &key.ID，避免异步写入期间与调用方共享同一个结构体字段。
+	kid := key.ID
+	rec.ExtKeyID = &kid
+	uid := u.ID
+	rec.UpstreamID = &uid
 	if g.writer != nil {
 		g.writer.DoAsync(func(d *sql.DB) error { return store.InsertUsage(d, rec) })
 	} else {
