@@ -226,6 +226,61 @@ func (g *Gateway) callWithKeepalive(r *http.Request, keepalive *time.Ticker, wri
 	}
 }
 
+// streamRun 聚合一次流式请求跨阶段共享的状态：handleStream 只做编排（建 run
+// → 预占候选 → flush 头 → 首轮尝试 → 展开非流式响应或泵事件），其余阶段都是
+// run 的方法，避免单函数五层嵌套 + goto 混排。
+type streamRun struct {
+	g         *Gateway
+	w         http.ResponseWriter
+	r         *http.Request
+	flusher   http.Flusher
+	inFormat  string
+	key       *store.ExtKey
+	targets   []store.AliasTarget
+	irReq     *translate.Request
+	reqIRJSON []byte
+	body      []byte
+	sess      *sessionCtx
+	conv      convInfo
+
+	streamStart time.Time
+	keepalive   *time.Ticker
+	writePing   func()
+	tee         *teeWriter
+
+	// 首轮候选尝试（firstPhase）的产出。
+	result   *upstream.Result
+	win      *store.AliasTarget
+	winEff   *store.Upstream // 命中候选按入站格式解析后的生效端点（usage/错误透传用）
+	winStart time.Time       // 命中候选的调用开始时刻，作为该次调用的计时起点
+	rec      *convCtx
+	lastErr  error
+	// clientGone 表示首轮尝试期间客户端断开（上游调用随请求上下文取消），
+	// 请求已按 error 记完档，不再写「全部候选失败」帧。
+	clientGone bool
+	// encoder 在命中候选确定后创建（此前只写过 keep-alive，无内容帧）。
+	encoder streamEncoder
+
+	// heldIdx/winRelease 管理并发槽：acquireCandidate 预占第一个可用候选，
+	// firstPhase 失败转移时换槽（旧槽已先释放）；任何时刻至多持有一个，release
+	// 幂等，handleStream 的 defer 兜底释放。
+	heldIdx    int
+	winRelease func()
+}
+
+// streamEncoder 是三种出站流式编码器的公共最小接口（网关按 inFormat 选择）。
+type streamEncoder interface {
+	Encode(evt *translate.StreamEvent) ([][]byte, error)
+}
+
+// release 释放当前持有的并发槽；幂等（tryAcquire 返回的释放函数内部是一次性）。
+func (run *streamRun) release() {
+	if run.winRelease != nil {
+		run.winRelease()
+		run.winRelease = nil
+	}
+}
+
 func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat string, key *store.ExtKey, targets []store.AliasTarget, irReq *translate.Request, reqIRJSON []byte, body []byte, sess *sessionCtx, conv convInfo) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -235,99 +290,123 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body, conv).finish("error", translate.Usage{}, nil)
 		return
 	}
-	// 并发上限：在 flush 200 头部之前先为候选占槽——所有候选都满还能回干净的
-	// 429（SDK 会自动重试）；一旦头部流出就只能写带内错误帧了。占到的槽位
-	// 供下面的候选循环直接使用。
-	heldIdx := -1
-	var heldRelease func()
-	for i := range targets {
-		if rel, ok := g.conc.tryAcquire(targets[i].Upstream); ok {
-			heldIdx, heldRelease = i, rel
-			break
-		}
-		logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, &targets[i])
+	run := &streamRun{
+		g: g, w: w, r: r, flusher: flusher,
+		inFormat: inFormat, key: key, targets: targets,
+		irReq: irReq, reqIRJSON: reqIRJSON, body: body, sess: sess, conv: conv,
 	}
-	if heldRelease == nil {
+	defer run.release()
+
+	if !run.acquireCandidate() {
 		WriteError(w, 429, inFormat, concurrencyLimitMessage, "rate_limit_error")
 		return
 	}
-	// 命中候选的并发槽持有到本函数结束（流式期间上游连接一直存活）。
-	// 释放函数幂等：失败路径上提前 release 后，defer 的再调用是空操作。
-	winRelease := heldRelease
-	defer func() { winRelease() }()
+	run.flushHeaders()
+	run.keepalive = time.NewTicker(500 * time.Millisecond)
+	defer run.keepalive.Stop()
+	run.writePing = run.newPingWriter()
 
+	run.firstPhase()
+	if run.result == nil {
+		if !run.clientGone {
+			run.writeAllFailedFrame()
+		}
+		return
+	}
+	run.encoder = run.newOutboundEncoder()
+	if run.expandFullResponse() {
+		return
+	}
+	run.pump()
+}
+
+// acquireCandidate 在 flush 200 头部之前为候选预占并发槽——所有候选都满还能回
+// 干净的 429（SDK 会自动重试）；一旦头部流出就只能写带内错误帧了。命中的槽位
+// 供 firstPhase 的候选循环直接使用。
+func (run *streamRun) acquireCandidate() bool {
+	for i := range run.targets {
+		if rel, ok := run.g.conc.tryAcquire(run.targets[i].Upstream); ok {
+			run.heldIdx = i
+			run.winRelease = rel
+			return true
+		}
+		logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, &run.targets[i])
+	}
+	return false
+}
+
+// flushHeaders 安装归档 tee、写 200 头并 flush。此后一切错误只能走带内错误帧。
+func (run *streamRun) flushHeaders() {
 	// 对话归档：flusher 断言之后安装 tee，捕获发给客户端的全部字节。
 	// 多候选共享一个 tee（keep-alive 与后续帧都在同一缓冲），各次尝试创建的
 	// rec 引用它。
-	var tee *teeWriter
-	if reqIRJSON != nil {
-		tee = newTeeWriter(w, convRawCap)
-		w = tee
+	if run.reqIRJSON != nil {
+		run.tee = newTeeWriter(run.w, convRawCap)
+		run.w = run.tee
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	streamStart := time.Now()
-	logger.Info("stream header flushed", "upstream", targets[0].Upstream.Name, "model", targets[0].ModelName, "candidates", len(targets))
+	run.w.Header().Set("Content-Type", "text/event-stream")
+	run.w.Header().Set("Cache-Control", "no-cache")
+	run.w.Header().Set("X-Accel-Buffering", "no")
+	run.w.WriteHeader(http.StatusOK)
+	run.flusher.Flush()
+	run.streamStart = time.Now()
+	logger.Info("stream header flushed", "upstream", run.targets[0].Upstream.Name, "model", run.targets[0].ModelName, "candidates", len(run.targets))
+}
 
+// newPingWriter 返回 keep-alive 写入闭包：Anthropic 客户端发规范的 ping 事件
+// 帧，其余格式发 SSE 注释行（严格 SDK 会忽略）。计数与耗时只进日志。
+func (run *streamRun) newPingWriter() func() {
 	pingCount := 0
-	writePing := func() {
-		if inFormat == "anthropic" {
+	return func() {
+		if run.inFormat == "anthropic" {
 			if f, err := anthropic.EncodeStreamEvent(&translate.StreamEvent{Type: "ping"}); err == nil {
-				w.Write(f)
+				run.w.Write(f)
 			} else {
 				logger.Warn("stream anthropic ping encode failed", "err", err)
 			}
 		} else {
-			w.Write([]byte(": kp\n"))
+			run.w.Write([]byte(": kp\n"))
 		}
-		flusher.Flush()
+		run.flusher.Flush()
 		pingCount++
-		logger.Info("ping sent", "n", pingCount, "elapsed_ms", time.Since(streamStart).Milliseconds())
+		logger.Info("ping sent", "n", pingCount, "elapsed_ms", time.Since(run.streamStart).Milliseconds())
 	}
+}
 
-	keepalive := time.NewTicker(500 * time.Millisecond)
-	defer keepalive.Stop()
-
-	// 第一阶段：从预占成功的候选开始按序尝试，直到某次调用成功建立。期间
-	// 客户端只看到 keep-alive 延续；某候选调用失败后转移到下一个候选对客户端
-	// 透明。一旦进入事件转发阶段（有内容帧流出）就不再转移。并发已满的候选
-	// 直接跳过（预占时已过滤一遍；循环内再试占是为了覆盖故障转移到的候选）。
-	var result *upstream.Result
-	var win *store.AliasTarget
-	var winEff *store.Upstream // 命中候选按入站格式解析后的生效端点（usage/错误透传用）
-	var winStart time.Time     // 命中候选的调用开始时刻，作为该次调用的计时起点
-	var rec *convCtx
-	var lastErr error
-	for i := heldIdx; i < len(targets); i++ {
-		t := &targets[i]
+// firstPhase 从预占成功的候选开始按序尝试，直到某次调用成功建立。期间客户端
+// 只看到 keep-alive 延续；某候选调用失败后转移到下一个候选对客户端透明。一旦
+// 进入事件转发阶段（有内容帧流出）就不再转移。并发已满的候选直接跳过（预占时
+// 已过滤一遍；循环内再试占是为了覆盖故障转移到的候选）。客户端断开时置
+// clientGone 并返回（上游调用已随请求上下文取消）。
+func (run *streamRun) firstPhase() {
+	for i := run.heldIdx; i < len(run.targets); i++ {
+		t := &run.targets[i]
 		var release func()
-		if i == heldIdx {
-			release = heldRelease
+		if i == run.heldIdx {
+			release = run.winRelease
 		} else {
-			rel, ok := g.conc.tryAcquire(t.Upstream)
+			rel, ok := run.g.conc.tryAcquire(t.Upstream)
 			if !ok {
 				logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, t)
 				continue
 			}
 			release = rel
 		}
-		winRelease = release
-		irReq.Model = t.ModelName
-		eu := effectiveUpstream(t.Upstream, inFormat)
-		rec = g.newConvCtx(r, key, eu, t.ModelName, inFormat, reqIRJSON, true, body, conv)
-		if rec != nil {
-			rec.tee = tee
+		run.winRelease = release
+		run.irReq.Model = t.ModelName
+		eu := effectiveUpstream(t.Upstream, run.inFormat)
+		run.rec = run.g.newConvCtx(run.r, run.key, eu, t.ModelName, run.inFormat, run.reqIRJSON, true, run.body, run.conv)
+		if run.rec != nil {
+			run.rec.tee = run.tee
 		}
 		callStart := time.Now()
-		res, err, clientGone := g.callWithKeepalive(r, keepalive, writePing, eu, irReq, streamStart)
+		res, err, clientGone := run.g.callWithKeepalive(run.r, run.keepalive, run.writePing, eu, run.irReq, run.streamStart)
 		callDur := time.Since(callStart)
 		if clientGone {
-			release()
-			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
-			rec.finish("error", translate.Usage{}, nil)
+			run.release()
+			run.clientGone = true
+			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error")
+			run.rec.finish("error", translate.Usage{}, nil)
 			logger.Info("completion done",
 				"upstream", t.Upstream.Name, "model", t.ModelName, "stream", true,
 				"input_tokens", 0, "output_tokens", 0, "status", "error", "reason", "client_gone_before_call_done",
@@ -335,95 +414,105 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			return
 		}
 		if err != nil {
-			release()
-			lastErr = err
-			if len(targets) > 1 {
+			run.release()
+			run.lastErr = err
+			if len(run.targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, true, callDur, "error")
-			rec.finish("error", translate.Usage{}, nil)
+			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error")
+			run.rec.finish("error", translate.Usage{}, nil)
 			continue
 		}
-		result, win, winEff, winStart = res, t, eu, callStart
-		break
-	}
-
-	if result == nil {
-		// 全部候选失败：头部已 200，只能写带内错误帧。
-		var msg, errType string
-		var status int
-		if ue, ok := lastErr.(*upstream.UpstreamError); ok {
-			msg, errType, status = ue.Message(), mapErrorType(inFormat, ue.StatusCode, ue.ErrorType()), ue.StatusCode
-		} else {
-			msg, errType, status = "upstream call failed: "+lastErr.Error(), "upstream_error", 502
-		}
-		logger.Error("upstream call failed after stream header sent",
-			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "status", status, "err", msg, "in_format", inFormat)
-		writeStreamErrorFrame(w, inFormat, msg, errType)
-		flusher.Flush()
-		logger.Info("completion done",
-			"upstream", targets[len(targets)-1].Upstream.Name, "model", targets[len(targets)-1].ModelName, "stream", true,
-			"input_tokens", 0, "output_tokens", 0, "status", "error",
-		)
+		run.result, run.win, run.winEff, run.winStart = res, t, eu, callStart
 		return
 	}
+}
 
-	// 命中候选的生效端点：原生直通时 u.Format 已是附加端点的格式，下面
-	// recordUsage 的 up_format 与错误类型透传判断都按实际使用的格式记。
-	u := winEff
-	realModel := win.ModelName
-
-	// 命中候选确定后再建编码器（此前只写过 keep-alive，无内容帧）。
-	var encoder interface {
-		Encode(evt *translate.StreamEvent) ([][]byte, error)
+// writeAllFailedFrame 全部候选失败：头部已 200，只能写带内错误帧。
+func (run *streamRun) writeAllFailedFrame() {
+	var msg, errType string
+	var status int
+	if ue, ok := run.lastErr.(*upstream.UpstreamError); ok {
+		msg, errType, status = ue.Message(), mapErrorType(run.inFormat, ue.StatusCode, ue.ErrorType()), ue.StatusCode
+	} else {
+		msg, errType, status = "upstream call failed: "+run.lastErr.Error(), "upstream_error", 502
 	}
-	switch inFormat {
+	last := &run.targets[len(run.targets)-1]
+	logger.Error("upstream call failed after stream header sent",
+		"upstream", last.Upstream.Name, "model", last.ModelName, "status", status, "err", msg, "in_format", run.inFormat)
+	writeStreamErrorFrame(run.w, run.inFormat, msg, errType)
+	run.flusher.Flush()
+	logger.Info("completion done",
+		"upstream", last.Upstream.Name, "model", last.ModelName, "stream", true,
+		"input_tokens", 0, "output_tokens", 0, "status", "error",
+	)
+}
+
+// newOutboundEncoder 按客户端格式创建流式编码器。命中候选确定后再建（此前只
+// 写过 keep-alive，无内容帧）。
+func (run *streamRun) newOutboundEncoder() streamEncoder {
+	switch run.inFormat {
 	case "anthropic":
 		// Stateful encoder: rewrites content_block indices to a 0-based
 		// contiguous sequence (the spec requires it; an OpenAI-only-tool-call
 		// upstream starts at index 1).
-		encoder = anthropic.NewStreamEncoder()
+		return anthropic.NewStreamEncoder()
 	case "responses":
-		encoder = responses.NewStreamEncoder(realModel, sess.respID)
+		return responses.NewStreamEncoder(run.win.ModelName, run.sess.respID)
 	default:
-		encoder = openai.NewStreamEncoder(realModel)
+		return openai.NewStreamEncoder(run.win.ModelName)
 	}
+}
 
-	if result.Response != nil {
-		// 上游无视 stream:true、直接回了非流式 JSON：把完整响应展开成 IR 流事件
-		// 再走同一条流式编码路径，客户端拿到的仍是**合法的 SSE 流**（带真实内容与
-		// usage）。直接写裸 JSON 不行——严格 SDK 只认 data:/event: 帧，裸 JSON 会被
-		// 当成无法解析的一行丢掉，客户端最终什么都拿不到。
-		// 客户端看到的响应 id 必须与会话 key 一致，否则 previous_response_id 续接会 400。
-		if sess != nil {
-			result.Response.ID = sess.respID
-		}
-		for _, ev := range translate.ResponseStreamEvents(result.Response) {
-			frames, err := encoder.Encode(ev)
-			if err != nil {
-				logger.Warn("stream non-stream response encode skipped", "in_format", inFormat, "type", ev.Type, "err", err)
-				continue
-			}
-			for _, f := range frames {
-				w.Write(f)
-			}
-		}
-		flusher.Flush()
-		usage := result.Usage()
-		g.recordUsage(key, u, realModel, inFormat, usage, true, time.Since(winStart), "ok")
-		rec.finish("ok", usage, result.Response)
-		logger.Info("completion done",
-			"upstream", u.Name, "model", realModel, "stream", true,
-			"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "status", "ok",
-		)
-		// 上游用非流式 JSON 应答流式请求：输出完整，照常累积会话
-		if sess != nil {
-			g.saveSession(sess, result.Response.Content)
-		}
-		return
+// expandFullResponse 处理「上游无视 stream:true、直接回了非流式 JSON」：把完整
+// 响应展开成 IR 流事件，再走同一条流式编码路径，客户端拿到的仍是**合法的 SSE
+// 流**（带真实内容与 usage）。直接写裸 JSON 不行——严格 SDK 只认 data:/event:
+// 帧，裸 JSON 会被当成无法解析的一行丢掉，客户端最终什么都拿不到。
+// 返回 true 表示请求已处理完毕；false 表示是正常流，交给 pump。
+func (run *streamRun) expandFullResponse() bool {
+	result := run.result
+	if result.Response == nil {
+		return false
 	}
+	// 客户端看到的响应 id 必须与会话 key 一致，否则 previous_response_id 续接会 400。
+	if run.sess != nil {
+		result.Response.ID = run.sess.respID
+	}
+	for _, ev := range translate.ResponseStreamEvents(result.Response) {
+		frames, err := run.encoder.Encode(ev)
+		if err != nil {
+			logger.Warn("stream non-stream response encode skipped", "in_format", run.inFormat, "type", ev.Type, "err", err)
+			continue
+		}
+		for _, f := range frames {
+			run.w.Write(f)
+		}
+	}
+	run.flusher.Flush()
+	usage := result.Usage()
+	run.g.recordUsage(run.key, run.winEff, run.win.ModelName, run.inFormat, usage, true, time.Since(run.winStart), "ok")
+	run.rec.finish("ok", usage, result.Response)
+	logger.Info("completion done",
+		"upstream", run.winEff.Name, "model", run.win.ModelName, "stream", true,
+		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens, "status", "ok",
+	)
+	// 上游用非流式 JSON 应答流式请求：输出完整，照常累积会话
+	if run.sess != nil {
+		run.g.saveSession(run.sess, result.Response.Content)
+	}
+	return true
+}
 
-	logger.Info("entering post-call stream loop", "elapsed_ms", time.Since(streamStart).Milliseconds())
+// pump 把上游流事件转发给客户端，直到流结束 / 客户端断开 / 上游报错，然后
+// 收尾：补结束帧、保存会话、记 usage 与完成日志。
+func (run *streamRun) pump() {
+	result := run.result
+	// 命中候选的生效端点：原生直通时 u.Format 已是附加端点的格式，下面
+	// recordUsage 的 up_format 与错误类型透传判断都按实际使用的格式记。
+	u := run.winEff
+	realModel := run.win.ModelName
+
+	logger.Info("entering post-call stream loop", "elapsed_ms", time.Since(run.streamStart).Milliseconds())
 	blockStarted := make(map[int]bool)
 	clientGonePost := false
 	// upstreamSignalledErr 表示上游在流中间发过 error 事件（Anthropic 的
@@ -438,10 +527,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			}
 			// 对话归档：累积原始 IR 事件（不喂下面合成的 content_block_start，
 			// streamRecorder 的 ensureKind 已对缺失 start 做惰性开块）。
-			if rec != nil {
-				rec.acc.Add(ev)
+			if run.rec != nil {
+				run.rec.acc.Add(ev)
 			}
-			logger.FileOnly().Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(streamStart).Milliseconds())
+			logger.FileOnly().Info("upstream event", "type", ev.Type, "index", ev.Index, "elapsed_ms", time.Since(run.streamStart).Milliseconds())
 			// 上游在流中间报错：三个出站编码器都没有 error 分支——openai /
 			// responses 出站会把这个事件整个丢掉，anthropic 出站只会发出一个没有
 			// error 明细的空壳帧；两条路都让客户端拿不到可用的错误信息与结束信号，
@@ -456,22 +545,22 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 					msg = "upstream stream error"
 				}
 				errType := "upstream_error"
-				if ev.ErrType != "" && u.Format == inFormat {
+				if ev.ErrType != "" && u.Format == run.inFormat {
 					errType = ev.ErrType
 				}
 				logger.Warn("upstream stream error event, ending stream",
-					"upstream", u.Name, "model", realModel, "in_format", inFormat,
+					"upstream", u.Name, "model", realModel, "in_format", run.inFormat,
 					"upstream_error_type", ev.ErrType, "upstream_error_message", ev.ErrMessage,
-					"elapsed_ms", time.Since(streamStart).Milliseconds())
-				writeStreamErrorFrame(w, inFormat, msg, errType)
-				flusher.Flush()
+					"elapsed_ms", time.Since(run.streamStart).Milliseconds())
+				writeStreamErrorFrame(run.w, run.inFormat, msg, errType)
+				run.flusher.Flush()
 				upstreamSignalledErr = true
 				goto done
 			}
 			// Synthesize content_block_start if upstream omitted it (e.g. deepseek).
 			// Without this, Anthropic SDK aborts on receiving content_block_delta
 			// for an index that never had content_block_start.
-			if inFormat == "anthropic" && ev.Type == "content_block_delta" && !blockStarted[ev.Index] {
+			if run.inFormat == "anthropic" && ev.Type == "content_block_delta" && !blockStarted[ev.Index] {
 				blockType := "text"
 				if ev.Delta != nil {
 					switch ev.Delta.Type {
@@ -486,9 +575,9 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 					Index: ev.Index,
 					Block: &translate.ContentBlock{Type: blockType},
 				}
-				if frames, e := encoder.Encode(synthEv); e == nil {
+				if frames, e := run.encoder.Encode(synthEv); e == nil {
 					for _, f := range frames {
-						w.Write(f)
+						run.w.Write(f)
 					}
 					logger.Info("synthesized content_block_start", "index", ev.Index, "block_type", blockType)
 				}
@@ -497,20 +586,20 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 			if ev.Type == "content_block_start" {
 				blockStarted[ev.Index] = true
 			}
-			frames, err := encoder.Encode(ev)
+			frames, err := run.encoder.Encode(ev)
 			if err != nil {
-				logger.Warn("stream frame encode skipped", "in_format", inFormat, "type", ev.Type, "index", ev.Index, "err", err)
+				logger.Warn("stream frame encode skipped", "in_format", run.inFormat, "type", ev.Type, "index", ev.Index, "err", err)
 				continue
 			}
 			for _, f := range frames {
-				w.Write(f)
+				run.w.Write(f)
 			}
-			flusher.Flush()
-		case <-keepalive.C:
-			writePing()
-		case <-r.Context().Done():
+			run.flusher.Flush()
+		case <-run.keepalive.C:
+			run.writePing()
+		case <-run.r.Context().Done():
 			clientGonePost = true
-			logger.Info("client context done (during stream)", "elapsed_ms", time.Since(streamStart).Milliseconds())
+			logger.Info("client context done (during stream)", "elapsed_ms", time.Since(run.streamStart).Milliseconds())
 			goto done
 		}
 	}
@@ -519,20 +608,20 @@ done:
 	// 成功后把累积输出写入会话存储。上游已发 error 事件时跳过 Flush：一次失败的
 	// 流不能被补成「正常完成」。
 	if !clientGonePost && !upstreamSignalledErr {
-		if enc, ok := encoder.(interface {
+		if enc, ok := run.encoder.(interface {
 			Flush() [][]byte
 			Content() []translate.ContentBlock
 		}); ok {
 			if frames := enc.Flush(); len(frames) > 0 {
 				for _, f := range frames {
-					w.Write(f)
+					run.w.Write(f)
 				}
-				flusher.Flush()
+				run.flusher.Flush()
 			}
 			// 只有调用成功后保存：上游流中途出错时 respID 已随 response.created
 			// 发给客户端，若把部分输出并入历史，客户端带同一 id 重试会重复内容。
-			if sess != nil && result.StreamErr() == nil {
-				g.saveSession(sess, enc.Content())
+			if run.sess != nil && result.StreamErr() == nil {
+				run.g.saveSession(run.sess, enc.Content())
 			}
 		}
 	}
@@ -545,20 +634,20 @@ done:
 		status = "error"
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}
-	callDur := time.Since(winStart)
-	g.recordUsage(key, u, realModel, inFormat, usage, true, callDur, status)
+	callDur := time.Since(run.winStart)
+	run.g.recordUsage(run.key, u, realModel, run.inFormat, usage, true, callDur, status)
 	// 对话归档：用流累积器还原完整响应（含思维链真签名、工具调用），
 	// clientGonePost / StreamErr 时部分对话以 error 状态如实记录。
-	if rec != nil {
-		id := rec.acc.msgID
-		if sess != nil {
-			id = sess.respID
+	if run.rec != nil {
+		id := run.rec.acc.msgID
+		if run.sess != nil {
+			id = run.sess.respID
 		}
-		rec.finish(status, usage, &translate.Response{
+		run.rec.finish(status, usage, &translate.Response{
 			ID:         id,
 			Model:      realModel,
-			Content:    rec.acc.Content(),
-			StopReason: rec.acc.stopReason,
+			Content:    run.rec.acc.Content(),
+			StopReason: run.rec.acc.stopReason,
 			Usage:      usage,
 		})
 	}
