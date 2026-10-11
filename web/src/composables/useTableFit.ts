@@ -60,7 +60,7 @@ export const UPSTREAM_FIT_COLUMNS: readonly FitColumn[] = [
  *   - daily / monthly / allowed：「不限」「全部」「N 个」短文本，压到下限无碍
  *   - usage：「日 1,000 / 100,000,000」约 160px，再窄由 word-break 折行消化
  *   - remark：有 ellipsis + tooltip，压到下限只是截断更多
- *   - actions：6 个 small 按钮一行约需 360；下限 128 约等于最宽按钮
+ *   - actions：7 个 small 按钮一行约需 400；下限 128 约等于最宽按钮
  *     （claude-code）占一行，NSpace 随列宽收窄把按钮折成多行
  */
 export const KEYS_FIT_COLUMNS: readonly FitColumn[] = [
@@ -72,7 +72,7 @@ export const KEYS_FIT_COLUMNS: readonly FitColumn[] = [
   { key: 'allowed', wide: 110, min: 76 },
   { key: 'usage', wide: 200, min: 160 },
   { key: 'remark', wide: 150, min: 72 },
-  { key: 'actions', wide: 360, min: 128 },
+  { key: 'actions', wide: 400, min: 128 },
 ]
 
 /**

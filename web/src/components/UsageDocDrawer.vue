@@ -161,7 +161,7 @@ export ANTHROPIC_MODEL=upstream名称/模型名  # 可选，或模型别名`,
         <section class="doc-section">
           <h3>客户端配置一键导出</h3>
           <p class="doc-note">
-            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> / <code class="mono">dsh</code> / <code class="mono">claude-code</code> 按钮会生成含该密钥的完整客户端配置（受限密钥只导出白名单内的模型），新建密钥后的弹窗里也提供同样的按钮。opencode / OMP / dsh 直接复制配置文本，粘贴进对应客户端的配置文件即可（dsh 的文本包含 settings.yaml 与 .credentials.yaml 两段，按段头注释分别粘贴）；claude-code 会先弹出模型槽位映射弹窗，确认后复制追加到 shell 配置文件的环境变量段。
+            密钥列表每行的 <code class="mono">opencode</code> / <code class="mono">OMP</code> / <code class="mono">pi</code> / <code class="mono">dsh</code> / <code class="mono">claude-code</code> 按钮会生成含该密钥的完整客户端配置（受限密钥只导出白名单内的模型），新建密钥后的弹窗里也提供同样的按钮。opencode / OMP / pi / dsh 直接复制配置文本，粘贴进对应客户端的配置文件即可（pi 的 JSON 合并进 <code class="mono">~/.pi/agent/models.json</code> 的 providers 段；dsh 的文本包含 settings.yaml 与 .credentials.yaml 两段，按段头注释分别粘贴）；claude-code 会先弹出模型槽位映射弹窗，确认后复制追加到 shell 配置文件的环境变量段。
           </p>
         </section>
 
