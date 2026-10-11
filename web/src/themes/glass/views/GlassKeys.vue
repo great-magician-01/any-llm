@@ -8,6 +8,7 @@ import { listAliases } from '@/api/aliases'
 import { formatInt } from '@/utils/format'
 import { buildOmpYaml } from '@/utils/ompConfig'
 import { buildDshYaml } from '@/utils/dshConfig'
+import { buildPiJson } from '@/utils/piConfig'
 import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
 import { useClipboard } from '@/composables/useClipboard'
@@ -199,6 +200,15 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
             { trigger: 'hover' },
             {
               trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyPiConfig(row.key, row.allowed_models, e) }, { default: () => 'pi' }),
+              default: () => '复制 Pi agent 配置 JSON（~/.pi/agent/models.json，含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
                 h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyDshConfig(row.key, row.allowed_models, e) }, { default: () => 'dsh' }),
               default: () => '复制 dsh 配置 YAML（含此密钥）',
             },
@@ -253,7 +263,7 @@ async function del(id: number) {
 }
 
 // 导出用的模型清单（直连名 + 别名，口径与 /v1/models 一致）由
-// utils/exportModels 统一收集，opencode / OMP / dsh 三套导出器共用。
+// utils/exportModels 统一收集，opencode / OMP / pi / dsh 四套导出器共用。
 // 受限 key 只导出白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
 async function exportModels(allowedModels?: string[] | null) {
   return filterAllowedModels(await collectExportModels(), allowedModels)
@@ -304,6 +314,23 @@ async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, ev
   try {
     const yaml = await buildOmpConfig(apiKey, allowedModels)
     await copyText(yaml, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function buildPiConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  return buildPiJson({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
+  })
+}
+
+async function copyPiConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const json = await buildPiConfig(apiKey, allowedModels)
+    await copyText(json, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -432,6 +459,10 @@ onMounted(load)
           <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 Oh My Pi 配置 YAML（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyPiConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 Pi agent 配置 JSON（含此密钥）
           </n-button>
           <n-button block style="margin-top: 8px" @click="copyDshConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
