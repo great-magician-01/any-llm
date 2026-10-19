@@ -31,4 +31,12 @@ describe('双主题 parity：Keys 页客户端配置导出', () => {
       expect(src, `${name} 必须在行内按钮与新建弹窗都提供 pi 入口`).toContain('copyPiConfig(newlyCreatedKey')
     }
   })
+
+  it('两套皮肤都接入 Agent 配置文档抽屉（文档 + 按选中密钥生成）', () => {
+    for (const [name, src] of [['classic', CLASSIC_SRC], ['glass', GLASS_SRC]] as const) {
+      expect(src, `${name} 必须引入 AgentConfigDrawer`).toContain("import AgentConfigDrawer from '@/components/AgentConfigDrawer.vue'")
+      expect(src, `${name} 必须渲染 AgentConfigDrawer 并传入密钥列表`).toContain('<AgentConfigDrawer v-model:show="showAgent" :keys="keys" />')
+      expect(src, `${name} 页头必须提供 Agent 配置入口`).toContain('Agent 配置')
+    }
+  })
 })

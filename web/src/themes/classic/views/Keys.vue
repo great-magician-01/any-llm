@@ -9,6 +9,7 @@ import { formatInt } from '@/utils/format'
 import { buildOmpYaml } from '@/utils/ompConfig'
 import { buildDshYaml } from '@/utils/dshConfig'
 import { buildPiJson } from '@/utils/piConfig'
+import { buildOpencodeJson } from '@/utils/opencodeConfig'
 import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
 import { useClipboard } from '@/composables/useClipboard'
@@ -18,6 +19,7 @@ import { quotaPercent, quotaStatus } from '@/utils/quota'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
 import ClaudeCodeExportDialog from '@/components/ClaudeCodeExportDialog.vue'
+import AgentConfigDrawer from '@/components/AgentConfigDrawer.vue'
 
 const message = useMessage()
 // 复制走共享实现（useClipboard）：本页此前有一份等价的本地拷贝，已合并。
@@ -25,6 +27,7 @@ const { copyText } = useClipboard()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
 const showDoc = ref(false)
+const showAgent = ref(false) // Agent 接入配置文档抽屉（共享组件，两套皮肤同一份）
 
 // 新增/编辑弹窗的表单状态与保存逻辑在 composables/useKeyForms（两套皮肤共用一份）
 const {
@@ -270,27 +273,14 @@ async function exportModels(allowedModels?: string[] | null) {
 }
 
 // opencode custom provider config: aggregate every exportable model into
-// the models map so the copied JSON works out of the box.
+// the models map so the copied JSON works out of the box. 生成器在
+// utils/opencodeConfig（AgentConfigDrawer 共用同一份，避免两处漂移）。
 async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
-  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
-  for (const m of await exportModels(allowedModels)) {
-    models[m.id] = { name: m.id, limit: { context: m.contextLength, output: m.maxOutputLength } }
-  }
-  const cfg: Record<string, unknown> = {
-    $schema: 'https://opencode.ai/config.json',
-    provider: {
-      'any-llm': {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'any-llm',
-        options: {
-          baseURL: `${origin.value}/v1`,
-          apiKey,
-        },
-        models,
-      },
-    },
-  }
-  return JSON.stringify(cfg, null, 2)
+  return buildOpencodeJson({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: await exportModels(allowedModels),
+  })
 }
 
 async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
@@ -378,6 +368,10 @@ onMounted(load)
         <n-button quaternary @click="showDoc = true">
           <template #icon><AppIcon name="doc" :size="15" /></template>
           使用文档
+        </n-button>
+        <n-button quaternary @click="showAgent = true">
+          <template #icon><AppIcon name="link" :size="15" /></template>
+          Agent 配置
         </n-button>
         <n-button quaternary circle @click="load">
           <template #icon><AppIcon name="refresh" :size="16" /></template>
@@ -525,6 +519,7 @@ onMounted(load)
 
     <ClaudeCodeExportDialog v-model:show="claudeCodeShow" :api-key="claudeCodeKey" :allowed-models="claudeCodeAllowed" />
     <UsageDocDrawer v-model:show="showDoc" />
+    <AgentConfigDrawer v-model:show="showAgent" :keys="keys" />
   </div>
 </template>
 
