@@ -408,7 +408,10 @@ type importUpstreamTarget struct {
 //     条目显式给 enabled 且至多一个启用）：启用条目 ↔ 启用行（没有则新建），
 //     禁用条目按文件顺序 ↔ id 升序的禁用行，不够的新建禁用。禁用行不占名称
 //     （store.ErrUpstreamNameTaken），这个配对在重导同一文件时把每个条目送回
-//     自己那行，导出→导入往返收敛。
+//     自己那行，导出→导入往返收敛。注意全禁用组（文件里该名没有启用条目）
+//     不会去禁用库中现存的启用行——那行不在本组的配对范围里（没有条目该落
+//     到它上面），原样保留并继续服务；这与「文件里没出现的行不动」的口径
+//     一致，重导/再导出均收敛。
 func resolveImportUpstreamTargets(d *sql.DB, in *configFile) ([]importUpstreamTarget, error) {
 	targets := make([]importUpstreamTarget, 0, len(in.Upstreams))
 	byName := make(map[string][]int, len(in.Upstreams)) // 名 → 在 targets 里的下标（文件顺序）

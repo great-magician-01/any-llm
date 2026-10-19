@@ -1273,6 +1273,27 @@ func TestCreateUpstreamNameConflict(t *testing.T) {
 		t.Fatal("rejected PATCH must not flip the row")
 	}
 
+	// 名称裁剪：带空白的名称落库前去首尾空白（与导入侧对齐，避免 "foo" 与
+	// "foo " 共存使导出文件不可导入）；后续用裁剪后的名称创建撞名 400。
+	w = post(t, map[string]any{"name": "  spaced  ", "base_url": "https://s", "api_key": "k4", "format": "openai"})
+	if w.Code != 200 {
+		t.Fatalf("trimmed create: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var trimmed struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &trimmed); err != nil {
+		t.Fatal(err)
+	}
+	if trimmed.Name != "spaced" {
+		t.Fatalf("name not trimmed: %q", trimmed.Name)
+	}
+	w = post(t, map[string]any{"name": "spaced ", "base_url": "https://s2", "api_key": "k5", "format": "anthropic"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("trimmed dup should collide: status=%d body=%s", w.Code, w.Body.String())
+	}
+
 	// 把启用行禁掉之后，同样的 PATCH 放行
 	u, _ = store.GetUpstreamByID(d, id)
 	u.Enabled = false
@@ -1284,5 +1305,18 @@ func TestCreateUpstreamNameConflict(t *testing.T) {
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 200 {
 		t.Fatalf("enable after the other disabled: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// PUT 纯空白的名称：视为「没给」，保留原值（不会把行改成不可路由的空白名）
+	wsBody, _ := json.Marshal(map[string]any{"name": "   "})
+	req = httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(wsBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("whitespace-only name PATCH: status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, err = store.GetUpstreamByID(d, created.ID)
+	if err != nil || u.Name != "ds" {
+		t.Fatalf("name must stay %q: %+v err=%v", "ds", u, err)
 	}
 }

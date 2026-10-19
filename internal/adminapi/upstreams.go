@@ -63,7 +63,11 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	// 名称必填（配置导入同口径）：历史上 DB 唯一索引还顺带挡住了第二个空名行，
 	// 唯一性下放到应用层后这个副作用没了，空名校验必须自己站出来——空名上游
 	// 在网关上永远不可路由（name/model 拆不出名字），只会在列表里攒垃圾行。
-	if strings.TrimSpace(req.Name) == "" {
+	// 裁剪与导入侧对齐（validateImport）：空白名按必填拒绝，带空白的合法名
+	// 落库前去掉首尾空白，否则 "foo" 与 "foo " 会在库里共存而它们的导出文件
+	// 不可导入（见 updateUpstream 同款注释）。
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
 		logger.Warn("admin: create upstream empty name")
 		writeJSON(w, 400, map[string]any{"error": "name is required"})
 		return
@@ -225,8 +229,12 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		if e != nil {
 			return e // 预检之后又被并发软删：闭包外映射成 404（与预检同口径）
 		}
-		if req.Name != "" {
-			u.Name = req.Name
+		// 名称在写入前裁剪（配置导入同口径，见 validateImport）：不裁的话启用中的
+		// "foo" 与 "foo " 会在库里共存（应用层查重按字符串精确比较），而它们的导出
+		// 文件裁剪后构成「两个启用条目」的重名组被整体 400——导出文件不可导入。
+		// 纯空白的名称视为「没给」，保留原值（与 req.Name != "" 的缺省语义一致）。
+		if name := strings.TrimSpace(req.Name); name != "" {
+			u.Name = name
 		}
 		if req.BaseURL != "" {
 			u.BaseURL = req.BaseURL
