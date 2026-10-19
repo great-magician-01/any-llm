@@ -871,3 +871,157 @@ func TestConfigImport_MergedFormatConflict(t *testing.T) {
 		t.Fatalf("after explicit clear: %+v", got)
 	}
 }
+
+// TestImportConfig_DuplicateNameRoundTrip 新口径的核心保障：禁用行可与启用行
+// 同名（应用层判定），导出文件因此可能同名多行——导入必须按 enabled 状态配对
+// 落行、重导收敛、再导出与原文件一致（完整往返无损）。
+func TestImportConfig_DuplicateNameRoundTrip(t *testing.T) {
+	a1, d1 := setupAPI(t)
+	enabledID, _ := store.CreateUpstream(d1, &store.Upstream{Name: "app", BaseURL: "https://new.example.com", APIKey: "sk-new", Format: "anthropic"})
+	store.AddModel(d1, enabledID, store.UpstreamModel{ModelName: "chat", Manual: true, ContextLength: 128000})
+	disabledID, err := store.CreateUpstreamDisabled(d1, &store.Upstream{Name: "app", BaseURL: "https://old.example.com", APIKey: "sk-old", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AddModel(d1, disabledID, store.UpstreamModel{ModelName: "legacy", ContextLength: 8000})
+	store.CreateAlias(d1, &store.ModelAlias{Name: "app-alias", Bindings: []store.AliasBinding{{UpstreamID: enabledID, ModelName: "chat"}}})
+
+	w := getConfig(t, a1, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d", w.Code)
+	}
+	var payload map[string]any
+	json.Unmarshal(w.Body.Bytes(), &payload)
+
+	// 导入到全新实例：两个同名条目都要落行
+	a2, d2 := setupAPI(t)
+	w = postConfig(t, a2, "/api/admin/config/import", payload)
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	var res importResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.UpstreamsCreated != 2 {
+		t.Fatalf("counts=%+v, want 2 created", res)
+	}
+	rows, err := store.ListUpstreamsByName(d2, "app")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%d err=%v, want 2", len(rows), err)
+	}
+	if !rows[0].Enabled || rows[0].BaseURL != "https://new.example.com" {
+		t.Fatalf("enabled row wrong: %+v", rows[0])
+	}
+	if rows[1].Enabled || rows[1].BaseURL != "https://old.example.com" {
+		t.Fatalf("disabled row wrong: %+v", rows[1])
+	}
+	// 别名绑定挂到启用行（按网关同款口径解析）
+	al, err := store.GetAliasByName(d2, "app-alias")
+	if err != nil || len(al.Bindings) != 1 || al.Bindings[0].UpstreamID != rows[0].ID {
+		t.Fatalf("alias=%+v err=%v", al, err)
+	}
+	// 绑定的模型列表也按条目归位：启用行带 chat，禁用行带 legacy
+	ms, _ := store.ListModels(d2, rows[0].ID)
+	if len(ms) != 1 || ms[0].ModelName != "chat" {
+		t.Fatalf("enabled row models=%+v", ms)
+	}
+	ms, _ = store.ListModels(d2, rows[1].ID)
+	if len(ms) != 1 || ms[0].ModelName != "legacy" {
+		t.Fatalf("disabled row models=%+v", ms)
+	}
+
+	// 重导同一文件：全部转为更新（收敛，不重复建行）
+	w = postConfig(t, a2, "/api/admin/config/import", payload)
+	if w.Code != 200 {
+		t.Fatalf("re-import status=%d body=%s", w.Code, w.Body.String())
+	}
+	res = importResult{}
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.UpstreamsCreated != 0 || res.UpstreamsUpdated != 2 {
+		t.Fatalf("re-import counts=%+v, want 0 created / 2 updated", res)
+	}
+	rows2, _ := store.ListUpstreamsByName(d2, "app")
+	if len(rows2) != 2 || rows2[0].ID != rows[0].ID || rows2[1].ID != rows[1].ID {
+		t.Fatalf("re-import changed row identity: %+v vs %+v", rows2, rows)
+	}
+
+	// 再导出必须与原文件一致（去掉 exported_at）
+	payload["exported_at"] = ""
+	w = getConfig(t, a2, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("re-export status=%d", w.Code)
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	out["exported_at"] = ""
+	if fmt.Sprint(out) != fmt.Sprint(payload) {
+		t.Fatalf("round trip mismatch:\nwant=%s\ngot=%s", fmt.Sprint(payload), fmt.Sprint(out))
+	}
+}
+
+// TestImportConfig_DuplicateNameValidation 手写文件的重名条目形态校验：
+// 两个启用条目整体拒绝；缺显式 enabled 的重名组整体拒绝；两个禁用条目放行
+// （按状态配对落行）。
+func TestImportConfig_DuplicateNameValidation(t *testing.T) {
+	t.Run("two enabled entries rejected", func(t *testing.T) {
+		a, _ := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": true},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "openai", "enabled": true},
+			},
+		})
+		if w.Code != 400 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("missing explicit enabled rejected", func(t *testing.T) {
+		a, _ := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": true},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "openai"},
+			},
+		})
+		if w.Code != 400 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("two disabled entries accepted", func(t *testing.T) {
+		a, d := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": false},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "anthropic", "enabled": false},
+			},
+		})
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		rows, err := store.ListUpstreamsByName(d, "dup")
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("rows=%d err=%v, want 2 disabled rows", len(rows), err)
+		}
+		for _, r := range rows {
+			if r.Enabled {
+				t.Fatalf("row must be disabled: %+v", r)
+			}
+		}
+	})
+	t.Run("single enabled entry disables existing same-name row", func(t *testing.T) {
+		a, d := setupAPI(t)
+		// 库里的启用行被文件的显式 enabled=false 覆盖（同名覆盖的历史语义保留）
+		store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://old", APIKey: "k", Format: "openai"})
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "u", "base_url": "https://new", "api_key": "k2", "format": "anthropic", "enabled": false},
+			},
+		})
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		u, err := store.GetUpstreamByName(d, "u")
+		if err != nil || u.Enabled || u.BaseURL != "https://new" {
+			t.Fatalf("u=%+v err=%v", u, err)
+		}
+	})
+}

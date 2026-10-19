@@ -25,8 +25,13 @@ import (
 // 缺省保留的附加端点会与文件给的新主格式做合并撞车校验（与库中行冲突即整体
 // 400，见 handleConfigImport 的预检）。绑定指向的上游在文件与库中都不存在时
 // 丢弃该绑定（计数 bindings_dropped）；一个可解析绑定都不剩的别名整个跳过。
-// 文件内重名条目（上游/别名/单上游内模型）整体 400 拒绝。导入非单事务：
-// 中途 DB 失败时已提交的条目会保留，直接重导同一文件即可收敛（同名覆盖幂等）。
+// 文件内重名条目（别名/单上游内模型）整体 400 拒绝；上游重名是唯一例外——
+// 上游名只要求「启用中不重复」（应用层判定，见 store.ErrUpstreamNameTaken），
+// 导出文件因此可能同名多行（一个启用 + 若干禁用）。这种组放行的条件：每个
+// 条目显式给 enabled（导出侧总是写出的字段），且至多一个是启用；导入时按
+// enabled 状态精确配对到库中同名行（启用条目 ↔ 启用行，禁用条目按文件顺序
+// ↔ id 升序的禁用行，不够的新建），保证导出→导入往返收敛。导入非单事务：
+// 中途 DB 失败时已提交的条目会保留，直接重导同一文件即可收敛。
 
 const configVersion = 1
 
@@ -162,48 +167,45 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 	}
 	var res importResult
 	if err := a.writeSync(func(d *sql.DB) error {
-		// 合并口径预检：文件缺省 extra_endpoints = 保留库中现值，若保留的附加
+		// 落点解析先行（只读）：每个文件上游条目映射到目标行（nil = 新建）。
+		// 必须在任何写入前完成——同名多条目组的配对要对着写入前的库内状态做，
+		// 且「整体拒绝」的预检也依赖它。
+		targets, err := resolveImportUpstreamTargets(d, &in)
+		if err != nil {
+			return err
+		}
+		// 合并口径预检：文件缺省 extra_endpoints = 保留目标行现值，若保留的附加
 		// 端点与文件给的新主格式撞车（同一格式两个 URL），合并结果是一行连
 		// PATCH 禁用都会被拒的冲突配置。validateImport 是纯文件校验看不到库，
-		// 必须在任何写入前对照现有行拒掉，守住「不合法就整体拒绝」。
-		for i := range in.Upstreams {
-			u := &in.Upstreams[i]
-			if u.ExtraEndpoints != nil {
+		// 必须在任何写入前对照目标行拒掉，守住「不合法就整体拒绝」。
+		for i, t := range targets {
+			if t.u.ExtraEndpoints != nil || t.row == nil {
 				continue // 附加端点以文件为准的组合已由 validateImport 校验
 			}
-			ex, err := store.GetUpstreamByName(d, u.Name)
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("get upstream %q: %w", u.Name, err)
-			}
-			if err := store.ValidateExtraEndpoints(u.Format, ex.ExtraEndpoints); err != nil {
-				return fmt.Errorf("upstreams[%d] %q: retained extra_endpoints conflict with the file's format: %w", i, u.Name, err)
+			if err := store.ValidateExtraEndpoints(t.u.Format, t.row.ExtraEndpoints); err != nil {
+				return fmt.Errorf("upstreams[%d] %q: retained extra_endpoints conflict with the file's format: %w", i, t.u.Name, err)
 			}
 		}
-		// 先处理全部上游（建好 名→ID 映射），别名绑定再按名解析。
-		ids := make(map[string]int64, len(in.Upstreams))
-		for i := range in.Upstreams {
-			u := &in.Upstreams[i]
-			id, created, err := upsertUpstream(d, u)
+		// 写入阶段：先处理全部上游（别名绑定随后按名解析，见下方 GetUpstreamByName）。
+		for i := range targets {
+			t := &targets[i]
+			id, created, err := applyImportUpstream(d, t)
 			if err != nil {
 				return err
 			}
-			ids[u.Name] = id
 			if created {
 				res.UpstreamsCreated++
 			} else {
 				res.UpstreamsUpdated++
 			}
-			if u.Models != nil {
-				models := make([]store.UpstreamModel, 0, len(u.Models))
-				for _, m := range u.Models {
+			if t.u.Models != nil {
+				models := make([]store.UpstreamModel, 0, len(t.u.Models))
+				for _, m := range t.u.Models {
 					models = append(models, store.UpstreamModel{ModelName: m.ModelName, Manual: m.Manual,
 						ContextLength: m.ContextLength, MaxOutputLength: m.MaxOutputLength, Multimodal: m.Multimodal})
 				}
 				if err := store.ReplaceModelsExact(d, id, models); err != nil {
-					return fmt.Errorf("upstream %q models: %w", u.Name, err)
+					return fmt.Errorf("upstream %q models: %w", t.u.Name, err)
 				}
 			}
 		}
@@ -211,21 +213,20 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 			al := &in.Aliases[i]
 			bindings := make([]store.AliasBinding, 0, len(al.Bindings))
 			for _, b := range al.Bindings {
-				id, ok := ids[b.Upstream]
-				if !ok {
-					ex, err := store.GetUpstreamByName(d, b.Upstream)
-					if errors.Is(err, sql.ErrNoRows) {
-						// 文件与库中都无此上游：丢弃该绑定（计数可观测）
-						res.BindingsDropped++
-						continue
-					}
-					if err != nil {
-						// 真实 DB 错误必须让导入失败，不能伪装成「不存在」
-						return fmt.Errorf("resolve upstream %q: %w", b.Upstream, err)
-					}
-					id = ex.ID
+				// 按网关同款口径解析（启用行优先）：同名多行时绑定挂到真正服务的
+				// 那一行——上游名已不再全库唯一（禁用行可与启用行同名），文件里的
+				// 名字本身无法区分多行，网关读哪个绑定就该挂哪个。
+				ex, err := store.GetUpstreamByName(d, b.Upstream)
+				if errors.Is(err, sql.ErrNoRows) {
+					// 文件与库中都无此上游：丢弃该绑定（计数可观测）
+					res.BindingsDropped++
+					continue
 				}
-				bindings = append(bindings, store.AliasBinding{UpstreamID: id, ModelName: b.ModelName})
+				if err != nil {
+					// 真实 DB 错误必须让导入失败，不能伪装成「不存在」
+					return fmt.Errorf("resolve upstream %q: %w", b.Upstream, err)
+				}
+				bindings = append(bindings, store.AliasBinding{UpstreamID: ex.ID, ModelName: b.ModelName})
 			}
 			if len(bindings) == 0 {
 				res.AliasesSkipped++
@@ -259,20 +260,19 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 // validateImport 校验导入文件（空白裁剪后）。任何一项不合法都返回错误，
 // 调用方整体拒绝、不做任何写入。
 func validateImport(in *configFile) error {
-	// 文件内重名（上游/别名）整体拒绝：静默后者覆盖前者会丢数据，手写
-	// 文件场景宁可报错也不要悄悄丢弃前面的条目。
-	seenUpstreams := make(map[string]bool, len(in.Upstreams))
+	// 文件内重名（别名）整体拒绝：静默后者覆盖前者会丢数据，手写
+	// 文件场景宁可报错也不要悄悄丢弃前面的条目。上游重名单独放行一类形态，
+	// 见下方同名多条目组的校验（上游名只要求启用中不重复）。
 	seenAliases := make(map[string]bool, len(in.Aliases))
+	// 同名上游条目分组（文件顺序），基础校验后统一审形态。
+	nameGroups := make(map[string][]int, len(in.Upstreams))
 	for i := range in.Upstreams {
 		u := &in.Upstreams[i]
 		u.Name = strings.TrimSpace(u.Name)
 		if u.Name == "" {
 			return fmt.Errorf("upstreams[%d]: name is required", i)
 		}
-		if seenUpstreams[u.Name] {
-			return fmt.Errorf("upstreams[%d]: duplicate name %q", i, u.Name)
-		}
-		seenUpstreams[u.Name] = true
+		nameGroups[u.Name] = append(nameGroups[u.Name], i)
 		if !store.IsKnownFormat(u.Format) {
 			return fmt.Errorf("upstreams[%d]: format must be openai, anthropic or responses", i)
 		}
@@ -306,6 +306,30 @@ func validateImport(in *configFile) error {
 				return fmt.Errorf("upstreams[%d].models[%d]: duplicate model_name %q", i, j, m.ModelName)
 			}
 			seen[m.ModelName] = true
+		}
+	}
+	// 同名多条目组只放行「导出往返」形态：一个启用行 + 若干禁用行（禁用重名是
+	// 合法状态，导出文件如实包含它们）。要求每个条目显式给 enabled（导出侧总是
+	// 写出该字段，往返文件天然满足；手写文件缺了就整体拒绝，避免「缺省=保留/新建
+	// 默认启用」的歧义在配对时爆炸），且至多一个是启用——两个启用条目意味着
+	// 文件本身就构成启用重名，谁也覆盖不了谁。单条目名不受影响（缺省 enabled
+	// 照旧：新建默认启用、更新保留现状）。
+	for name, idxs := range nameGroups {
+		if len(idxs) < 2 {
+			continue
+		}
+		enabledCount := 0
+		for _, i := range idxs {
+			u := &in.Upstreams[i]
+			if u.Enabled == nil {
+				return fmt.Errorf("upstreams[%d]: duplicate name %q requires explicit enabled on every entry", i, name)
+			}
+			if *u.Enabled {
+				enabledCount++
+			}
+		}
+		if enabledCount > 1 {
+			return fmt.Errorf("upstreams[%d]: duplicate name %q has %d enabled entries; at most one is allowed", idxs[1], name, enabledCount)
 		}
 	}
 	for i := range in.Aliases {
@@ -368,40 +392,105 @@ func applyConfigUpstream(dst *store.Upstream, u *configUpstream) error {
 	return nil
 }
 
-// upsertUpstream 按名覆盖或创建上游，返回（ID, 是否新建）。遵循
-// UpdateUpstream「先 Get 再改再存」的约定；文件缺省的字段保留现状。
-func upsertUpstream(d *sql.DB, u *configUpstream) (int64, bool, error) {
-	ex, err := store.GetUpstreamByName(d, u.Name)
-	if errors.Is(err, sql.ErrNoRows) {
-		nu := &store.Upstream{Name: u.Name, BaseURL: u.BaseURL, APIKey: u.APIKey, Format: u.Format, Enabled: true,
+// importUpstreamTarget 一个文件上游条目的落点：row 为 nil 表示新建，否则落到
+// 该行的同名字段上全量覆盖。
+type importUpstreamTarget struct {
+	u   *configUpstream
+	row *store.Upstream
+}
+
+// resolveImportUpstreamTargets 把每个文件上游条目映射到目标行（只读，全部在
+// 任何写入之前完成——同名多条目组的配对要对着写入前的库内状态做）：
+//
+//   - 单条目名沿用历史口径：GetUpstreamByName 的首选行（启用优先、其次最老），
+//     库里没有则新建；
+//   - 同名多条目组（导出含禁用重名行的往返文件，validateImport 已保证每个
+//     条目显式给 enabled 且至多一个启用）：启用条目 ↔ 启用行（没有则新建），
+//     禁用条目按文件顺序 ↔ id 升序的禁用行，不够的新建禁用。禁用行不占名称
+//     （store.ErrUpstreamNameTaken），这个配对在重导同一文件时把每个条目送回
+//     自己那行，导出→导入往返收敛。
+func resolveImportUpstreamTargets(d *sql.DB, in *configFile) ([]importUpstreamTarget, error) {
+	targets := make([]importUpstreamTarget, 0, len(in.Upstreams))
+	byName := make(map[string][]int, len(in.Upstreams)) // 名 → 在 targets 里的下标（文件顺序）
+	for i := range in.Upstreams {
+		targets = append(targets, importUpstreamTarget{u: &in.Upstreams[i]})
+		byName[in.Upstreams[i].Name] = append(byName[in.Upstreams[i].Name], i)
+	}
+	for name, idxs := range byName {
+		if len(idxs) == 1 {
+			ex, err := store.GetUpstreamByName(d, name)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // 新建
+			}
+			if err != nil {
+				return nil, fmt.Errorf("get upstream %q: %w", name, err)
+			}
+			targets[idxs[0]].row = ex
+			continue
+		}
+		rows, err := store.ListUpstreamsByName(d, name)
+		if err != nil {
+			return nil, fmt.Errorf("list upstreams by name %q: %w", name, err)
+		}
+		// rows 已按「启用优先、再按 id 升序」排列：首位是启用行（若有），其余
+		// 是 id 升序的禁用行。启用条目固定配首位，禁用条目按文件顺序消费剩余行。
+		var enabledRow *store.Upstream
+		var disabledRows []store.Upstream
+		if len(rows) > 0 && rows[0].Enabled {
+			r := rows[0]
+			enabledRow = &r
+			disabledRows = rows[1:]
+		} else {
+			disabledRows = rows
+		}
+		used := 0
+		for _, i := range idxs {
+			e := &targets[i]
+			if e.u.Enabled != nil && *e.u.Enabled {
+				e.row = enabledRow // 启用行缺席时保持 nil → 新建启用
+				continue
+			}
+			if used < len(disabledRows) {
+				r := disabledRows[used]
+				used++
+				e.row = &r
+			}
+		}
+	}
+	return targets, nil
+}
+
+// applyImportUpstream 把一个文件条目落到它的目标行上：新建走 CreateUpstream /
+// CreateUpstreamDisabled（按合并后的启用位，单次 INSERT 落定，无中间态），
+// 已有行走「先 Get 再改再存」的全量覆盖（遵循 UpdateUpstream 的约定）。
+// 返回（行 ID, 是否新建）。
+func applyImportUpstream(d *sql.DB, t *importUpstreamTarget) (int64, bool, error) {
+	if t.row == nil {
+		nu := &store.Upstream{Name: t.u.Name, BaseURL: t.u.BaseURL, APIKey: t.u.APIKey, Format: t.u.Format, Enabled: true,
 			MaxConcurrent: store.DefaultMaxConcurrent}
-		if err := applyConfigUpstream(nu, u); err != nil {
+		if err := applyConfigUpstream(nu, t.u); err != nil {
 			return 0, false, err
 		}
-		id, err := store.CreateUpstream(d, nu)
-		if err != nil {
-			return 0, false, fmt.Errorf("create upstream %q: %w", u.Name, err)
+		var id int64
+		var err error
+		if nu.Enabled {
+			id, err = store.CreateUpstream(d, nu)
+		} else {
+			id, err = store.CreateUpstreamDisabled(d, nu)
 		}
-		// CreateUpstream 的 INSERT 用 DB 默认（启用）；显式 enabled=false 补一条
-		// 只改启用位的 UPDATE（与 createUpstream 同套路）。
-		if u.Enabled != nil && !*u.Enabled {
-			if err := store.SetUpstreamEnabled(d, id, false); err != nil {
-				return 0, false, fmt.Errorf("disable upstream %q: %w", u.Name, err)
-			}
+		if err != nil {
+			return 0, false, fmt.Errorf("create upstream %q: %w", t.u.Name, err)
 		}
 		return id, true, nil
 	}
-	if err != nil {
-		return 0, false, fmt.Errorf("get upstream %q: %w", u.Name, err)
-	}
-	ex.BaseURL = u.BaseURL
-	ex.APIKey = u.APIKey
-	ex.Format = u.Format
-	if err := applyConfigUpstream(ex, u); err != nil {
+	t.row.BaseURL = t.u.BaseURL
+	t.row.APIKey = t.u.APIKey
+	t.row.Format = t.u.Format
+	if err := applyConfigUpstream(t.row, t.u); err != nil {
 		return 0, false, err
 	}
-	if err := store.UpdateUpstream(d, ex); err != nil {
-		return 0, false, fmt.Errorf("update upstream %q: %w", u.Name, err)
+	if err := store.UpdateUpstream(d, t.row); err != nil {
+		return 0, false, fmt.Errorf("update upstream %q: %w", t.u.Name, err)
 	}
-	return ex.ID, false, nil
+	return t.row.ID, false, nil
 }

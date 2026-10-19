@@ -134,8 +134,10 @@ func warnIfSmallMaxAllowedPacket(d *sql.DB) {
 // MigrateForTest 都走这里，避免测试管线与生产管线漂移。
 //
 // 顺序是负载的：主迁移建表 → 补列 → 软删除升级 → 部分唯一索引 → 普通索引 →
-// label 唯一索引。部分唯一索引必须晚于 is_active 列就位；SQLite 的表重建必须在
-// PRAGMA foreign_keys=ON 之前（OpenSQLite 已保证）。
+// 删除已下线的 upstreams.name 唯一索引 → label 唯一索引。部分唯一索引必须晚于
+// is_active 列就位；SQLite 的表重建必须在 PRAGMA foreign_keys=ON 之前
+// （OpenSQLite 已保证）；name 唯一索引的删除放在所有创建步骤之后，保证老库
+// 无论走过哪条重建路径，最后形态一致（不存在该索引）。
 func migrateAll(d *sql.DB) error {
 	if err := migrateMain(d); err != nil {
 		return err
@@ -150,6 +152,9 @@ func migrateAll(d *sql.DB) error {
 		return err
 	}
 	if err := migratePlainIndexes(d); err != nil {
+		return err
+	}
+	if err := migrateDropLegacyUpstreamNameIndex(d); err != nil {
 		return err
 	}
 	ensureExtKeyLabelIndex(d)

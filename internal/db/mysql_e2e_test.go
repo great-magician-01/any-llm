@@ -152,6 +152,9 @@ func TestMySQL_E2E_ColumnTypes(t *testing.T) {
 
 // TestMySQL_E2E_PartialUniqueIndexes 是本次 MySQL 适配最核心的语义断言：
 // 「仅活跃行」唯一性必须真的生效 —— 软删除后同名可重建，活跃同名被拒。
+// （upstreams.name 的唯一索引已下线：名称唯一性改为应用层判定，DB 层对它
+// 不再有任何约束——本测试的上游段只剩软删除语义，另见
+// TestMySQL_E2E_DropsLegacyUpstreamNameUnique。）
 func TestMySQL_E2E_PartialUniqueIndexes(t *testing.T) {
 	d := mysqlTestDB(t)
 
@@ -160,15 +163,17 @@ func TestMySQL_E2E_PartialUniqueIndexes(t *testing.T) {
 		return err
 	}
 
-	// upstreams.name：活跃同名被拒
+	// upstreams.name：历史版本的「仅活跃行」部分唯一索引已被迁移删除，DB 层
+	// 不再有同名约束（启用行重名由应用层 store.UpstreamNameTaken 拒绝）。这里
+	// 断言的只剩软删除语义照常工作。
 	if err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`,
 		"u1", "http://x", "k", "openai"); err != nil {
 		t.Fatalf("insert u1: %v", err)
 	}
-	err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`,
-		"u1", "http://y", "k2", "openai")
-	if err == nil {
-		t.Fatal("duplicate active upstreams.name should be rejected")
+	// 活跃行同名在 DB 层合法（两条都启用）
+	if err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`,
+		"u1", "http://y", "k2", "openai"); err != nil {
+		t.Fatalf("duplicate active name should be allowed at DB level now: %v", err)
 	}
 	// 软删除后同名可重建
 	if err := ins(`UPDATE upstreams SET is_active = 0 WHERE name=?`, "u1"); err != nil {
@@ -663,5 +668,48 @@ func TestMySQL_E2E_FreshSchemaHasAllDeclaredIndexes(t *testing.T) {
 				t.Errorf("index %s on %s declared in schema but missing on a fresh database", ix.Name, tbl.Name)
 			}
 		}
+	}
+}
+
+// TestMySQL_E2E_DropsLegacyUpstreamNameUnique 存量 MySQL 库（上一版本建的）带着
+// 「生成列 + 内联唯一键」形态的 upstreams.name 唯一约束；唯一性改为应用层判定后，
+// 迁移必须把两者都拆掉，否则合法的禁用重名行插不进去。
+func TestMySQL_E2E_DropsLegacyUpstreamNameUnique(t *testing.T) {
+	d := mysqlTestDB(t)
+
+	// 把上一版本的约束手工加回去（旧 CREATE TABLE 的等价 ALTER 形态）
+	if _, err := d.Exec("ALTER TABLE upstreams ADD COLUMN `g_idx_upstreams_name` VARCHAR(255) GENERATED ALWAYS AS (IF(is_active = 1, `name`, NULL)) STORED"); err != nil {
+		t.Fatalf("shape legacy generated column: %v", err)
+	}
+	if _, err := d.Exec("ALTER TABLE upstreams ADD UNIQUE KEY `idx_upstreams_name` (`g_idx_upstreams_name`)"); err != nil {
+		t.Fatalf("shape legacy unique key: %v", err)
+	}
+	ins := func(q string, args ...any) error {
+		_, err := d.Exec(Rebind(d, q), args...)
+		return err
+	}
+	// 旧约束在位：启用重名确实被拒（证明模拟成功）
+	if err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`, "u1", "http://x", "k", "openai"); err != nil {
+		t.Fatalf("insert u1: %v", err)
+	}
+	if err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`, "u1", "http://y", "k2", "openai"); err == nil {
+		t.Fatal("legacy unique key should reject duplicate active names before migration")
+	}
+	// 完整迁移管线再跑一遍：旧索引与生成列必须被降级
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+		WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND index_name = ?`, upstreamNameIndexName).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("legacy index still present: n=%d err=%v", n, err)
+	}
+	if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND column_name = ?`, generatedColName(upstreamNameIndexName)).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("legacy generated column still present: n=%d err=%v", n, err)
+	}
+	// 降级后启用重名合法（应用层负责拒绝）
+	if err := ins(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES (?,?,?,?)`, "u1", "http://y", "k2", "openai"); err != nil {
+		t.Fatalf("duplicate active name should be allowed after drop: %v", err)
 	}
 }

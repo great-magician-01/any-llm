@@ -390,8 +390,30 @@ func TestUniqueName(t *testing.T) {
 	d := testDB(t)
 	_, _ = CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "u", APIKey: "k", Format: "openai"})
 	_, err := CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "u2", APIKey: "k2", Format: "anthropic"})
-	if err == nil {
-		t.Fatal("expected duplicate name error")
+	if !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("expected ErrUpstreamNameTaken, got %v", err)
+	}
+	// 禁用行不占名称：与启用行同名可建（口径是「启用中不重复」）
+	if _, err := CreateUpstreamDisabled(d, &Upstream{Name: "dup", BaseURL: "u3", APIKey: "k3", Format: "openai"}); err != nil {
+		t.Fatalf("disabled duplicate should be allowed: %v", err)
+	}
+	rows, err := d.Query(`SELECT id, enabled FROM upstreams WHERE name='dup' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []int64
+	var enabled []int
+	for rows.Next() {
+		var id, en int64
+		if err := rows.Scan(&id, &en); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		enabled = append(enabled, int(en))
+	}
+	if len(ids) != 2 || enabled[0] != 1 || enabled[1] != 0 {
+		t.Fatalf("rows=%v enabled=%v, want 2 rows (enabled, disabled)", ids, enabled)
 	}
 }
 
@@ -429,7 +451,8 @@ func TestListUpstreamsEnabledFilter(t *testing.T) {
 	CreateUpstream(d, &Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	CreateUpstream(d, &Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
 	offID, _ := CreateUpstream(d, &Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
-	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
+	// 创建即禁用走 CreateUpstreamDisabled（单次 INSERT 落 enabled=0），不需要
+	// 「读回再改存」的旧套路；这里保留读回改存路径以覆盖 UpdateUpstream 的禁用。
 	off, _ := GetUpstreamByID(d, offID)
 	off.Enabled = false
 	if err := UpdateUpstream(d, off); err != nil {
@@ -552,13 +575,13 @@ func TestSoftDeleteUpstream(t *testing.T) {
 	if err := d.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name='u'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("row should be kept: n=%d err=%v", n, err)
 	}
-	// 同名可重建（部分唯一索引只约束活跃行）
+	// 同名可重建（唯一性只约束启用行，软删行不占名额）
 	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b2", APIKey: "k2", Format: "anthropic"}); err != nil {
 		t.Fatalf("re-create same name after soft delete: %v", err)
 	}
-	// 活跃行唯一性仍生效
-	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b3", APIKey: "k3", Format: "openai"}); err == nil {
-		t.Fatal("duplicate active name should be rejected")
+	// 启用行重名仍被应用层拒绝（DB 层不再有唯一索引，靠 UpstreamNameTaken）
+	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b3", APIKey: "k3", Format: "openai"}); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("duplicate enabled name should be rejected, got %v", err)
 	}
 }
 
@@ -901,5 +924,71 @@ func TestUpdateModelScopedByUpstream(t *testing.T) {
 	models, _ = ListModels(d, u1)
 	if models[0].ContextLength != 1000 || !models[0].Multimodal {
 		t.Fatalf("legit update did not land: %+v", models[0])
+	}
+}
+
+// TestUpstreamNameEnabledOnlyUniqueness 钉住放宽后的名称唯一性口径：只有启用行
+// 之间不重名（应用层判定，DB 层无唯一索引）。禁用行可与任何行同名；启用一个
+// 名称撞车的禁用行要被拒绝；改名/重建各通道的判定一致。
+func TestUpstreamNameEnabledOnlyUniqueness(t *testing.T) {
+	d := testDB(t)
+	onID, _ := CreateUpstream(d, &Upstream{Name: "app", BaseURL: "b1", APIKey: "k", Format: "openai"})
+	// 禁用重名可建；按名解析要拿到启用行（禁用行被遮蔽）
+	offID, err := CreateUpstreamDisabled(d, &Upstream{Name: "app", BaseURL: "b2", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatalf("disabled duplicate name should be allowed: %v", err)
+	}
+	if byName := mustGetByName(t, d, "app"); byName.ID != onID {
+		t.Fatalf("GetUpstreamByName returned id=%d, want the enabled row %d", byName.ID, onID)
+	}
+	// 启用撞名的禁用行：被拒（启用集合不允许重名）
+	off := mustGet(t, d, offID)
+	off.Enabled = true
+	if err := UpdateUpstream(d, off); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("enable colliding name: err=%v, want ErrUpstreamNameTaken", err)
+	}
+	// 禁用撞名的启用行：允许（禁用行不占名称），此后按名解析落到禁用行
+	on := mustGet(t, d, onID)
+	on.Enabled = false
+	if err := UpdateUpstream(d, on); err != nil {
+		t.Fatalf("disable enabled duplicate: %v", err)
+	}
+	if byName := mustGetByName(t, d, "app"); byName.Enabled {
+		t.Fatalf("both rows disabled, GetUpstreamByName should return a disabled row: %+v", byName)
+	}
+	// 现在启用另一行不再撞车
+	off = mustGet(t, d, offID)
+	off.Enabled = true
+	if err := UpdateUpstream(d, off); err != nil {
+		t.Fatalf("enable after the other was disabled: %v", err)
+	}
+	// 启用行的名字可以改到只被禁用行占用的名字上；改成别的启用行的名字被拒
+	CreateUpstreamDisabled(d, &Upstream{Name: "spare", BaseURL: "b3", APIKey: "k", Format: "openai"})
+	otherID, _ := CreateUpstream(d, &Upstream{Name: "other", BaseURL: "b4", APIKey: "k", Format: "anthropic"})
+	moved := mustGet(t, d, offID)
+	moved.Name = "spare"
+	if err := UpdateUpstream(d, moved); err != nil {
+		t.Fatalf("rename onto disabled-only name: %v", err)
+	}
+	moved = mustGet(t, d, offID)
+	moved.Name = "other"
+	if err := UpdateUpstream(d, moved); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("rename onto enabled name: err=%v, want ErrUpstreamNameTaken", err)
+	}
+	// 无关字段保存不被查重卡住（名称与启用位没变）
+	other := mustGet(t, d, otherID)
+	other.BaseURL = "b5"
+	if err := UpdateUpstream(d, other); err != nil {
+		t.Fatalf("unrelated field save should pass: %v", err)
+	}
+	// 软删行不占名称：删除禁用的 spare 后，启用行可改名过去
+	spare := mustGetByName(t, d, "spare")
+	if err := DeleteUpstream(d, spare.ID); err != nil {
+		t.Fatal(err)
+	}
+	other = mustGet(t, d, otherID)
+	other.Name = "spare"
+	if err := UpdateUpstream(d, other); err != nil {
+		t.Fatalf("rename onto soft-deleted name: %v", err)
 	}
 }

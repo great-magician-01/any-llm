@@ -884,9 +884,10 @@ CREATE TABLE conversation_records (
 	if err := d.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE is_active = 1`).Scan(&active); err != nil || active != 2 {
 		t.Fatalf("existing rows should default active: n=%d err=%v", active, err)
 	}
-	// 部分唯一索引：活跃行重名被拒；软删除后同名可重建
-	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://z','k3','openai')`); err == nil {
-		t.Fatal("duplicate active name should be rejected")
+	// 部分唯一索引语义：upstreams.name 的旧索引已被迁移删除（名称唯一性下放
+	// 应用层，DB 层允许活跃行重名）；软删除后同名可重建
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://z','k3','openai')`); err != nil {
+		t.Fatalf("duplicate active name should be allowed at DB level now: %v", err)
 	}
 	if _, err := d.Exec(`UPDATE upstreams SET is_active = 0 WHERE name='u1'`); err != nil {
 		t.Fatal(err)
@@ -917,5 +918,36 @@ func TestPG_FreshSchemaHasAllDeclaredIndexes(t *testing.T) {
 				t.Errorf("index %s declared in schema but missing on a fresh database", ix.Name)
 			}
 		}
+	}
+}
+
+// TestPG_DropsLegacyUpstreamNameIndex 存量 PG 库带着 idx_upstreams_name（仅活跃行
+// 的部分唯一索引）；唯一性改为应用层判定后，迁移必须把它拆掉，否则合法的禁用
+// 重名行插不进去。
+func TestPG_DropsLegacyUpstreamNameIndex(t *testing.T) {
+	d := pgTestDB(t)
+	// 把上一版本的索引手工加回去
+	if _, err := d.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_upstreams_name ON upstreams(name) WHERE is_active = 1`); err != nil {
+		t.Fatalf("shape legacy index: %v", err)
+	}
+	// 旧索引在位：启用重名确实被拒
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x','k','openai')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://y','k2','openai')`); err == nil {
+		t.Fatal("legacy index should reject duplicate active names before migration")
+	}
+	// 完整迁移管线再跑一遍：旧索引必须被删除
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pg_indexes
+		WHERE schemaname = current_schema() AND indexname = $1`, upstreamNameIndexName).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("legacy index still present: n=%d err=%v", n, err)
+	}
+	// 删除后启用重名合法（应用层负责拒绝）
+	if _, err := d.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://y','k2','openai')`); err != nil {
+		t.Fatalf("duplicate active name should be allowed after drop: %v", err)
 	}
 }
