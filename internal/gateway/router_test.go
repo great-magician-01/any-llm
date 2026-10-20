@@ -633,3 +633,56 @@ func TestModelsEndpointEmptyListEncodesArray(t *testing.T) {
 		t.Fatalf("empty model list should encode as [], got %s", body)
 	}
 }
+
+// 同名多行（禁用行与启用行同名）时直连路由必须落到启用行：禁用行被「启用优先」
+// 的解析遮蔽；只余禁用行时仍然明确报「已禁用」。
+func TestRouteDuplicateNamePrefersEnabled(t *testing.T) {
+	hit := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = r.Host
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	g, d := setupGateway(t)
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	// 先建禁用行（低 id），再建启用行（高 id，指向可达的假上游）
+	_, _ = store.CreateUpstreamDisabled(d, &store.Upstream{Name: "app", BaseURL: "http://127.0.0.1:1", APIKey: "k-off", Format: "openai"})
+	onID, err := store.CreateUpstream(d, &store.Upstream{Name: "app", BaseURL: srv.URL, APIKey: "k-on", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AddModel(d, onID, store.UpstreamModel{ModelName: "m"})
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"app/m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s, want 200 via the enabled row", w.Code, w.Body.String())
+	}
+	if hit == "" {
+		t.Fatal("enabled duplicate upstream was never reached")
+	}
+
+	// 只剩禁用行：404 is disabled（两行都禁用后）
+	u, _ := store.GetUpstreamByID(d, onID)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	hit = ""
+	req = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"app/m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "is disabled") {
+		t.Fatalf("status=%d body=%s, want 404 is disabled", w.Code, w.Body.String())
+	}
+	if hit != "" {
+		t.Fatal("disabled upstream must not be reached")
+	}
+}

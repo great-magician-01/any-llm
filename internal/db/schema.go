@@ -126,9 +126,13 @@ var schemaTables = []Table{
 			// 声明在列清单末尾：老库靠 LateAdd ALTER 追加也在末尾，两种库物理列序一致。
 			{Name: "tag", Type: TypeText, Len: 16, Default: "'official'", LateAdd: true},
 		},
-		Idx: []Index{
-			{Name: "idx_upstreams_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
-		},
+		// name 不再有 DB 层唯一索引（历史上是 idx_upstreams_name，仅活跃行唯一）：
+		// 唯一性口径已放宽为「启用中的上游名不重复」，由应用层在写库边界判定
+		// （store.UpstreamNameTaken / ErrUpstreamNameTaken）——禁用行不占名称，
+		// 「先建同名备用、再切换」成为合法操作。存量库上的旧索引由
+		// migrateDropLegacyUpstreamNameIndex 在启动时删除（含 MySQL 的生成列
+		// 与内联唯一键）。name 仍是热点等值查询列，但不建普通索引：行数与
+		// 请求 QPS 都很小，全表扫描足够（历史上也只有唯一索引顺带的加速）。
 	},
 	{
 		Name: "upstream_models",

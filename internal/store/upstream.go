@@ -112,7 +112,46 @@ func readTag(raw string) string {
 	return TagOfficial
 }
 
+// ErrUpstreamNameTaken 报告名称与其它「启用中」的上游重复。唯一性在应用层判定
+// （写库边界，全部管理写路径都经 db.Writer 串行化，查重与写入之间无并发窗口），
+// DB 层不再有唯一索引（历史上是 idx_upstreams_name 的「仅活跃行」部分唯一索引，
+// 已在迁移中删除）。口径是刻意放宽的「只约束启用行」：
+//   - 禁用行不占名称——可以先建一个同名禁用上游把配置改好，再一键切换；
+//   - 软删除的行同样不占名称，删掉后同名可重建（与旧口径一致）。
+//
+// 与 ext_keys 的 label 唯一性（ErrExtKeyLabelTaken）同构，但连 DB 兜底索引都
+// 没有：启用位的翻转太频繁（列表页开关），生成列降级方案会让每次开关都重算，
+// 不值得为「应用层漏判」这种已被写路径全覆盖的风险付这个代价。
+var ErrUpstreamNameTaken = errors.New("upstream name already exists")
+
+// UpstreamNameTaken 报告「启用中且未软删」的上游里是否已有同名（精确匹配）。
+// excludeID 用于更新/启用时排除自己（0 = 不排除）。禁用与软删除行都不算：它们
+// 不参与网关按名解析的有效集合（GetUpstreamByName 启用优先），也不占名称名额。
+func UpstreamNameTaken(d *sql.DB, name string, excludeID int64) (bool, error) {
+	if name == "" {
+		return false, nil
+	}
+	var n int
+	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM upstreams WHERE name=? AND enabled = 1 AND is_active = 1 AND id<>?`), name, excludeID).Scan(&n); err != nil {
+		return false, fmt.Errorf("check upstream name %q: %w", name, err)
+	}
+	return n > 0, nil
+}
+
+// CreateUpstream 创建启用中的上游（与历史行为一致：INSERT 显式落 enabled=1）。
+// 名称查重只在启用行中做，见 ErrUpstreamNameTaken。
 func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
+	return createUpstream(d, u, true)
+}
+
+// CreateUpstreamDisabled 创建禁用状态的上游：一行 INSERT 直接落 enabled=0，
+// 不经过「先建启用再改禁用」的中间态，也因此不做名称查重——禁用行不占名称
+// （ErrUpstreamNameTaken），与启用中的同名上游共存是合法状态。
+func CreateUpstreamDisabled(d *sql.DB, u *Upstream) (int64, error) {
+	return createUpstream(d, u, false)
+}
+
+func createUpstream(d *sql.DB, u *Upstream, enabled bool) (int64, error) {
 	// 附加端点与主格式的撞车校验收敛到写库边界：adminapi 各入口的提前校验
 	// 只是体验优化，这里才是最后防线——配置导入「文件改主格式 + 缺省保留
 	// 库中附加端点」的合并结果只有在这一层才能被无条件兜住。
@@ -125,12 +164,23 @@ func CreateUpstream(d *sql.DB, u *Upstream) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// 成功后要按名称逐出缓存条目：上游名在活跃行里唯一，但「删掉再建同名」是常见
+	// 应用层名称查重（仅启用行）：读取+写入都在调用方的 writeSync 闭包里，
+	// db.Writer 串行化保证查重与 INSERT 之间没有并发写插入。
+	if enabled {
+		taken, err := UpstreamNameTaken(d, u.Name, 0)
+		if err != nil {
+			return 0, err
+		}
+		if taken {
+			return 0, ErrUpstreamNameTaken
+		}
+	}
+	// 成功后要按名称逐出缓存条目：上游名在启用行里唯一，但「删掉再建同名」是常见
 	// 操作，旧条目不逐出就会把新行整个遮蔽掉（缓存以名称为键，与 ID 无关）。
 	// 新 ID 不可能被现有绑定引用，故顺带刷新别名缓存只是防御，本可省。
 	now := time.Now()
-	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, tag, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, tag, u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints))
+	id, err := db.InsertReturningID(d, `INSERT INTO upstreams (name, base_url, api_key, format, remark, tag, enabled, daily_token_limit, monthly_token_limit, max_concurrent, created_at, updated_at, expires_at, extra_endpoints) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, tag, b2i(enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, now, now, nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints))
 	if err != nil {
 		return 0, fmt.Errorf("create upstream: %w", err)
 	}
@@ -151,15 +201,42 @@ func GetUpstreamByID(d *sql.DB, id int64) (*Upstream, error) {
 
 // GetUpstreamByName 不过滤 enabled（软删除仍过滤）：网关直连路径需要拿到
 // 禁用的上游行以返回明确的「已禁用」错误，而非笼统的 not found。
+//
+// 名称在活跃行里不再唯一（禁用行可与启用行同名，见 ErrUpstreamNameTaken）：
+// 这里取「启用优先、其次最老一行」——同名的启用行是网关真正会服务的那个
+// （直连路由、配置导入同名覆盖都经这里），禁用行只在没有任何启用行时才
+// 露面（此时「已禁用」的错误信息仍然成立）。排序确定，缓存条目可复现。
 func GetUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 	u := &Upstream{}
 	row := &upstreamRow{u: u}
-	err := d.QueryRow(db.Rebind(d, `SELECT `+upstreamCols+` FROM upstreams WHERE name=? AND is_active = 1`), name).Scan(row.targets()...)
+	err := d.QueryRow(db.Rebind(d, `SELECT `+upstreamCols+` FROM upstreams WHERE name=? AND is_active = 1 ORDER BY enabled DESC, id LIMIT 1`), name).Scan(row.targets()...)
 	if err != nil {
 		return nil, fmt.Errorf("get upstream by name %q: %w", name, err)
 	}
 	row.finish()
 	return u, nil
+}
+
+// ListUpstreamsByName 列出该名称的全部活跃行（启用行在前、再按 id 升序）。
+// 供配置导入做同名多条目的状态配对（见 adminapi 配置导入），其它路径一律用
+// GetUpstreamByName 的单行口径。
+func ListUpstreamsByName(d *sql.DB, name string) ([]Upstream, error) {
+	rows, err := d.Query(db.Rebind(d, `SELECT `+upstreamCols+` FROM upstreams WHERE name=? AND is_active = 1 ORDER BY enabled DESC, id`), name)
+	if err != nil {
+		return nil, fmt.Errorf("list upstreams by name %q: %w", name, err)
+	}
+	defer rows.Close()
+	out := make([]Upstream, 0)
+	for rows.Next() {
+		var u Upstream
+		row := &upstreamRow{u: &u}
+		if err := rows.Scan(row.targets()...); err != nil {
+			return nil, err
+		}
+		row.finish()
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 // ListUpstreams 返回全部未软删上游；enabled 非 nil 时按启用状态过滤（仅供管理端
@@ -206,6 +283,32 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	if err != nil {
 		return err
 	}
+	// 应用层名称查重（仅启用行），与 UpdateExtKey 的 label 查重同款：只在真正
+	// 「改名」或「从禁用切到启用」时查——合并结果是启用行且名称要变时，不允许
+	// 与其它启用行同名（禁用行不占名称，见 ErrUpstreamNameTaken）。不改名也不
+	// 切启用位的常规保存不查：唯一性口径是后加的宽松版，库外写入造成的重名不该
+	// 把一次无关字段保存锁死。当前值在本函数内读：与 UpdateExtKey 同理，读取+
+	// 写入都处在调用方的 writeSync 闭包里，由 db.Writer 串行化，无并发窗口。
+	// 行已不存在/被软删时跳过查重：WHERE is_active = 1 让下面的 UPDATE 影响
+	// 0 行，保持「更新软删行静默无效」的历史契约（不复活、不报错）。
+	var curName string
+	var curEnabled int
+	rowFound := true
+	if err := d.QueryRow(db.Rebind(d, `SELECT name, enabled FROM upstreams WHERE id=? AND is_active = 1`), u.ID).
+		Scan(&curName, &curEnabled); errors.Is(err, sql.ErrNoRows) {
+		rowFound = false
+	} else if err != nil {
+		return fmt.Errorf("load upstream %d for name check: %w", u.ID, err)
+	}
+	if rowFound && u.Enabled && (u.Name != curName || curEnabled == 0) {
+		taken, err := UpstreamNameTaken(d, u.Name, u.ID)
+		if err != nil {
+			return err
+		}
+		if taken {
+			return ErrUpstreamNameTaken
+		}
+	}
 	_, err = d.Exec(db.Rebind(d, `UPDATE upstreams SET name=?, base_url=?, api_key=?, format=?, remark=?, tag=?, enabled=?, daily_token_limit=?, monthly_token_limit=?, max_concurrent=?, updated_at=?, expires_at=?, extra_endpoints=? WHERE id=? AND is_active = 1`),
 		u.Name, u.BaseURL, u.APIKey, u.Format, u.Remark, tag, b2i(u.Enabled), u.DailyTokenLimit, u.MonthlyTokenLimit, u.MaxConcurrent, time.Now(), nullTime(u.ExpiresAt), marshalExtraEndpoints(u.ExtraEndpoints), u.ID)
 	if err != nil {
@@ -217,21 +320,9 @@ func UpdateUpstream(d *sql.DB, u *Upstream) error {
 	return nil
 }
 
-// SetUpstreamEnabled 只切换启用位（「新建即禁用」「配置导入里 enabled: false」
-// 等场景）。单条 UPDATE，不走「读回整行 → 改一位 → 全量覆盖」——那种读-改-写
-// 会把并发写刚落的其它字段覆盖回旧值。缓存逐出与 UpdateUpstream 同口径：
-// 上游行内嵌在别名候选链里，任何字段变化都要让候选链重解析。
-func SetUpstreamEnabled(d *sql.DB, id int64, enabled bool) error {
-	_, err := d.Exec(db.Rebind(d, `UPDATE upstreams SET enabled=?, updated_at=? WHERE id=? AND is_active = 1`), b2i(enabled), time.Now(), id)
-	if err != nil {
-		return fmt.Errorf("set upstream %d enabled=%v: %w", id, enabled, err)
-	}
-	evictUpstream(id, "")
-	return nil
-}
-
 // DeleteUpstream 软删除上游及其模型：置 is_active=0 后网关按名称解析即失败，
-// 行保留供用量/归档历史关联。部分唯一索引不占名额，同名可重建。
+// 行保留供用量/归档历史关联。软删行不参与名称查重（UpstreamNameTaken 只数
+// 活跃行），删除后同名可重建。
 // 上游的别名绑定一并软删（网关解析别名时本就会跳过不活跃上游的绑定，这里
 // 顺手清掉，避免管理端列表残留指向死上游的绑定）。
 // 三条 UPDATE 包在一个事务里，避免上游已删而模型/绑定残留活跃孤儿行。

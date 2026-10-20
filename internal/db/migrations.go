@@ -288,6 +288,51 @@ func migratePlainIndexes(d *sql.DB) error {
 	return nil
 }
 
+// upstreamNameIndexName 是历史版本建在 upstreams.name 上的「仅活跃行」部分唯一
+// 索引名。唯一性口径已改为应用层判定（启用行不重名，见 schema.go 的 upstreams
+// 表注释），这里只剩一件事：把存量库上的旧索引删掉。名字集中一处定义，防止
+// DROP 与存在性检查漂移。
+const upstreamNameIndexName = "idx_upstreams_name"
+
+// migrateDropLegacyUpstreamNameIndex 删除存量库上的 upstreams.name 部分唯一索引。
+// 新装的库不再声明该索引（schema.go），本函数对它们是 no-op；老库（SQLite/PG 的
+// CREATE UNIQUE INDEX、MySQL 的生成列 + 内联唯一键）在启动时被降级。幂等：
+// 索引已不存在时什么都不做。必须在 migratePartialUniqueIndexes 之后调用，
+// 防止老库重建路径（migrateSoftDeleteSQLite）之外的新老形态互相干扰。
+func migrateDropLegacyUpstreamNameIndex(d *sql.DB) error {
+	if DialectOf(d) == DialectMySQL {
+		// MySQL 没有 DROP INDEX IF EXISTS：先查 information_schema 再删。
+		// 顺序必须是先删唯一键再删生成列——生成列被唯一键引用着，直接删列
+		// 会把键一起删掉（语义等价但日志口径混乱），反过来则总是合法的。
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND index_name = ?`,
+			upstreamNameIndexName).Scan(&n); err != nil {
+			return fmt.Errorf("check legacy %s on mysql: %w", upstreamNameIndexName, err)
+		}
+		if n > 0 {
+			if _, err := d.Exec(`ALTER TABLE upstreams DROP INDEX ` + upstreamNameIndexName); err != nil {
+				return fmt.Errorf("drop legacy %s on mysql: %w", upstreamNameIndexName, err)
+			}
+		}
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND column_name = ?`,
+			generatedColName(upstreamNameIndexName)).Scan(&n); err != nil {
+			return fmt.Errorf("check legacy column %s on mysql: %w", generatedColName(upstreamNameIndexName), err)
+		}
+		if n > 0 {
+			if _, err := d.Exec(`ALTER TABLE upstreams DROP COLUMN ` + generatedColName(upstreamNameIndexName)); err != nil {
+				return fmt.Errorf("drop legacy column %s on mysql: %w", generatedColName(upstreamNameIndexName), err)
+			}
+		}
+		return nil
+	}
+	if _, err := d.Exec(`DROP INDEX IF EXISTS ` + upstreamNameIndexName); err != nil {
+		return fmt.Errorf("drop legacy %s: %w", upstreamNameIndexName, err)
+	}
+	return nil
+}
+
 // extKeyLabelIndexDDL 从 schema.go 的规范定义渲染 label 唯一索引（PG/SQLite）。
 // 它是 ext_keys.label 唯一性的 DB 兜底，口径与应用层 ExtKeyLabelTaken 一致（空名
 // 不参与、软删行不占名额）。它在 schema 里标了 Tolerant：历史库可能存在唯一性

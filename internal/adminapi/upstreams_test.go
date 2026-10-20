@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,8 +72,8 @@ func TestListUpstreamsStatusFilter(t *testing.T) {
 	a, d := setupAPI(t)
 	store.CreateUpstream(d, &store.Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	store.CreateUpstream(d, &store.Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
-	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
-	offID, _ := store.CreateUpstream(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	// 创建即禁用走 CreateUpstreamDisabled（单次 INSERT 落 enabled=0），无需读回再改存。
+	offID, _ := store.CreateUpstreamDisabled(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
 	off, _ := store.GetUpstreamByID(d, offID)
 	off.Enabled = false
 	if err := store.UpdateUpstream(d, off); err != nil {
@@ -1202,5 +1203,120 @@ func TestModelWriteErrorSemantics(t *testing.T) {
 	}
 	if code := call("PUT", base+"/"+strconv.FormatInt(mid, 10), edit); code != 404 {
 		t.Fatalf("soft-deleted model edit status=%d, want 404", code)
+	}
+}
+
+// TestCreateUpstreamNameConflict 新的名称唯一性口径打到端点上：启用重名 400
+// （应用层判定，错误信息可读），禁用重名放行（「预建同名备用、再切换」的
+// 合法流程），PATCH 把撞名的禁用行切成启用同样被拒。
+func TestCreateUpstreamNameConflict(t *testing.T) {
+	a, d := setupAPI(t)
+	id, err := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://a", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	post := func(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 启用重名 → 400 + 明确错误信息
+	w := post(t, map[string]any{"name": "ds", "base_url": "https://b", "api_key": "k2", "format": "anthropic"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("enabled dup: status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 禁用重名 → 200，行建成禁用
+	w = post(t, map[string]any{"name": "ds", "base_url": "https://b", "api_key": "k2", "format": "anthropic", "enabled": false})
+	if w.Code != 200 {
+		t.Fatalf("disabled dup: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID      int64 `json:"id"`
+		Enabled bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Enabled {
+		t.Fatalf("create-disabled must land disabled: %+v", created)
+	}
+	if created.ID == id {
+		t.Fatal("disabled duplicate must be a new row")
+	}
+
+	// 空名（含纯空白）→ 400（历史上 DB 唯一索引顺带挡第二个空名行，现在由
+	// 应用层显式必填）
+	w = post(t, map[string]any{"name": "  ", "base_url": "https://c", "api_key": "k3", "format": "openai"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "name is required") {
+		t.Fatalf("empty name: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// PATCH 把撞名的禁用行切成启用 → 400
+	patchBody, _ := json.Marshal(map[string]any{"enabled": true})
+	req := httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(patchBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("enable colliding via PATCH: status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 行保持禁用（校验在写入前失败）
+	u, err := store.GetUpstreamByID(d, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Enabled {
+		t.Fatal("rejected PATCH must not flip the row")
+	}
+
+	// 名称裁剪：带空白的名称落库前去首尾空白（与导入侧对齐，避免 "foo" 与
+	// "foo " 共存使导出文件不可导入）；后续用裁剪后的名称创建撞名 400。
+	w = post(t, map[string]any{"name": "  spaced  ", "base_url": "https://s", "api_key": "k4", "format": "openai"})
+	if w.Code != 200 {
+		t.Fatalf("trimmed create: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var trimmed struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &trimmed); err != nil {
+		t.Fatal(err)
+	}
+	if trimmed.Name != "spaced" {
+		t.Fatalf("name not trimmed: %q", trimmed.Name)
+	}
+	w = post(t, map[string]any{"name": "spaced ", "base_url": "https://s2", "api_key": "k5", "format": "anthropic"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("trimmed dup should collide: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// 把启用行禁掉之后，同样的 PATCH 放行
+	u, _ = store.GetUpstreamByID(d, id)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(patchBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("enable after the other disabled: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// PUT 纯空白的名称：视为「没给」，保留原值（不会把行改成不可路由的空白名）
+	wsBody, _ := json.Marshal(map[string]any{"name": "   "})
+	req = httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(wsBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("whitespace-only name PATCH: status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, err = store.GetUpstreamByID(d, created.ID)
+	if err != nil || u.Name != "ds" {
+		t.Fatalf("name must stay %q: %+v err=%v", "ds", u, err)
 	}
 }

@@ -60,6 +60,18 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
+	// 名称必填（配置导入同口径）：历史上 DB 唯一索引还顺带挡住了第二个空名行，
+	// 唯一性下放到应用层后这个副作用没了，空名校验必须自己站出来——空名上游
+	// 在网关上永远不可路由（name/model 拆不出名字），只会在列表里攒垃圾行。
+	// 裁剪与导入侧对齐（validateImport）：空白名按必填拒绝，带空白的合法名
+	// 落库前去掉首尾空白，否则 "foo" 与 "foo " 会在库里共存而它们的导出文件
+	// 不可导入（见 updateUpstream 同款注释）。
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		logger.Warn("admin: create upstream empty name")
+		writeJSON(w, 400, map[string]any{"error": "name is required"})
+		return
+	}
 	if !store.IsKnownFormat(req.Format) {
 		logger.Warn("admin: create upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
@@ -102,18 +114,24 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var id int64
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
-		id, e = store.CreateUpstream(d, u)
-		if e != nil {
-			return e
-		}
 		// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
-		// 配置好模型与别名后再上线」的流程。与创建同一个写入闭包，客户端看不到
-		// 「先启用后被禁用」的中间态。
+		// 配置好模型与别名后再上线」的流程。直接按目标状态 INSERT，而非先建启用行
+		// 再补一条 UPDATE——禁用行不参与名称查重，同名预建因此可行（见
+		// store.ErrUpstreamNameTaken），且客户端不会看到中间态。
 		if req.Enabled != nil && !*req.Enabled {
-			return store.SetUpstreamEnabled(d, id, false)
+			id, e = store.CreateUpstreamDisabled(d, u)
+		} else {
+			id, e = store.CreateUpstream(d, u)
 		}
-		return nil
+		return e
 	}); err != nil {
+		if errors.Is(err, store.ErrUpstreamNameTaken) {
+			// 与 ext key label 同款：重名是客户端可修正的请求问题，友好 400 而非
+			// 裸 store 错误。
+			logger.Warn("admin: create upstream duplicate name", "name", req.Name)
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		logger.Error("admin: create upstream DB write failed", "name", req.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
@@ -211,8 +229,12 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		if e != nil {
 			return e // 预检之后又被并发软删：闭包外映射成 404（与预检同口径）
 		}
-		if req.Name != "" {
-			u.Name = req.Name
+		// 名称在写入前裁剪（配置导入同口径，见 validateImport）：不裁的话启用中的
+		// "foo" 与 "foo " 会在库里共存（应用层查重按字符串精确比较），而它们的导出
+		// 文件裁剪后构成「两个启用条目」的重名组被整体 400——导出文件不可导入。
+		// 纯空白的名称视为「没给」，保留原值（与 req.Name != "" 的缺省语义一致）。
+		if name := strings.TrimSpace(req.Name); name != "" {
+			u.Name = name
 		}
 		if req.BaseURL != "" {
 			u.BaseURL = req.BaseURL
@@ -273,6 +295,13 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 			// 预检通过后被并发软删：与预检同报 404，而不是把裸 store 错误当 400。
 			logger.Warn("admin: update upstream vanished concurrently", "id", id)
 			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		if errors.Is(err, store.ErrUpstreamNameTaken) {
+			// 改名或启用撞上启用中的同名上游：客户端可修正（换个名或先禁用另一个），
+			// 友好 400，不算服务端故障。
+			logger.Warn("admin: update upstream name conflict", "id", id, "name", merged.Name)
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
 			return
 		}
 		logger.Error("admin: update upstream DB write failed", "id", id, "err", err)
