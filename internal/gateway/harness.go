@@ -61,6 +61,7 @@ const maxHarnessLen = 64
 //     的产品名（正则在 token 内锚定，runtime/node.js/24 这种
 //     版本位不是数字的复合 token 不会被拆出 node.js）；
 //  3. 兜底返回 "unknown"（空 UA、无产品名 token、名称非法）。
+//
 // 原始 UA 仍 verbatim 存于 user_agent 列，这里只产出规范名。
 func detectHarness(ua string) string {
 	u := strings.ToLower(ua)
