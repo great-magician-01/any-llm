@@ -128,7 +128,7 @@ func TestFailureCacheSkipsFailedCandidateNonStream(t *testing.T) {
 		t.Fatalf("cooling candidate was hit again: hits=%d want 1", badHits.Load())
 	}
 	// 第一次 error+ok 两条；第二次冷却跳过不记，仅 ok 一条
-	_, total, _ := store.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 3 {
 		t.Fatalf("usage records=%d want 3 (error+ok, then ok only)", total)
 	}

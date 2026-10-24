@@ -33,7 +33,14 @@ export async function fetchDaily(days: number, from?: string, to?: string) {
   return data.data as UsageDayStat[]
 }
 
-export async function fetchRecords(page: number, size: number) {
-  const { data } = await client.get('/usage/records', { params: { page, size } })
+export async function fetchRecords(page: number, size: number, model?: string) {
+  const { data } = await client.get('/usage/records', { params: { page, size, model } })
   return data as { data: UsageRecord[]; total: number }
+}
+
+// 请求明细「按模型筛选」下拉框的选项：usage_records 里实际出现过的模型名
+// （去重有序，含历史模型——旧记录也要能被筛出来）
+export async function fetchUsageModels() {
+  const { data } = await client.get('/usage/models')
+  return data.data as string[]
 }

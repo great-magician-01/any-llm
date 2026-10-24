@@ -53,6 +53,7 @@ func (a *API) Handler() http.Handler {
 	// 用量统计与余额快照
 	mux.HandleFunc("GET /api/admin/usage/summary", a.usageSummary)
 	mux.HandleFunc("GET /api/admin/usage/records", a.usageRecords)
+	mux.HandleFunc("GET /api/admin/usage/models", a.usageModels)
 	mux.HandleFunc("GET /api/admin/usage/daily", a.usageDaily)
 	mux.HandleFunc("GET /api/admin/usage/key/{id}", withID(a.usageKeyTotals))
 	mux.HandleFunc("GET /api/admin/usage/upstream/{id}", withID(a.usageUpstreamTotals))

@@ -293,18 +293,55 @@ func parseTimeParam(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unsupported time format %q", s)
 }
 
-func UsageRecordsList(d *sql.DB, page, size int) ([]UsageRecord, int, error) {
-	page, size = normalizePage(page, size)
-	var total int
-	if err := d.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count usage: %w", err)
+// maxUsageModels caps the distinct-model list served to the request-details
+// filter dropdown. Real deployments see dozens of model names at most; the
+// cap only bounds the payload if something pathological starts logging
+// garbage model strings.
+const maxUsageModels = 1000
+
+// UsageModels returns the distinct model names recorded in usage_records,
+// ordered by name — the option source for the request-details model filter.
+func UsageModels(d *sql.DB) ([]string, error) {
+	rows, err := d.Query(db.Rebind(d, `SELECT DISTINCT model FROM usage_records ORDER BY model LIMIT ?`), maxUsageModels)
+	if err != nil {
+		return nil, fmt.Errorf("usage models: %w", err)
 	}
-	offset := (page - 1) * size
-	rows, err := d.Query(db.Rebind(d, `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("usage models: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func UsageRecordsList(d *sql.DB, page, size int, model string) ([]UsageRecord, int, error) {
+	page, size = normalizePage(page, size)
+	countQ := "SELECT COUNT(*) FROM usage_records"
+	listQ := `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		prompt_tokens, completion_tokens, total_tokens,
 		cache_read_tokens, cache_creation_tokens, reasoning_tokens,
 		duration_ms, stream, status, created_at
-		FROM usage_records ORDER BY id DESC LIMIT ? OFFSET ?`), size, offset)
+		FROM usage_records`
+	var args []any
+	if model != "" {
+		// 请求明细按模型筛选：精确匹配 usage_records.model（即实际上游模型，
+		// 别名请求存的也是真实模型名）。count 与 list 共用同一份 WHERE 条件。
+		countQ += " WHERE model = ?"
+		listQ += " WHERE model = ?"
+		args = append(args, model)
+	}
+	var total int
+	if err := d.QueryRow(db.Rebind(d, countQ), args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count usage: %w", err)
+	}
+	offset := (page - 1) * size
+	listQ += " ORDER BY id DESC LIMIT ? OFFSET ?"
+	listArgs := append(append([]any{}, args...), size, offset)
+	rows, err := d.Query(db.Rebind(d, listQ), listArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list usage: %w", err)
 	}
