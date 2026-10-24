@@ -169,6 +169,31 @@ func TestSchemaMySQLIndexKeepsSortDirection(t *testing.T) {
 	}
 }
 
+// TestSchemaUsageModelIndex 盯住请求明细的模型筛选索引：三种方言都从同一份声明
+// 渲染——SQLite/PG 是独立 CREATE INDEX 语句（带方向），MySQL 内联进 CREATE
+// TABLE；存量 MySQL 库的补建语句（indexCreateMySQL）必须与内联形态一致。
+func TestSchemaUsageModelIndex(t *testing.T) {
+	tbl, ok := schemaTableByName("usage_records")
+	if !ok {
+		t.Fatal("usage_records missing")
+	}
+	sqliteDDL := joinDDL(mustDDL(t, tbl, DialectSQLite, DDLConfig{IfNotExists: true})[1:])
+	if !strings.Contains(sqliteDDL, "CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model, id DESC)") {
+		t.Errorf("SQLite usage_records index statement wrong:\n%s", sqliteDDL)
+	}
+	mysqlDDL := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(mysqlDDL, "KEY `idx_usage_model` (`model`, `id` DESC)") {
+		t.Errorf("MySQL usage_records inline KEY lost the model index or DESC direction:\n%s", mysqlDDL)
+	}
+	create, err := tbl.indexCreateMySQL(Index{Name: "idx_usage_model", Columns: []string{"model", "id DESC"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "CREATE INDEX `idx_usage_model` ON `usage_records` (`model`, `id` DESC)"; create != want {
+		t.Errorf("MySQL standalone CREATE INDEX = %q, want %q", create, want)
+	}
+}
+
 // TestSchemaMySQLLongTextForSessionMessages 盯住 64 KiB 陷阱：MySQL 的 TEXT 只有
 // 64 KiB，而 messages 存的是累积的整段会话历史，长会话会直接写失败。
 func TestSchemaMySQLLongTextForSessionMessages(t *testing.T) {

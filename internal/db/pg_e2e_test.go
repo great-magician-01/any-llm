@@ -951,3 +951,24 @@ func TestPG_DropsLegacyUpstreamNameIndex(t *testing.T) {
 		t.Fatalf("duplicate active name should be allowed after drop: %v", err)
 	}
 }
+
+// TestPG_BackfillsMissingPlainIndex 与 SQLite 侧 TestOpenSQLite_RecreatesMissingPlainIndex
+// 同一不变量：存量 PG 库缺本版本新声明的普通索引时，重跑迁移必须补建。
+func TestPG_BackfillsMissingPlainIndex(t *testing.T) {
+	d := pgTestDB(t)
+	// 模拟上一版本的库：表在、索引未声明
+	if _, err := d.Exec(`DROP INDEX idx_usage_model`); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pg_indexes
+		WHERE schemaname = current_schema() AND indexname = 'idx_usage_model'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("missing declared plain index must be backfilled on an existing PG database")
+	}
+}

@@ -261,13 +261,18 @@ func migratePartialUniqueIndexes(d *sql.DB) error {
 	return nil
 }
 
-// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的三个、
+// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的四个、
 // response_sessions 与 balance_snapshots 各一个。与部分唯一索引分开：它们不依赖
-// is_active，且 SQLite 表重建后同样要重建。MySQL 的索引内联在 CREATE TABLE，
-// 对它是 no-op。
+// is_active，且 SQLite 表重建后同样要重建。
+//
+// PG/SQLite 直接 CREATE INDEX IF NOT EXISTS。MySQL 没有 IF NOT EXISTS、索引又
+// 内联在 CREATE TABLE 里——新库天然齐全，但存量库升级到「声明了新索引」的版本
+// 后，CREATE TABLE IF NOT EXISTS 不会回头补（response_sessions/balance_snapshots
+// 的索引就曾因此在 SQLite/PG 上缺席过）：走 migratePlainIndexesMySQL 逐一存在性
+// 检查后补建，让「声明即可建」在三种方言、新老库里都成立。
 func migratePlainIndexes(d *sql.DB) error {
 	if DialectOf(d) == DialectMySQL {
-		return nil
+		return migratePlainIndexesMySQL(d)
 	}
 	dialect := DialectOf(d)
 	cfg := DDLConfig{IfNotExists: true}
@@ -277,6 +282,35 @@ func migratePlainIndexes(d *sql.DB) error {
 				continue
 			}
 			stmt, err := tbl.indexDef(dialect, ix, cfg)
+			if err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+			if _, err := d.Exec(stmt); err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// migratePlainIndexesMySQL 给存量 MySQL 库补建缺失的普通索引。已存在的（内联建
+// 的、或上次启动补建的）一律跳过，幂等；新库上所有声明索引都在，等价 no-op。
+func migratePlainIndexesMySQL(d *sql.DB) error {
+	for _, tbl := range tablesFor(DialectMySQL) {
+		for _, ix := range tbl.Idx {
+			if ix.Unique {
+				continue
+			}
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+				WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+				tbl.Name, ix.Name).Scan(&n); err != nil {
+				return fmt.Errorf("check index %s on %s (mysql): %w", ix.Name, tbl.Name, err)
+			}
+			if n > 0 {
+				continue
+			}
+			stmt, err := tbl.indexCreateMySQL(ix)
 			if err != nil {
 				return fmt.Errorf("create index %s: %w", ix.Name, err)
 			}

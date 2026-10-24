@@ -713,3 +713,37 @@ func TestMySQL_E2E_DropsLegacyUpstreamNameUnique(t *testing.T) {
 		t.Fatalf("duplicate active name should be allowed after drop: %v", err)
 	}
 }
+
+// TestMySQL_E2E_BackfillsMissingPlainIndex 存量 MySQL 库升级到「声明了新普通索引」
+// 的版本：CREATE TABLE IF NOT EXISTS 不会回头补，迁移必须逐一存在性检查后补建。
+// 新库的索引内联天然齐全，这条路径此前是 no-op；idx_usage_model 是第一个走它的
+// 索引，这里连同幂等性（补建后再跑一遍迁移不报错）一起钉住。
+func TestMySQL_E2E_BackfillsMissingPlainIndex(t *testing.T) {
+	d := mysqlTestDB(t)
+	// 模拟上一版本的库：表在、索引未声明
+	if _, err := d.Exec("ALTER TABLE usage_records DROP INDEX idx_usage_model"); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("MigrateForTest: %v", err)
+	}
+	countIndex := func(t *testing.T) int {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'usage_records' AND index_name = 'idx_usage_model'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := countIndex(t); n == 0 {
+		t.Fatal("missing declared plain index must be backfilled on an existing MySQL database")
+	}
+	// 幂等：索引已在位时再跑一遍迁移必须安然通过（等价 no-op）
+	if err := MigrateForTest(d); err != nil {
+		t.Fatalf("second MigrateForTest must be idempotent: %v", err)
+	}
+	if n := countIndex(t); n == 0 {
+		t.Fatal("index vanished after idempotent re-migration")
+	}
+}
