@@ -577,6 +577,34 @@ func TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns(t *testing.T) {
 	}
 }
 
+// 存量库（上一版本建的）缺本版本新声明的普通索引时，重新打开必须补建——
+// 「声明即可建」对新库（上面的 FreshDB 测试）与老库都要成立。
+func TestOpenSQLite_RecreatesMissingPlainIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-idx.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟上一版本的库：索引尚未声明，表已经存在
+	if _, err := d.Exec(`DROP INDEX idx_usage_model`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	d2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d2.Close()
+	var n int
+	if err := d2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_usage_model'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("declared plain index missing on an existing database must be recreated by migration")
+	}
+}
+
 // 存量库上的 idx_upstreams_name（历史版本的「仅活跃行」部分唯一索引）必须在
 // 启动迁移中被删除：名称唯一性已改为应用层判定（启用行不重名，禁用行可重名），
 // 旧索引会把合法的禁用重名行拒之门外。模拟方式：先开一个新库（旧索引已被

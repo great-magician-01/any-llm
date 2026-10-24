@@ -202,6 +202,11 @@ var schemaTables = []Table{
 			{Name: "idx_usage_created", Columns: []string{"created_at"}},
 			{Name: "idx_usage_ext_key", Columns: []string{"ext_key_id"}},
 			{Name: "idx_usage_upstream", Columns: []string{"upstream_id"}},
+			// 请求明细按模型筛选（GET /api/admin/usage/records?model=，COUNT 与
+			// 列表共用）：组合 id DESC 让「某模型的最新 N 条」沿索引免排序直接取，
+			// 与 idx_balance_snapshots_upstream 同款。model 有 Len(512)（MySQL 渲染
+			// 成 VARCHAR），utf8mb4 下键长 2048+8 字节，低于 InnoDB 3072 上限。
+			{Name: "idx_usage_model", Columns: []string{"model", "id DESC"}},
 		},
 	},
 	{
@@ -720,6 +725,17 @@ func (t Table) indexDefMySQL(ix Index) (string, error) {
 	return fmt.Sprintf("%s `%s` (%s)", kind, ix.Name, t.indexColumnsMySQL(ix, ix.Name)), nil
 }
 
+// indexCreateMySQL 渲染 MySQL 独立的 CREATE INDEX 语句，供 migratePlainIndexesMySQL
+// 给存量库补建缺失的普通索引（新库的索引内联在 CREATE TABLE，不走这里；部分唯一
+// 索引由生成列方案接管，同样不走这里）。列清单复用内联渲染：反引号引住标识符
+// （key 是 MySQL 保留字），"id DESC" 的排序方向不丢（MySQL 8.0.13+ 原生支持）。
+func (t Table) indexCreateMySQL(ix Index) (string, error) {
+	if err := ix.validate(t); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s)", ix.Name, t.Name, t.indexColumnsMySQL(ix, ix.Name)), nil
+}
+
 // indexColumnsMySQL 渲染 MySQL 的索引列清单：部分唯一索引的最后一列换成生成列。
 // name 是索引名（见 indexDefMySQL）。
 // "id DESC" 这类声明里的排序方向要保留（渲染成 `id` DESC）——validate 只取列名
@@ -843,8 +859,8 @@ func migrateMain(d *sql.DB) error {
 // createTableStmts 渲染主迁移的建表语句。**只含 CREATE TABLE，不含索引**：
 // 部分唯一索引的谓词引用 is_active，而该列要靠 migrateExtraCols /
 // migrateSoftDelete 才在老库上就位，所以索引必须晚一步建（见
-// migratePartialUniqueIndexes / migratePlainIndexes）。MySQL 的索引本来就内联在
-// CREATE TABLE 里，对它是空操作。
+// migratePartialUniqueIndexes / migratePlainIndexes）。MySQL 的索引内联在
+// CREATE TABLE 里随表建好，存量库缺的新索引由 migratePlainIndexesMySQL 补建。
 func createTableStmts(d Dialect) ([]string, error) {
 	cfg := DDLConfig{IfNotExists: true}
 	var out []string
