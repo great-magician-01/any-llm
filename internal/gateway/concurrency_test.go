@@ -179,7 +179,7 @@ func TestCompletionConcurrencyLimit429(t *testing.T) {
 		t.Fatalf("error body=%s err=%v", w.Body.String(), err)
 	}
 	// 未发起上游调用，不记 usage。
-	if _, total, _ := store.UsageRecordsList(d, 1, 10); total != 0 {
+	if _, total, _ := store.UsageRecordsList(d, 1, 10, ""); total != 0 {
 		t.Fatalf("usage records=%d want 0 (no upstream call made)", total)
 	}
 
@@ -224,7 +224,7 @@ func TestCompletionConcurrencyFailover(t *testing.T) {
 		t.Fatalf("expected failover to second candidate, body=%s", w.Body.String())
 	}
 	// 只有真正调用的候选记 usage。
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 || records[0].UpstreamName != "free" {
 		t.Fatalf("records=%+v total=%d", records, total)
 	}

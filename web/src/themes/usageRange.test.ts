@@ -31,6 +31,7 @@ beforeEach(() => {
   api.on('get', '/usage/summary', { data: { data: [] } })
   api.on('get', '/usage/daily', { data: { data: [] } })
   api.on('get', '/usage/records', { data: { data: [], total: 0 } })
+  api.on('get', '/usage/models', { data: { data: [] } })
 })
 
 afterEach(() => {

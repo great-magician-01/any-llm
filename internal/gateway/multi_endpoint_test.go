@@ -191,7 +191,7 @@ func TestMultiEndpoint_UnmatchedFormatFallsBackToTranslation(t *testing.T) {
 	if len(s.hits("/v1/chat/completions")) != 1 {
 		t.Fatalf("openai endpoint hits=%d, all=%+v", len(s.hits("/v1/chat/completions")), s.captured())
 	}
-	records, total, err := store.UsageRecordsList(g.db, 1, 10)
+	records, total, err := store.UsageRecordsList(g.db, 1, 10, "")
 	if err != nil || total != 1 {
 		t.Fatalf("usage records=%d err=%v", total, err)
 	}
@@ -213,7 +213,7 @@ func TestMultiEndpoint_UsageRecordsEffectiveFormat(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	records, total, err := store.UsageRecordsList(g.db, 1, 10)
+	records, total, err := store.UsageRecordsList(g.db, 1, 10, "")
 	if err != nil || total != 1 {
 		t.Fatalf("usage records=%d err=%v", total, err)
 	}
@@ -267,7 +267,7 @@ func TestMultiEndpoint_StreamPassthrough(t *testing.T) {
 	if !strings.Contains(hits[0].body, `"stream":true`) {
 		t.Fatalf("stream flag not forwarded: %s", hits[0].body)
 	}
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 || records[0].UpFormat != "anthropic" {
 		t.Fatalf("usage=%+v (total=%d)", records, total)
 	}

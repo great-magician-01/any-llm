@@ -69,7 +69,7 @@ func TestAliasRouting(t *testing.T) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 	// 用量记录记实际上游模型
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 || records[0].Model != "gpt-4o" || records[0].UpstreamName != "oai" || records[0].Status != "ok" {
 		t.Fatalf("records=%+v total=%d", records, total)
 	}
@@ -95,7 +95,7 @@ func TestAliasFailoverNonStream(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "from-second") {
 		t.Fatalf("body=%s", w.Body.String())
 	}
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2 (error+ok)", total)
 	}
@@ -152,7 +152,7 @@ func TestAliasFailoverStream(t *testing.T) {
 	if sawErr {
 		t.Fatalf("stream contains error frame: %s", w.Body.String())
 	}
-	_, total, _ := store.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2", total)
 	}
@@ -175,7 +175,7 @@ func TestAliasAllCandidatesFail(t *testing.T) {
 	if w.Code != 429 {
 		t.Fatalf("status=%d want 429 (last candidate), body=%s", w.Code, w.Body.String())
 	}
-	_, total, _ := store.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2", total)
 	}
@@ -218,7 +218,7 @@ func TestAliasCandidateSkippedByUpstreamLimit(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	// 限额跳过不产生 error usage：只有预置的 1 条 + 成功的 1 条
-	_, total, _ := store.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 2 {
 		t.Fatalf("usage records=%d want 2 (pre-seeded + ok)", total)
 	}
@@ -246,7 +246,7 @@ func TestAliasCandidateDisabledFallback(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	// 禁用跳过不产生 usage：只有成功的 1 条
-	_, total, _ := store.UsageRecordsList(d, 1, 10)
+	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d want 1 (ok only, disabled candidate never dispatched)", total)
 	}

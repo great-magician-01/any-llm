@@ -42,7 +42,7 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 		t.Fatalf("no usage in response: %s", w.Body.String())
 	}
 
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d", total)
 	}
@@ -88,7 +88,7 @@ func TestCompletion_StreamOpenAI(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "[DONE]") {
 		t.Fatalf("no [DONE]: %s", w.Body.String())
 	}
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d", total)
 	}
@@ -127,7 +127,7 @@ func TestCompletion_CrossFormat_AnthropicInOpenAIUp(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"type":"message"`) {
 		t.Fatalf("not anthropic format: %s", w.Body.String())
 	}
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if records[0].InFormat != "anthropic" || records[0].UpFormat != "openai" {
 		t.Fatalf("formats=%+v", records[0])
 	}
@@ -158,7 +158,7 @@ func TestCompletion_UpstreamError(t *testing.T) {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v", records)
 	}
@@ -530,7 +530,7 @@ func TestCompletion_UpstreamError_AnthropicOut(t *testing.T) {
 		t.Fatalf("message should be plain text, got: %s", resp.Error.Message)
 	}
 
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v", records)
 	}

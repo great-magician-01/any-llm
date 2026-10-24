@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, h } from 'vue'
 import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { fetchSummary, fetchRecords, fetchDaily, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
+import { fetchSummary, fetchRecords, fetchDaily, fetchUsageModels, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '@/utils/format'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -53,13 +53,42 @@ function rangeParams(): { from?: string; to?: string } {
   return { from: localISO(from), to: localISO(to) }
 }
 
+// 请求明细的模型筛选：选项来自 usage_records 里实际出现过的模型（去重）。
+// 只作用于明细表——汇总/趋势/构成图维持自己的时间范围口径，不受影响。
+const modelFilter = ref<string | null>(null)
+const modelOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadRecords() {
+  try {
+    const r = await fetchRecords(page.value, pageSize, modelFilter.value ?? undefined)
+    records.value = r.data
+    total.value = r.total
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
+}
+
+// 切换模型筛选：回到第 1 页再查（筛选后的结果集变小，旧页码可能越界）
+function onModelFilterChange(v: string | null) {
+  modelFilter.value = v
+  page.value = 1
+  loadRecords()
+}
+
 async function load() {
   try {
     const { from, to } = rangeParams()
     summaries.value = await fetchSummary(groupBy.value, from, to)
-    const r = await fetchRecords(page.value, pageSize)
-    records.value = r.data
-    total.value = r.total
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
+  await loadRecords()
+}
+
+// 模型筛选项单独加载：失败时下拉框少一些选项，明细列表本身不受影响
+async function loadModels() {
+  try {
+    modelOptions.value = (await fetchUsageModels()).map((m) => ({ label: m, value: m }))
   } catch (e) {
     message.error('加载用量数据失败：' + errText(e))
   }
@@ -166,6 +195,7 @@ function loadAll() {
   load()
   loadDaily()
   loadRangeExtras()
+  loadModels()
 }
 
 const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
@@ -370,7 +400,20 @@ onMounted(loadAll)
 
     <n-card title="请求明细" class="panel">
       <template #header-extra>
-        <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
+        <div class="records-toolbar">
+          <n-select
+            class="model-filter"
+            :value="modelFilter"
+            size="small"
+            clearable
+            filterable
+            placeholder="按模型筛选"
+            :options="modelOptions"
+            :consistent-menu-width="false"
+            @update:value="(v: string | null) => onModelFilterChange(v)"
+          />
+          <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
+        </div>
       </template>
       <n-data-table
         :bordered="false"
@@ -378,7 +421,7 @@ onMounted(loadAll)
         :data="records"
         :scroll-x="1210"
         remote
-        :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
+        :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; loadRecords() } }"
       />
     </n-card>
   </div>
@@ -480,5 +523,14 @@ onMounted(loadAll)
   text-align: center;
   color: var(--text-4);
   font-size: 13px;
+}
+/* 请求明细头部：模型筛选 + 条数 */
+.records-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.model-filter {
+  width: 190px;
 }
 </style>
