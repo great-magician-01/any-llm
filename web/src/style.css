@@ -29,6 +29,36 @@
 
   /* 代码/工具调用块的底色（对话详情 IrContent 等），浅色主题在下方覆盖 */
   --code-bg: rgba(2, 6, 18, 0.5);
+
+  /* 共享视图的表面语义变量：玻璃套件在 glass.css 的 .glass-root 上整体换值，
+     视图内不允许再写死这些颜色（合并前两套视图的固定差异值，见 glass.css） */
+  /* 小 chip 底色（Keys/Aliases 的 key-chip / code-chip、Dashboard 的 rank-bar 轨道） */
+  --overlay-1: rgba(148, 163, 184, 0.1);
+  --overlay-2: rgba(148, 163, 184, 0.12);
+  /* 侧栏面板（Conversations 会话列表）：底色 / 毛玻璃 / 会话项左侧分隔条 */
+  --panel-bg: var(--surface-2);
+  --panel-blur: none;
+  --panel-divider: var(--text-4);
+  /* Layout 侧栏：底色与毛玻璃（玻璃侧为 glass.css 的渐变 + --glass-blur） */
+  --sider-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--brand) 5%, transparent) 0%,
+    rgba(10, 15, 29, 0) 240px
+  );
+  --sider-blur: none;
+  /* 套件切换小按钮：常态/悬停底色与玻璃高光（classic 无高光） */
+  --suite-bg: rgba(148, 163, 184, 0.05);
+  --suite-bg-hover: color-mix(in srgb, var(--brand) 10%, transparent);
+  --suite-glow: none;
+  --suite-glow-hover: none;
+  /* 登录卡表面：classic 是不透明暗卡（浅色主题在下方覆盖），玻璃侧换成材质变量 */
+  --login-card-bg: rgba(14, 21, 38, 0.72);
+  --login-card-border: rgba(148, 163, 184, 0.16);
+  --login-card-radius: 20px;
+  --login-card-shadow:
+    0 24px 64px rgba(2, 6, 18, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --login-card-blur: blur(18px);
 }
 
 /*
@@ -55,6 +85,12 @@
   --shadow-hover: 0 8px 24px rgba(15, 23, 42, 0.12);
   --tip-bg: rgba(255, 255, 255, 0.96);
   --code-bg: rgba(15, 23, 42, 0.05);
+  /* 登录卡转白（原 classic Login.vue 里的浅色覆盖值） */
+  --login-card-bg: rgba(255, 255, 255, 0.86);
+  --login-card-border: rgba(15, 23, 42, 0.1);
+  --login-card-shadow:
+    0 24px 64px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   color-scheme: light;
 }

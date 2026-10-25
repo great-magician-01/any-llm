@@ -1,5 +1,5 @@
 /**
- * 经典皮肤「上游管理」页的组件测试（本仓库第一个真实页面测试）。
+ * 「上游管理」页的组件测试（本仓库第一个真实页面测试）。
  *
  * 断言只落在两件事上：
  *   1. 用户看到什么（渲染出来的行、警告/错误文案、确认框）；
@@ -88,7 +88,7 @@ async function pickConfigFile(content: string): Promise<void> {
   await flush()
 }
 
-describe('Upstreams 页（经典皮肤）', () => {
+describe('Upstreams 页', () => {
   // 规则：列表默认只查「启用中」，开页即加载余额快照并静默刷新一轮厂商余额
   it('打开页面按「启用中」档位查询，并把上游渲染进表格', async () => {
     await open()
