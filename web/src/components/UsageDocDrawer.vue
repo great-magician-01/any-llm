@@ -15,7 +15,7 @@ const origin = computed(() => window.location.origin)
 // 示例代码块。模型名占位用「upstream名称/模型名」，与 /v1/models 返回的 id 一致。
 const snips = computed(() => ({
   curlOpenAI: `curl ${origin.value}/v1/chat/completions \\
-  -H "Authorization: Bearer all-sk-你的密钥" \\
+  -H "Authorization: Bearer sk-all-你的密钥" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "upstream名称/模型名",
@@ -23,7 +23,7 @@ const snips = computed(() => ({
     "stream": true
   }'`,
   curlAnthropic: `curl ${origin.value}/v1/messages \\
-  -H "x-api-key: all-sk-你的密钥" \\
+  -H "x-api-key: sk-all-你的密钥" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -32,12 +32,12 @@ const snips = computed(() => ({
     "messages": [{"role": "user", "content": "你好"}]
   }'`,
   curlModels: `curl ${origin.value}/v1/models \\
-  -H "Authorization: Bearer all-sk-你的密钥"`,
+  -H "Authorization: Bearer sk-all-你的密钥"`,
   openaiSdk: `from openai import OpenAI
 
 client = OpenAI(
     base_url="${origin.value}/v1",  # OpenAI 兼容客户端填 /v1 后缀
-    api_key="all-sk-你的密钥",
+    api_key="sk-all-你的密钥",
 )
 
 resp = client.chat.completions.create(
@@ -49,7 +49,7 @@ print(resp.choices[0].message.content)`,
 
 client = anthropic.Anthropic(
     base_url="${origin.value}",  # Anthropic SDK 填根地址，自拼 /v1/messages
-    api_key="all-sk-你的密钥",
+    api_key="sk-all-你的密钥",
 )
 
 msg = client.messages.create(
@@ -59,7 +59,7 @@ msg = client.messages.create(
 )
 print(msg.content[0].text)`,
   claudeCode: `export ANTHROPIC_BASE_URL=${origin.value}
-export ANTHROPIC_AUTH_TOKEN=all-sk-你的密钥
+export ANTHROPIC_AUTH_TOKEN=sk-all-你的密钥
 export ANTHROPIC_MODEL=upstream名称/模型名  # 可选，或模型别名`,
 }))
 </script>

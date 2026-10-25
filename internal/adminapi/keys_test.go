@@ -23,7 +23,7 @@ func TestCreateKey(t *testing.T) {
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	key, _ := resp["key"].(string)
-	if !strings.HasPrefix(key, "all-sk-") {
+	if !strings.HasPrefix(key, "sk-all-") {
 		t.Fatalf("key=%q", key)
 	}
 	if resp["label"] != "my-key" || resp["remark"] != "for tests" {

@@ -13,7 +13,7 @@
 - **Token 限额**：外部 Key 与上游均可设置日 / 月 Token 配额（0 = 不限），超限返回 429
 - **并发控制**：每个上游可设并发上限（默认 100，0 = 不限），占满的别名候选自动跳过并故障转移，全部占满返回 429
 - **模型权限**：每个外部 Key 可限定可用模型白名单（别名或 `上游/模型`，留空 = 不限），越权请求返回 403，`/v1/models` 按 Key 过滤
-- **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或客户端配置（opencode / Oh My Pi / Pi agent / dsh / Claude Code），内置各 agent 的接入配置文档（「Agent 配置」抽屉）
+- **API Key 管理**：创建和管理外部 API Key（`sk-all-*` 格式，存量 `all-sk-` 前缀密钥仍可用），可单独启用/禁用，一键复制调用示例或客户端配置（opencode / Oh My Pi / Pi agent / dsh / Claude Code），内置各 agent 的接入配置文档（「Agent 配置」抽屉）
 - **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
 - **对话记录**：自动归档每次调用的完整请求/响应，支持按请求 / 按会话两种视图浏览，自动识别调用客户端（Claude Code、Codex、Aider 等，未知客户端按「名称/版本」形态自动提取）；PostgreSQL / MySQL 存储，应用层按月分表（[设计文档](docs/conversation-sharding.md)）
 - **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量、阶跃星辰账户余额——Step Plan 订阅通道除外，其套餐月池与钱包余额相互独立），保留历史趋势
@@ -119,7 +119,7 @@ docker compose up -d
 
 ```bash
 curl http://localhost:6718/v1/chat/completions \
-  -H "Authorization: Bearer all-sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Authorization: Bearer sk-all-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "my-upstream/gpt-4",
@@ -128,7 +128,7 @@ curl http://localhost:6718/v1/chat/completions \
 ```
 
 - 模型格式为 `上游名称/模型名称`（如 `my-openai/gpt-4`），或任意已配置的**模型别名**（优先于直连路由）
-- API Key 格式：`all-sk-` 前缀 + 32 位字符，通过 `Authorization: Bearer ...` 或 `x-api-key` 头传递
+- API Key 格式：`sk-all-` 前缀 + 32 位字符（历史 `all-sk-` 前缀密钥照常鉴权），通过 `Authorization: Bearer ...` 或 `x-api-key` 头传递
 
 ### 可用端点
 

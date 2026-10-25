@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/store"
 	"github.com/great-magician-01/any-llm/internal/upstream"
 )
@@ -54,9 +55,11 @@ func TestGatewayAuth_HeaderPrecedenceAndErrorKinds(t *testing.T) {
 	k, _ := store.CreateExtKey(d, "auth-matrix", "", 0, 0, nil)
 	g.client = upstream.NewClient(http.DefaultClient)
 
-	// 格式合法（all-sk- 前缀）但库里没有的 key；IsValidKeyFormat 只校验前缀，
-	// 所以它会走到 DB 查询并得到「invalid API key」。
+	// 格式合法但库里没有的 key；IsValidKeyFormat 只校验前缀（新旧两个都收），
+	// 所以它们会走到 DB 查询并得到「invalid API key」。legacy 版本钉住历史
+	// all-sk- 前缀永远保持 format-合法，存量密钥不能因换前缀而失效。
 	unknownWellFormed := "all-sk-" + strings.Repeat("a", 32)
+	unknownNewPrefix := "sk-all-" + strings.Repeat("a", 32)
 
 	cases := []struct {
 		name        string
@@ -100,6 +103,10 @@ func TestGatewayAuth_HeaderPrecedenceAndErrorKinds(t *testing.T) {
 		},
 		{
 			name: "格式合法但库里不存在", authHeader: "Bearer " + unknownWellFormed,
+			wantCode: 401, wantMessage: "invalid API key", wantType: "authentication_error",
+		},
+		{
+			name: "新前缀格式合法但库里不存在", authHeader: "Bearer " + unknownNewPrefix,
 			wantCode: 401, wantMessage: "invalid API key", wantType: "authentication_error",
 		},
 	}
@@ -175,6 +182,34 @@ func TestGatewayAuth_ModelsEndpointUsesSameExtraction(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGatewayAuth_LegacyPrefixKeyStillWorks：生成前缀改为 sk-all- 之后，存量
+// all-sk- 前缀的密钥必须照常鉴权通过——直接向库里插一条历史格式的 key 验证
+// 全链路（格式检查 + DB 命中），而不是只测 IsValidKeyFormat。
+func TestGatewayAuth_LegacyPrefixKeyStillWorks(t *testing.T) {
+	up := authHdrSetupUpstream(t)
+	defer up.Close()
+
+	g, d := setupGateway(t)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: up.URL, APIKey: "sk-up", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "gpt-4o"})
+	g.client = upstream.NewClient(http.DefaultClient)
+
+	legacy := "all-sk-" + strings.Repeat("x", 32)
+	if _, err := d.Exec(`INSERT INTO ext_keys (`+db.QuoteIdent(d, "key")+`, label) VALUES (?, 'legacy')`, legacy); err != nil {
+		t.Fatalf("insert legacy key: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"oai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+legacy)
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("legacy key status=%d want 200 (body=%s)", w.Code, w.Body.String())
 	}
 }
 

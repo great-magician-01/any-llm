@@ -54,7 +54,7 @@ export const UPSTREAM_FIT_COLUMNS: readonly FitColumn[] = [
 
 /**
  * API 密钥页的列宽规格。min 的取值依据：
- *   - key：「all-sk-」+ 32 位 base62 在 12px 等宽下约 274px，加 chip 内边距、
+ *   - key：「sk-all-」+ 32 位 base62 在 12px 等宽下约 274px，加 chip 内边距、
  *     复制按钮与单元格内边距得出理想值 340；该列不设宽时曾被 fixed 布局压到
  *     不足一个字符宽，key 逐字竖排把行高撑爆（见 Keys.vue 的 key-chip 样式注）
  *   - daily / monthly / allowed：「不限」「全部」「N 个」短文本，压到下限无碍

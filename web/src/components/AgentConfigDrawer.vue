@@ -106,7 +106,7 @@ async function copyAgentConfig(agent: CopyAgent, evt?: MouseEvent) {
 // Claude Code：最小环境变量段（接入地址 + 密钥 + 网关模型发现），模型在会话内
 // 用 /model 选择；完整槽位映射导出点按钮打开共享弹窗。
 const ccQuick = computed(() => {
-  const token = selectedKey.value?.key ?? 'all-sk-你的密钥'
+  const token = selectedKey.value?.key ?? 'sk-all-你的密钥'
   return [
     `export ANTHROPIC_BASE_URL=${origin.value}`,
     `export ANTHROPIC_AUTH_TOKEN=${token}`,

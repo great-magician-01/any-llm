@@ -52,7 +52,7 @@ To add a new format (e.g. Google): create a new package under `internal/translat
 
 `internal/gateway/router.go` routes the four public endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/messages`, `/v1/responses`). `handler_openai.go` implements the pipeline:
 
-1. **Ext-key auth** — `Authorization: Bearer all-sk-...` or `x-api-key` header; validated against DB and `Enabled` flag; `last_used_at` touched via async writer. `/v1/models` requires the same auth and lists only that key's allowed models.
+1. **Ext-key auth** — `Authorization: Bearer sk-all-...` (legacy `all-sk-` still accepted) or `x-api-key` header; validated against DB and `Enabled` flag; `last_used_at` touched via async writer. `/v1/models` requires the same auth and lists only that key's allowed models.
 2. **Model-permission check** — each key carries `allowed_models`, a whitelist of *public* model names (alias or `upstream/model` — exactly the ids `/v1/models` lists); empty = unrestricted, exact match only. An unlisted model → 403 `permission_error`, before alias resolution.
 3. **Model resolve** — the request model is first exact-matched against **model aliases** (`model_aliases` + `model_alias_bindings`, fixed external names each bound to an ordered list of `upstream + real model`; aliases take precedence even for names containing `/`). On a miss it falls back to the `upstream-name/model-name` split on the first `/`; unknown upstream → 404. Alias candidates beyond the first provide automatic failover: the dispatch loop tries each in `priority` order (non-stream: until one succeeds; stream: until one call returns, since headers/keep-alives are already flowing — once content frames flow there is no failover). Candidates over their upstream token limit, or pointing at **disabled** upstreams, are skipped *before* dispatch (a disabled upstream on the direct route 404s with "is disabled", and `/v1/models` omits it — disable keeps models/bindings alive for re-enable, unlike delete). Upstreams can also carry an **expiry** (`expires_at`, nullable, read-time check via `store.Upstream.Expired` — no background job); an expired upstream is treated exactly like a disabled one (direct route 404s "is expired", candidates drop out of the chain, `/v1/models` omits it) but `enabled` is left untouched, so extending the date restores service without re-enabling. Usage records store the **actual** upstream model of each attempt.
 4. **Token-limit check** — daily/monthly quotas on both the ext key and the upstream (aggregated from `usage_records` over local-day/local-month windows; `0` = unbounded), exceeded → 429.
@@ -82,7 +82,7 @@ Every request ends in `recordUsage` (via the async writer, so it never blocks th
 ### Auth — two independent schemes
 
 - **Admin** (`internal/auth`): password login → HMAC-SHA256 session cookie `s` (24h expiry, path-scoped to `/api/admin`), sliding — re-issued with a fresh full TTL once less than half remains, so active sessions don't expire. Session secret is auto-generated and persisted to `ANY_LLM_SESSION_SECRET_FILE` (default `./.session-secret`) so sessions survive restarts.
-- **Public gateway**: stateless ext keys, `all-sk-` + 32 base62 chars, stored in DB.
+- **Public gateway**: stateless ext keys, `sk-all-` + 32 base62 chars (legacy `all-sk-` keys still valid), stored in DB.
 
 ### Server wiring (cmd/any-llm/main.go)
 
