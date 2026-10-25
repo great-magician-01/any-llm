@@ -21,6 +21,14 @@
               : 'dark'
         }
         document.documentElement.dataset.theme = mode
+        // 配色（accent）没有系统偏好可跟随，读不到就落默认蓝。
+        // 合法值清单与 src/utils/accents.ts 的 ACCENT_IDS 保持一致。
+        var accent = null
+        try {
+          var a = localStorage.getItem('any-llm-accent')
+          if (a === 'default' || a === 'eva-01' || a === 'eva-02' || a === 'eva-00') accent = a
+        } catch (e) {}
+        document.documentElement.dataset.accent = accent || 'default'
       })()
     </script>
   </head>

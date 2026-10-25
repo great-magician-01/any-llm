@@ -43,6 +43,6 @@ const tip = computed(() => (isDark.value ? '切换到浅色主题' : '切换到�
 }
 .theme-toggle:hover {
   color: var(--brand-hover);
-  border-color: rgba(91, 140, 255, 0.4);
+  border-color: var(--brand-border);
 }
 </style>

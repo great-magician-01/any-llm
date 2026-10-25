@@ -41,7 +41,7 @@ withDefaults(
     box-shadow 0.2s ease;
 }
 .stat-card:hover {
-  border-color: rgba(91, 140, 255, 0.35);
+  border-color: color-mix(in srgb, var(--brand) 35%, transparent);
   box-shadow: var(--shadow-hover);
   transform: translateY(-1px);
 }

@@ -58,6 +58,19 @@
   );
   --tip-bg: rgba(16, 22, 40, 0.88);
 
+  /* 流光背景 / 光斑 / 主按钮渐变的品牌衍生色：跟随 accent（见文件末尾的 accent 块），
+     浅色取值在 data-theme='light' 块覆盖。 */
+  --glass-blob-1: rgba(99, 132, 255, 0.3);
+  --glass-blob-2: rgba(34, 211, 238, 0.2);
+  --glass-blob-3: rgba(168, 120, 255, 0.16);
+  --glass-bg-base: linear-gradient(160deg, #0a1024 0%, #0c1230 45%, #0a1a2e 100%);
+  --glass-orb-1: rgba(123, 163, 255, 0.55);
+  --glass-orb-2: rgba(78, 216, 240, 0.42);
+  --glass-btn-grad-from: rgba(139, 172, 255, 0.95);
+  --glass-btn-grad-to: rgba(78, 216, 240, 0.9);
+  --glass-btn-glow: rgba(94, 143, 255, 0.35);
+  --glass-btn-glow-hover: rgba(94, 143, 255, 0.45);
+
   position: relative;
   min-height: 100vh;
   isolation: isolate;
@@ -70,10 +83,10 @@
   z-index: -1;
   overflow: hidden;
   background:
-    radial-gradient(1100px 680px at 82% -18%, rgba(99, 132, 255, 0.3), transparent 62%),
-    radial-gradient(900px 620px at -12% 112%, rgba(34, 211, 238, 0.2), transparent 62%),
-    radial-gradient(720px 540px at 112% 78%, rgba(168, 120, 255, 0.16), transparent 64%),
-    linear-gradient(160deg, #0a1024 0%, #0c1230 45%, #0a1a2e 100%);
+    radial-gradient(1100px 680px at 82% -18%, var(--glass-blob-1), transparent 62%),
+    radial-gradient(900px 620px at -12% 112%, var(--glass-blob-2), transparent 62%),
+    radial-gradient(720px 540px at 112% 78%, var(--glass-blob-3), transparent 64%),
+    var(--glass-bg-base);
 }
 .glass-bg::before,
 .glass-bg::after {
@@ -89,14 +102,14 @@
   height: 640px;
   top: -180px;
   right: -120px;
-  background: radial-gradient(circle, rgba(123, 163, 255, 0.55), transparent 65%);
+  background: radial-gradient(circle, var(--glass-orb-1), transparent 65%);
 }
 .glass-bg::after {
   width: 600px;
   height: 600px;
   bottom: -200px;
   left: -140px;
-  background: radial-gradient(circle, rgba(78, 216, 240, 0.42), transparent 65%);
+  background: radial-gradient(circle, var(--glass-orb-2), transparent 65%);
   animation-duration: 27s;
   animation-delay: -11s;
 }
@@ -136,7 +149,7 @@
   box-shadow: var(--glass-shadow);
 }
 .glass-root .stat-card:hover {
-  border-color: rgba(123, 163, 255, 0.5);
+  border-color: color-mix(in srgb, var(--brand) 50%, transparent);
   box-shadow: var(--shadow-hover);
 }
 
@@ -153,11 +166,11 @@
 .glass-root .n-button--primary-type:not(.n-button--disabled) {
   background-image: linear-gradient(
     135deg,
-    rgba(139, 172, 255, 0.95) 0%,
-    rgba(78, 216, 240, 0.9) 100%
+    var(--glass-btn-grad-from) 0%,
+    var(--glass-btn-grad-to) 100%
   );
   box-shadow:
-    0 6px 18px rgba(94, 143, 255, 0.35),
+    0 6px 18px var(--glass-btn-glow),
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
   text-shadow: 0 1px 2px rgba(10, 20, 50, 0.25);
   transition:
@@ -169,7 +182,7 @@
   transform: translateY(-1px);
   filter: brightness(1.08);
   box-shadow:
-    0 10px 26px rgba(94, 143, 255, 0.45),
+    0 10px 26px var(--glass-btn-glow-hover),
     inset 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 .glass-root .n-button--primary-type:not(.n-button--disabled):active {
@@ -247,20 +260,16 @@ body.glass-mode .n-cascader-menu {
     rgba(255, 255, 255, 0.45) 100%
   );
   --tip-bg: rgba(255, 255, 255, 0.92);
+
+  /* 流光背景浅色取值（品牌衍生，随 accent 的浅色块再覆盖） */
+  --glass-blob-1: rgba(91, 140, 255, 0.24);
+  --glass-blob-2: rgba(34, 211, 238, 0.2);
+  --glass-blob-3: rgba(168, 120, 255, 0.14);
+  --glass-bg-base: linear-gradient(160deg, #eef2fb 0%, #e9eefc 45%, #e5f1f7 100%);
+  --glass-orb-1: rgba(123, 163, 255, 0.38);
+  --glass-orb-2: rgba(34, 211, 238, 0.3);
 }
-:root[data-theme='light'] .glass-bg {
-  background:
-    radial-gradient(1100px 680px at 82% -18%, rgba(91, 140, 255, 0.24), transparent 62%),
-    radial-gradient(900px 620px at -12% 112%, rgba(34, 211, 238, 0.2), transparent 62%),
-    radial-gradient(720px 540px at 112% 78%, rgba(168, 120, 255, 0.14), transparent 64%),
-    linear-gradient(160deg, #eef2fb 0%, #e9eefc 45%, #e5f1f7 100%);
-}
-:root[data-theme='light'] .glass-bg::before {
-  background: radial-gradient(circle, rgba(123, 163, 255, 0.38), transparent 65%);
-}
-:root[data-theme='light'] .glass-bg::after {
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.3), transparent 65%);
-}
+/* 光斑颜色已收敛进 .glass-root 的变量，浅色只需覆盖变量本身 */
 /* 白色网格线在浅底上等于没有，换成深色细线 */
 :root[data-theme='light'] .glass-bg-noise {
   background-image:
@@ -284,5 +293,95 @@ body.glass-mode .n-cascader-menu {
   );
   box-shadow:
     0 20px 56px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/*
+ * ---- 配色主题（accent）：只换品牌衍生变量，表面材质（玻璃填充 / 模糊）不变 ----
+ * 取值与 src/utils/accents.ts 的 ACCENTS 保持同步（accents.test.ts 把关）。
+ * EVA 配色的 CSS 值与经典版共用一组（default 的玻璃蓝是 glass 特调，见 .glass-root）。
+ * 顺序约定同 style.css：暗色值在前，浅色组合选择器跟在后面。
+ */
+
+:root[data-accent='eva-01'] .glass-root {
+  --brand: #9b6dff;
+  --brand-2: #a3e635;
+  --brand-hover: #b58cff;
+  --grad: linear-gradient(135deg, #9b6dff 0%, #a3e635 100%);
+  --glass-blob-1: rgba(155, 109, 255, 0.28);
+  --glass-blob-2: rgba(163, 230, 53, 0.14);
+  --glass-blob-3: rgba(109, 40, 217, 0.16);
+  --glass-bg-base: linear-gradient(160deg, #100b26 0%, #140f33 45%, #0d1626 100%);
+  --glass-orb-1: rgba(155, 109, 255, 0.5);
+  --glass-orb-2: rgba(163, 230, 53, 0.3);
+  --glass-btn-grad-from: rgba(178, 145, 255, 0.95);
+  --glass-btn-grad-to: rgba(163, 230, 53, 0.88);
+  --glass-btn-glow: rgba(155, 109, 255, 0.35);
+  --glass-btn-glow-hover: rgba(155, 109, 255, 0.45);
+  --shadow-hover:
+    0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(155, 109, 255, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+:root[data-theme='light'][data-accent='eva-01'] .glass-root {
+  --brand-hover: #6d28d9;
+  --grad: linear-gradient(135deg, #9b6dff 0%, #84cc16 100%);
+  --glass-bg-base: linear-gradient(160deg, #f1edfb 0%, #eeeffc 45%, #eef4f0 100%);
+  --shadow-hover:
+    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(155, 109, 255, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+:root[data-accent='eva-02'] .glass-root {
+  --brand: #ef4444;
+  --brand-2: #fb923c;
+  --brand-hover: #f87171;
+  --grad: linear-gradient(135deg, #ef4444 0%, #fb923c 100%);
+  --glass-blob-1: rgba(239, 68, 68, 0.26);
+  --glass-blob-2: rgba(251, 146, 60, 0.18);
+  --glass-blob-3: rgba(236, 72, 153, 0.12);
+  --glass-bg-base: linear-gradient(160deg, #170c12 0%, #1e0f16 45%, #150e14 100%);
+  --glass-orb-1: rgba(239, 68, 68, 0.46);
+  --glass-orb-2: rgba(251, 146, 60, 0.34);
+  --glass-btn-grad-from: rgba(244, 114, 114, 0.95);
+  --glass-btn-grad-to: rgba(251, 146, 60, 0.9);
+  --glass-btn-glow: rgba(239, 68, 68, 0.35);
+  --glass-btn-glow-hover: rgba(239, 68, 68, 0.45);
+  --shadow-hover:
+    0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(239, 68, 68, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+:root[data-theme='light'][data-accent='eva-02'] .glass-root {
+  --brand-hover: #dc2626;
+  --glass-bg-base: linear-gradient(160deg, #fbf0ef 0%, #fbf1f1 45%, #f9f2ee 100%);
+  --shadow-hover:
+    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(239, 68, 68, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+:root[data-accent='eva-00'] .glass-root {
+  --brand: #2f9bdc;
+  --brand-2: #fcd34d;
+  --brand-hover: #55b5ea;
+  --grad: linear-gradient(135deg, #2f9bdc 0%, #fcd34d 100%);
+  --glass-blob-1: rgba(56, 168, 232, 0.28);
+  --glass-blob-2: rgba(252, 211, 77, 0.13);
+  --glass-blob-3: rgba(125, 211, 252, 0.14);
+  --glass-bg-base: linear-gradient(160deg, #0a1420 0%, #0b1a2c 45%, #0a1a2e 100%);
+  --glass-orb-1: rgba(125, 211, 252, 0.5);
+  --glass-orb-2: rgba(252, 211, 77, 0.28);
+  --glass-btn-grad-from: rgba(85, 181, 234, 0.95);
+  --glass-btn-grad-to: rgba(252, 211, 77, 0.9);
+  --glass-btn-glow: rgba(56, 168, 232, 0.35);
+  --glass-btn-glow-hover: rgba(56, 168, 232, 0.45);
+  --shadow-hover:
+    0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(56, 168, 232, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+:root[data-theme='light'][data-accent='eva-00'] .glass-root {
+  --brand-hover: #0369a1;
+  --grad: linear-gradient(135deg, #2f9bdc 0%, #eab308 100%);
+  --glass-bg-base: linear-gradient(160deg, #eef5fb 0%, #edf2fc 45%, #f2f4f7 100%);
+  --shadow-hover:
+    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(56, 168, 232, 0.26),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }

@@ -297,7 +297,7 @@ onUnmounted(() => clearInterval(timer))
   height: 100%;
   border-radius: 3px;
   background: var(--grad);
-  box-shadow: 0 0 8px rgba(123, 163, 255, 0.5);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--brand) 50%, transparent);
   transition: width 0.5s ease;
 }
 .rank-sub {
