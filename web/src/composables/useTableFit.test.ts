@@ -94,7 +94,7 @@ describe('KEYS_FIT_COLUMNS', () => {
       expect(col.min, col.key).toBeLessThanOrEqual(col.wide)
       expect(col.min, col.key).toBeGreaterThan(0)
     }
-    // 「all-sk-」+ 32 位 base62 在 12px 等宽下约 274px，加上 chip 内边距、
+    // 「sk-all-」+ 32 位 base62 在 12px 等宽下约 274px，加上 chip 内边距、
     // 复制按钮与单元格内边距，低于 300 就一定会截断完整 key
     expect(KEYS_FIT_COLUMNS.find((c) => c.key === 'key')!.wide).toBeGreaterThanOrEqual(300)
   })

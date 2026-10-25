@@ -12,7 +12,7 @@ func TestCreateExtKeyFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(k.Key, "all-sk-") {
+	if !strings.HasPrefix(k.Key, "sk-all-") {
 		t.Fatalf("missing prefix: %q", k.Key)
 	}
 	if len(k.Key) < 39 {
@@ -35,6 +35,22 @@ func TestCreateExtKeysUnique(t *testing.T) {
 	k2, _ := CreateExtKey(d, "b", "", 0, 0, nil)
 	if k1.Key == k2.Key {
 		t.Fatal("duplicate keys generated")
+	}
+}
+
+// TestIsValidKeyFormat 前缀校验：新生成的 sk-all- 与历史 all-sk- 都算合法
+// （存量密钥不迁移、鉴权照常），其余前缀一律非法。
+func TestIsValidKeyFormat(t *testing.T) {
+	if !IsValidKeyFormat("sk-all-" + strings.Repeat("a", 32)) {
+		t.Fatal("new sk-all- prefix must be valid")
+	}
+	if !IsValidKeyFormat("all-sk-" + strings.Repeat("a", 32)) {
+		t.Fatal("legacy all-sk- prefix must stay valid")
+	}
+	for _, key := range []string{"sk-proj-abcdef", "nope", "sk-all", strings.Repeat("a", 32)} {
+		if IsValidKeyFormat(key) {
+			t.Fatalf("key %q must be invalid", key)
+		}
 	}
 }
 

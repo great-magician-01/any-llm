@@ -13,7 +13,10 @@ import (
 	"github.com/great-magician-01/any-llm/internal/db"
 )
 
-const keyPrefix = "all-sk-"
+// keyPrefix 是新生成密钥的前缀；legacyKeyPrefix 是历史前缀——生成已停用，
+// 但鉴权仍接受（IsValidKeyFormat 双前缀），存量密钥无需轮换即可继续使用。
+const keyPrefix = "sk-all-"
+const legacyKeyPrefix = "all-sk-"
 const keyRandomLen = 32
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -220,8 +223,10 @@ func TouchExtKey(d *sql.DB, id int64) error {
 	return nil
 }
 
+// IsValidKeyFormat 只做前缀形状检查（具体长度/字符集由 DB 命中与否兜底）：
+// 新的 sk-all- 与历史的 all-sk- 都算合法，其余一律非法。
 func IsValidKeyFormat(key string) bool {
-	return strings.HasPrefix(key, keyPrefix)
+	return strings.HasPrefix(key, keyPrefix) || strings.HasPrefix(key, legacyKeyPrefix)
 }
 
 // AllowsModel 报告该 key 是否可使用对外模型名 name（别名或 upstream/model，
