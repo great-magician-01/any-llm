@@ -24,7 +24,7 @@ type Gateway struct {
 }
 
 func New(sqlDB *sql.DB, writer *db.Writer, client *upstream.Client) *Gateway {
-	return &Gateway{db: sqlDB, writer: writer, client: client, sessions: NewSessionStore(sqlDB, sessionTTL), conc: newConcManager(), fail: newFailureCache()}
+	return &Gateway{db: sqlDB, writer: writer, client: client, sessions: NewSessionStore(sqlDB, writer, sessionTTL), conc: newConcManager(), fail: newFailureCache()}
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
