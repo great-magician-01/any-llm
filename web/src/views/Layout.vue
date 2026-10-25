@@ -60,16 +60,12 @@ const menuItems = [
           @update:value="(v: string) => router.push(v)"
         />
         <div class="sider-footer">
-          <div class="admin-chip">
-            <span class="admin-avatar">A</span>
-            <span class="admin-name">管理员</span>
-          </div>
+          <span class="admin-name">管理员</span>
           <div class="footer-actions">
             <AccentPicker />
             <ThemeToggle />
-            <button class="logout-btn" title="退出登录" @click="logout">
+            <button class="logout-btn" title="退出登录" aria-label="退出登录" @click="logout">
               <AppIcon name="logout" :size="15" />
-              <span>退出登录</span>
             </button>
           </div>
         </div>
@@ -130,25 +126,6 @@ const menuItems = [
   justify-content: space-between;
   gap: 8px;
 }
-.admin-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.admin-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--grad);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--brand) 40%, transparent);
-}
 .admin-name {
   font-size: 13px;
   color: var(--text-2);
@@ -159,23 +136,28 @@ const menuItems = [
   align-items: center;
   gap: 4px;
 }
+/* 图标按钮外观对齐 ThemeToggle/AccentPicker（同尺寸同边框），悬停转危险色 */
 .logout-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: none;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: transparent;
+  background: var(--surface-2);
   color: var(--text-3);
-  font-size: 13px;
   cursor: pointer;
   transition:
     color 0.15s ease,
+    border-color 0.15s ease,
     background 0.15s ease;
 }
 .logout-btn:hover {
   color: #fb7185;
+  border-color: rgba(251, 113, 133, 0.45);
   background: rgba(251, 113, 133, 0.08);
 }
 .suite-switch {
