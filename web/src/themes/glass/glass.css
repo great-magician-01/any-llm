@@ -58,6 +58,26 @@
   );
   --tip-bg: rgba(16, 22, 40, 0.88);
 
+  /* 共享视图的表面语义变量：与 style.css :root 的 classic 值一一对应
+     （原 Glass* 视图里的硬编码差异值，视图合并后统一由这里换肤） */
+  --overlay-1: rgba(255, 255, 255, 0.06);
+  --overlay-2: rgba(255, 255, 255, 0.08);
+  --panel-bg: rgba(255, 255, 255, 0.06);
+  --panel-blur: blur(14px);
+  --panel-divider: rgba(255, 255, 255, 0.16);
+  --sider-blur: var(--glass-blur);
+  --suite-bg: var(--surface);
+  --suite-bg-hover: var(--surface);
+  --suite-glow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --suite-glow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 4px 14px color-mix(in srgb, var(--brand) 18%, transparent);
+  --login-card-bg: var(--surface-2);
+  --login-card-border: var(--border);
+  --login-card-radius: 24px;
+  --login-card-shadow: var(--glass-shadow-lg);
+  --login-card-blur: var(--glass-blur);
+
   /* 流光背景 / 光斑 / 主按钮渐变的品牌衍生色：跟随 accent（见文件末尾的 accent 块），
      浅色取值在 data-theme='light' 块覆盖。 */
   --glass-blob-1: rgba(99, 132, 255, 0.3);

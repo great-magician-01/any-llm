@@ -396,10 +396,10 @@ onMounted(load)
   margin: 6px 0 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-bg);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
   border: 1px solid var(--border-soft);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   color: var(--text-3);
   font-size: 12.5px;
   line-height: 1.6;
@@ -417,7 +417,7 @@ onMounted(load)
   margin-top: 16px;
 }
 .msg {
-  border-left: 2px solid rgba(255, 255, 255, 0.16);
+  border-left: 2px solid var(--panel-divider);
   padding: 2px 0 2px 14px;
   min-width: 0;
 }
@@ -456,10 +456,10 @@ onMounted(load)
   margin: 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-bg);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
   border: 1px solid var(--border-soft);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   font-size: 12.5px;
   line-height: 1.6;
   max-height: 480px;

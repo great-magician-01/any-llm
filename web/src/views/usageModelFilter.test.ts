@@ -5,15 +5,12 @@
  *     旧页码可能越界）；
  *   - 清空后回到全量（不带 model 参数）。
  *
- * 断言落在真实发出的请求参数上（走真实 axios，假后端只换 adapter），并且两套
- * 主题各跑一遍——经典的 /usage 与毛玻璃的 /glass/usage 是逐行重复的实现，
- * 「只改了一边」要在这里变成红灯。
+ * 断言落在真实发出的请求参数上（走真实 axios，假后端只换 adapter）。页面
+ * classic/glass 两套 URL 树共用同一份视图，无需双跑。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NDataTable, NSelect } from 'naive-ui'
-import type { Component } from 'vue'
-import ClassicUsage from './classic/views/Usage.vue'
-import GlassUsage from './glass/views/GlassUsage.vue'
+import Usage from './Usage.vue'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { flush, mountPage } from '@/test/ui'
 
@@ -42,8 +39,8 @@ afterEach(() => {
   api.restore()
 })
 
-async function open(component: Component) {
-  wrapper = mountPage(component)
+async function open() {
+  wrapper = mountPage(Usage)
   await flush()
 }
 
@@ -68,19 +65,14 @@ function recordsTable() {
   return table!
 }
 
-const VIEWS: Array<[string, Component]> = [
-  ['经典', ClassicUsage],
-  ['毛玻璃', GlassUsage],
-]
-
 describe('用量统计-请求明细：按模型筛选', () => {
-  it.each(VIEWS)('%s视图从 /usage/models 拉取筛选项', async (_name, component) => {
-    await open(component)
+  it('从 /usage/models 拉取筛选项', async () => {
+    await open()
     expect(api.callsTo('get', '/usage/models').length).toBe(1)
   })
 
-  it.each(VIEWS)('%s视图选中模型后明细请求带 model 并回到第 1 页', async (_name, component) => {
-    await open(component)
+  it('选中模型后明细请求带 model 并回到第 1 页', async () => {
+    await open()
 
     // 先翻到第 2 页：随后选择模型必须重置页码，否则旧页码在筛选后的结果集里越界
     const pagination = recordsTable().props('pagination') as { onChange: (p: number) => void }
@@ -96,8 +88,8 @@ describe('用量统计-请求明细：按模型筛选', () => {
     expect(params.page).toBe(1)
   })
 
-  it.each(VIEWS)('%s视图清空筛选后回到全量明细', async (_name, component) => {
-    await open(component)
+  it('清空筛选后回到全量明细', async () => {
+    await open()
 
     modelSelect().vm.$emit('update:value', 'deepseek-chat')
     await flush()
@@ -107,20 +99,5 @@ describe('用量统计-请求明细：按模型筛选', () => {
     modelSelect().vm.$emit('update:value', null)
     await flush()
     expect(recordsParams().model).toBeUndefined()
-  })
-
-  it('两套主题的筛选请求完全一致', async () => {
-    await open(ClassicUsage)
-    modelSelect().vm.$emit('update:value', 'deepseek-chat')
-    await flush()
-    const classic = recordsParams()
-    wrapper?.unmount()
-
-    await open(GlassUsage)
-    modelSelect().vm.$emit('update:value', 'deepseek-chat')
-    await flush()
-    const glass = recordsParams()
-
-    expect(glass).toEqual(classic)
   })
 })

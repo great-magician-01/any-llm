@@ -14,7 +14,7 @@ const props = defineProps<{
   upstreams: Upstream[]
   /** upstream id -> 最新余额/额度快照；无快照的上游不进看板 */
   snapshots: Record<number, BalanceSnapshot>
-  /** 点击行跳转的上游管理页路由名（经典/毛玻璃两套不同） */
+  /** 点击行跳转的上游管理页路径（由 Dashboard 按当前套件算好：/upstreams 或 /glass/upstreams） */
   to: string
 }>()
 
@@ -68,7 +68,7 @@ function statusOf(w: QuotaWindowView): QuotaStatus {
         class="bal-row"
         :class="{ dim: r.expired }"
         :title="r.tooltip"
-        @click="router.push({ name: to })"
+        @click="router.push(to)"
       >
         <div class="bal-head">
           <span class="bal-name">{{ r.name }}</span>

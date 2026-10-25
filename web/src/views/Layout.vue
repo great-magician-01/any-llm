@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { h } from 'vue'
+import { computed, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import AccentPicker from '@/components/AccentPicker.vue'
-import { switchSuite } from '@/utils/suite'
+import { isGlassPath, suitePath, switchSuite } from '@/utils/suite'
 
 const router = useRouter()
 const route = useRoute()
+/** 一套视图服务两套 URL 树：glass 下所有内部跳转都要带 /glass 前缀 */
+const isGlass = computed(() => isGlassPath(route.path))
 
 async function logout() {
   try {
@@ -18,24 +20,25 @@ async function logout() {
     // 登出接口失败也要清本地态并回登录页，否则用户卡在一个即将失效的会话里
   }
   localStorage.removeItem('authed')
-  router.push('/login')
+  router.push(suitePath(route.path, '/login'))
 }
 
-function item(label: string, key: string, icon: IconName) {
+function item(label: string, path: string, icon: IconName) {
   return {
     label,
-    key,
+    // 菜单 key 直接用当前套件内的完整路径：高亮与跳转都天然正确
+    key: suitePath(route.path, path),
     icon: () => h(AppIcon, { name: icon, size: 16 }),
   }
 }
 
 const menuItems = [
-  item('概览', 'dashboard', 'dashboard'),
-  item('上游管理', 'upstreams', 'layers'),
-  item('模型别名', 'aliases', 'link'),
-  item('API 密钥', 'keys', 'key'),
-  item('用量统计', 'usage', 'chart'),
-  item('对话记录', 'conversations', 'chat'),
+  item('概览', '/dashboard', 'dashboard'),
+  item('上游管理', '/upstreams', 'layers'),
+  item('模型别名', '/aliases', 'link'),
+  item('API 密钥', '/keys', 'key'),
+  item('用量统计', '/usage', 'chart'),
+  item('对话记录', '/conversations', 'chat'),
 ]
 </script>
 
@@ -51,10 +54,10 @@ const menuItems = [
           </div>
         </div>
         <n-menu
-          :value="route.name as string"
+          :value="route.path"
           :options="menuItems"
           :indent="18"
-          @update:value="(v: string) => router.push({ name: v })"
+          @update:value="(v: string) => router.push(v)"
         />
         <div class="sider-footer">
           <div class="admin-chip">
@@ -72,7 +75,7 @@ const menuItems = [
         </div>
         <div class="suite-switch" @click="router.push(switchSuite(route.fullPath))">
           <AppIcon name="swap" :size="14" />
-          <span>切换到液态玻璃版</span>
+          <span>{{ isGlass ? '切换到经典版' : '切换到液态玻璃版' }}</span>
         </div>
       </div>
     </n-layout-sider>
@@ -87,11 +90,9 @@ const menuItems = [
 <style scoped>
 .sider {
   border-right: 1px solid var(--border-soft);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--brand) 5%, transparent) 0%,
-    rgba(10, 15, 29, 0) 240px
-  );
+  background: var(--sider-bg);
+  backdrop-filter: var(--sider-blur);
+  -webkit-backdrop-filter: var(--sider-blur);
 }
 .sider-inner {
   display: flex;
@@ -186,19 +187,22 @@ const menuItems = [
   padding: 7px 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.05);
+  background: var(--suite-bg);
+  box-shadow: var(--suite-glow);
   color: var(--text-3);
   font-size: 12px;
   cursor: pointer;
   transition:
     color 0.15s ease,
     border-color 0.15s ease,
-    background 0.15s ease;
+    background 0.15s ease,
+    box-shadow 0.15s ease;
 }
 .suite-switch:hover {
   color: var(--brand-hover);
   border-color: var(--brand-border);
-  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  background: var(--suite-bg-hover);
+  box-shadow: var(--suite-glow-hover);
 }
 .content {
   background: transparent;

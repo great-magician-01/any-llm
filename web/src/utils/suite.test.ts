@@ -1,5 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import { switchSuite } from './suite'
+import { isGlassPath, suitePath, switchSuite } from './suite'
+
+describe('isGlassPath', () => {
+  it('识别 /glass 前缀', () => {
+    expect(isGlassPath('/glass')).toBe(true)
+    expect(isGlassPath('/glass/dashboard')).toBe(true)
+    expect(isGlassPath('/glass/login?redirect=%2Fkeys')).toBe(true)
+    expect(isGlassPath('/dashboard')).toBe(false)
+    expect(isGlassPath('/login')).toBe(false)
+  })
+})
+
+describe('suitePath', () => {
+  it('classic 下原样返回', () => {
+    expect(suitePath('/dashboard', '/upstreams')).toBe('/upstreams')
+    expect(suitePath('/keys', '/login')).toBe('/login')
+    expect(suitePath('/login', '/')).toBe('/')
+  })
+
+  it('glass 下加 /glass 前缀', () => {
+    expect(suitePath('/glass/dashboard', '/upstreams')).toBe('/glass/upstreams')
+    expect(suitePath('/glass/login', '/')).toBe('/glass/')
+    expect(suitePath('/glass/conversations', '/login')).toBe('/glass/login')
+  })
+})
 
 describe('switchSuite', () => {
   it('经典页切到玻璃侧对应页', () => {

@@ -1,18 +1,16 @@
 /**
- * 经典皮肤「概览」页的组件测试。
+ * 「概览」页的组件测试。
  *
  * 守的规则：
  *   - 「复制 Base URL」必须走共享的 useClipboard（HTTP + 非 localhost 的局域网部署下
  *     navigator.clipboard 不存在，只能退回 execCommand 才能真正复制成功——直接调
  *     navigator.clipboard.writeText 会永远弹「复制失败」）；
- *   - 复制成功/失败的提示都要带上 Base URL 原文：失败时用户得知道该手动复制什么；
- *   - 两套 Dashboard 必须共用同一份实现（源码级 parity，防止只改一边）。
+ *   - 复制成功/失败的提示都要带上 Base URL 原文：失败时用户得知道该手动复制什么。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Dashboard from './Dashboard.vue'
-// ?raw 取源码做双主题 parity 断言（vite/client 已声明 *?raw 模块）
-import CLASSIC_SRC from './Dashboard.vue?raw'
-import GLASS_SRC from '../../glass/views/GlassDashboard.vue?raw'
+// ?raw 取源码做防回归断言（vite/client 已声明 *?raw 模块）
+import SRC from './Dashboard.vue?raw'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { clickButton, flush, mountPage } from '@/test/ui'
 import { messagesOf, resetMessages } from '@/test/naiveMessage'
@@ -82,7 +80,7 @@ async function open() {
   await flush()
 }
 
-describe('Dashboard 页（经典皮肤）', () => {
+describe('Dashboard 页', () => {
   // 规则：剪贴板 API 不可用（局域网 HTTP）时点「复制 Base URL」必须退回 execCommand
   // 复制成功，不能直接弹复制失败
   it('剪贴板 API 不可用时仍能复制 Base URL（退回 execCommand）', async () => {
@@ -149,14 +147,12 @@ describe('Dashboard 页（经典皮肤）', () => {
     expect(text).not.toContain('up-disabled')
   })
 
-  // 规则：两套 Dashboard 必须共用同一份复制实现；任何一边自己调
-  // navigator.clipboard 都会在这里露馅（这次修的就是经典/毛玻璃各写了一份）
-  it('两套 Dashboard 都从共享的 useClipboard 复制，不私藏剪贴板实现', () => {
-    for (const [name, src] of [['classic', CLASSIC_SRC], ['glass', GLASS_SRC]] as const) {
-      expect(src, `${name} 必须引入共享的 useClipboard`).toContain("from '@/composables/useClipboard'")
-      expect(src, `${name} 必须调用 useClipboard()`).toContain('useClipboard()')
-      expect(src, `${name} 不允许直接调用剪贴板 API 写文本`).not.toContain('navigator.clipboard.writeText')
-      expect(src, `${name} 不允许私藏 execCopy 回退实现`).not.toContain('function execCopy')
-    }
+  // 规则：复制必须走共享的 useClipboard——直接调 navigator.clipboard 在
+  // HTTP + 非 localhost 的部署下会永远弹「复制失败」（历史上私藏过实现）
+  it('从共享的 useClipboard 复制，不私藏剪贴板实现', () => {
+    expect(SRC, '必须引入共享的 useClipboard').toContain("from '@/composables/useClipboard'")
+    expect(SRC, '必须调用 useClipboard()').toContain('useClipboard()')
+    expect(SRC, '不允许直接调用剪贴板 API 写文本').not.toContain('navigator.clipboard.writeText')
+    expect(SRC, '不允许私藏 execCopy 回退实现').not.toContain('function execCopy')
   })
 })

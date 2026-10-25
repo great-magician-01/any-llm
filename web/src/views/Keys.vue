@@ -527,7 +527,7 @@ onMounted(load)
 .key-chip {
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-1);
   border: 1px solid var(--border-soft);
   font-size: 12px;
   color: var(--text-2);
@@ -535,7 +535,7 @@ onMounted(load)
 .code-chip {
   padding: 1px 6px;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-2);
   color: var(--text-2);
   font-size: 12px;
 }
