@@ -7,20 +7,20 @@
 ## 特性
 
 - **统一网关**：对外提供 OpenAI（`/v1/chat/completions`）、Anthropic（`/v1/messages`）、Responses（`/v1/responses`）兼容 API，流式与非流式均支持
-- **多上游管理**：通过 Web UI 管理多个模型服务商（OpenAI / Anthropic / Responses 格式），支持自动拉取模型列表、启用/禁用、有效期（到期自动失效，延长即恢复）、备注（选填）与官方/中转标记（默认官方）
+- **多上游管理**：通过 Web UI 管理多个模型服务商（OpenAI / Anthropic / Responses 格式），支持自动拉取模型列表、启用/禁用、有效期（到期自动失效，延长即恢复）、备注（选填）与官方/中转标记（默认官方）；同一上游可挂多个格式的额外端点，入站格式匹配时原生直通、零转换；名称仅要求启用上游间不重复，禁用即释放，可先备好同名替换再切换
 - **协议转换**：请求经过内部 IR 层翻译，三种格式任意互转
-- **模型别名**：固定对外模型名，绑定有序的「上游 + 真实模型」列表，按优先级自动故障转移
+- **模型别名**：固定对外模型名，绑定有序的「上游 + 真实模型」列表，按优先级自动故障转移，上游侧报错的候选自动进入 60 秒冷却
 - **Token 限额**：外部 Key 与上游均可设置日 / 月 Token 配额（0 = 不限），超限返回 429
 - **并发控制**：每个上游可设并发上限（默认 100，0 = 不限），占满的别名候选自动跳过并故障转移，全部占满返回 429
 - **模型权限**：每个外部 Key 可限定可用模型白名单（别名或 `上游/模型`，留空 = 不限），越权请求返回 403，`/v1/models` 按 Key 过滤
 - **API Key 管理**：创建和管理外部 API Key（`all-sk-*` 格式），可单独启用/禁用，一键复制调用示例或客户端配置（opencode / Oh My Pi / Pi agent / dsh / Claude Code），内置各 agent 的接入配置文档（「Agent 配置」抽屉）
 - **用量统计**：按 Key / 上游 / 模型维度记录 Token 用量与调用耗时（token/s），支持按日汇总图表
-- **对话记录**：自动归档每次调用的完整请求/响应（PostgreSQL / MySQL），应用层按月分表存储（[设计文档](docs/conversation-sharding.md)）
+- **对话记录**：自动归档每次调用的完整请求/响应，支持按请求 / 按会话两种视图浏览，自动识别调用客户端（Claude Code、Codex、Aider 等，未知客户端按「名称/版本」形态自动提取）；PostgreSQL / MySQL 存储，应用层按月分表（[设计文档](docs/conversation-sharding.md)）
 - **余额快照**：定时抓取厂商余额/额度（DeepSeek 余额、Kimi for Coding 用量、阶跃星辰账户余额——Step Plan 订阅通道除外，其套餐月池与钱包余额相互独立），保留历史趋势
 - **配置备份**：上游与别名配置一键导出/导入
 - **灵活存储**：支持 SQLite（默认，纯 Go）、PostgreSQL 和 MySQL 8.0.13+（同为纯 Go 驱动）
 - **单二进制**：Go 后端，内嵌 Vue 前端，零 CGO 依赖运行
-- **双主题界面**：经典与毛玻璃两套界面主题，均支持明 / 暗模式，界面内一键切换
+- **主题与配色**：经典与液态玻璃两套界面主题，均支持明 / 暗模式；配色独立成维——默认蓝 + EVA 系列（初号机紫绿 / 明日香红橙 / 凌波丽蓝黄），界面内一键切换
 
 ## 快速开始
 
@@ -107,11 +107,11 @@ docker compose up -d
 访问 `http://localhost:6718`，使用管理员密码登录：
 
 1. **Dashboard（总览）**：用量统计卡片、本月模型用量 Top、资源与快捷操作
-2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式，支持自动拉取模型列表、启用/禁用、有效期、日/月 Token 限额与并发上限，以及选填的备注与官方/中转标记；模型可配置上下文/输出长度与多模态标记；DeepSeek / Kimi / 阶跃星辰（按量付费通道）上游自动抓取余额快照；支持配置导出/导入与按启用状态过滤
+2. **Upstreams（上游服务）**：添加模型服务商，配置 API 地址、密钥、协议格式（可附加其他格式的额外端点，匹配入站格式时原生直通），支持自动拉取模型列表、启用/禁用、有效期、日/月 Token 限额与并发上限，以及选填的备注与官方/中转标记；模型可配置上下文/输出长度与多模态标记；DeepSeek / Kimi / 阶跃星辰（按量付费通道）上游自动抓取余额快照；支持配置导出/导入与按启用状态过滤
 3. **Keys（API 密钥）**：创建和管理外部 API Key，可填写名称与备注，设置日/月 Token 限额与可用模型白名单，一键复制调用示例或客户端配置（opencode / Oh My Pi / Pi agent / dsh / Claude Code），内置客户端接入使用文档与各 agent 接入配置文档（「Agent 配置」抽屉，按选中密钥生成配置预览与一键复制）
 4. **Aliases（模型别名）**：维护固定对外模型名及绑定列表
-5. **Conversations（对话记录）**：查看归档的完整请求/响应与 Token 明细（PostgreSQL / MySQL，SQLite 下显示禁用提示）
-6. **Usage（用量）**：Token 消耗、调用耗时（token/s）与按日汇总图表
+5. **Conversations（对话记录）**：按请求查看归档的完整请求/响应与 Token 明细，或按会话聚合查看同一对话的多轮调用（PostgreSQL / MySQL，SQLite 下显示禁用提示）
+6. **Usage（用量）**：Token 消耗、调用耗时（token/s）与按日汇总图表，请求明细支持按模型筛选
 
 ### 调用网关
 
@@ -172,7 +172,8 @@ internal/
   translate/          # OpenAI / Anthropic / Responses 格式翻译（IR 层）
   upstream/           # 上游 HTTP 客户端与余额快照轮询
 web/                  # Vue 3 前端（Naive UI + Vite）
-  src/themes/classic/ # 经典主题套件（视图 + Layout + theme.ts）
-  src/themes/glass/   # 液态玻璃主题套件（/glass 路由前缀，结构对称）
-  src/components/     # 两套主题共享的组件
+  src/views/          # 页面视图（单套，两套主题皮肤共用）
+  src/themes/classic/ # 经典皮肤（theme.ts）
+  src/themes/glass/   # 液态玻璃皮肤（/glass 路由前缀：GlassShell + glass.css + theme.ts）
+  src/components/     # 共享组件
 ```
