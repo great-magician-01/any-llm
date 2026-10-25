@@ -122,10 +122,11 @@ const trendLabels = computed(() =>
 )
 const showPrompt = ref(true)
 const showCompletion = ref(true)
+// 输入/输出系列色跟品牌变量走（随配色主题换肤）；下方 PALETTE 是数据可视化固定色板
 const tokenSeries = computed(() => {
   const out = []
-  if (showPrompt.value) out.push({ name: '输入 Token', color: '#5b8cff', values: daily.value.map((d) => d.prompt_tokens) })
-  if (showCompletion.value) out.push({ name: '输出 Token', color: '#22d3ee', values: daily.value.map((d) => d.completion_tokens) })
+  if (showPrompt.value) out.push({ name: '输入 Token', color: 'var(--brand)', values: daily.value.map((d) => d.prompt_tokens) })
+  if (showCompletion.value) out.push({ name: '输出 Token', color: 'var(--brand-2)', values: daily.value.map((d) => d.completion_tokens) })
   return out
 })
 const reqSeries = computed(() => [
@@ -160,8 +161,8 @@ const distSlices = computed(() => {
 const compSlices = computed(() => {
   const uncached = Math.max(0, totals.value.prompt - cacheTokens.value.read)
   return [
-    { name: '输入（非缓存）', value: uncached, color: '#5b8cff' },
-    { name: '输出', value: totals.value.completion, color: '#22d3ee' },
+    { name: '输入（非缓存）', value: uncached, color: 'var(--brand)' },
+    { name: '输出', value: totals.value.completion, color: 'var(--brand-2)' },
     { name: '缓存读取', value: cacheTokens.value.read, color: '#34d399' },
     { name: '推理', value: reasoningTokens.value, color: '#a78bfa' },
   ].filter((s) => s.value > 0)
@@ -283,8 +284,8 @@ onMounted(loadAll)
             <div class="legend-toggle">
               <button
                 v-for="t in [
-                  { key: 'prompt', name: '输入', color: '#5b8cff', on: showPrompt },
-                  { key: 'completion', name: '输出', color: '#22d3ee', on: showCompletion },
+                  { key: 'prompt', name: '输入', color: 'var(--brand)', on: showPrompt },
+                  { key: 'completion', name: '输出', color: 'var(--brand-2)', on: showCompletion },
                 ]"
                 :key="t.key"
                 class="legend-chip"

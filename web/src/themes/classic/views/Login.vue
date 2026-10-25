@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import AccentPicker from '@/components/AccentPicker.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
 import { errText } from '@/utils/errText'
 import { switchSuite } from '@/utils/suite'
@@ -70,6 +71,7 @@ async function login() {
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
       <div class="login-extra">
+        <AccentPicker />
         <ThemeToggle />
         <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">切换到液态玻璃版</button>
       </div>

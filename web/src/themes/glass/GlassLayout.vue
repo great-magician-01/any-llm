@@ -5,6 +5,7 @@ import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import AccentPicker from '@/components/AccentPicker.vue'
 import { switchSuite } from '@/utils/suite'
 
 const router = useRouter()
@@ -61,6 +62,7 @@ const menuItems = [
             <span class="admin-name">管理员</span>
           </div>
           <div class="footer-actions">
+            <AccentPicker />
             <ThemeToggle />
             <button class="logout-btn" title="退出登录" @click="logout">
               <AppIcon name="logout" :size="15" />
@@ -142,7 +144,7 @@ const menuItems = [
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 0 10px rgba(123, 163, 255, 0.4);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--brand) 40%, transparent);
 }
 .admin-name {
   font-size: 13px;
@@ -194,10 +196,10 @@ const menuItems = [
 }
 .suite-switch:hover {
   color: var(--brand-hover);
-  border-color: rgba(123, 163, 255, 0.4);
+  border-color: var(--brand-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    0 4px 14px rgba(123, 163, 255, 0.18);
+    0 4px 14px color-mix(in srgb, var(--brand) 18%, transparent);
 }
 .content {
   background: transparent;

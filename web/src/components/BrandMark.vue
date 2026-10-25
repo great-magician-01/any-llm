@@ -13,8 +13,9 @@ withDefaults(defineProps<{ size?: number }>(), { size: 32 })
   >
     <defs>
       <linearGradient id="brand-bg" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#5b8cff" />
-        <stop offset="1" stop-color="#22d3ee" />
+        <!-- 渐变端点走品牌变量：跟随配色主题（data-accent）换肤 -->
+        <stop offset="0" style="stop-color: var(--brand)" />
+        <stop offset="1" style="stop-color: var(--brand-2)" />
       </linearGradient>
     </defs>
     <rect width="48" height="48" rx="11" fill="url(#brand-bg)" />
@@ -43,7 +44,7 @@ withDefaults(defineProps<{ size?: number }>(), { size: 32 })
   flex: none;
   border-radius: 23%;
   box-shadow:
-    0 2px 10px rgba(91, 140, 255, 0.45),
-    0 0 18px rgba(34, 211, 238, 0.25);
+    0 2px 10px color-mix(in srgb, var(--brand) 45%, transparent),
+    0 0 18px color-mix(in srgb, var(--brand-2) 25%, transparent);
 }
 </style>

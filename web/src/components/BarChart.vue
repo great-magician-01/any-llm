@@ -200,24 +200,31 @@ const hasTotalRow = computed(() => props.series.length > 1 && props.mode === 'st
         text-anchor="middle"
         class="tick"
       >{{ lb }}</text>
-      <!-- 数据柱 -->
+      <!-- 数据柱（fill 走 style：系列色可以是 var(--brand) 这类 CSS 变量） -->
       <path
         v-for="r in rects"
         :key="r.key"
         :d="topRoundRect(r.x, r.y, r.w, r.h)"
-        :fill="r.color"
+        :style="{ fill: r.color }"
         :fill-opacity="hover && hover.i !== r.i ? 0.35 : mode === 'grouped' && r.si > 0 ? 0.85 : 1"
       />
       <!-- 折线叠加 -->
       <template v-if="line">
-        <path :d="linePath" fill="none" :stroke="line.color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <path
+          :d="linePath"
+          fill="none"
+          :style="{ stroke: line.color }"
+          stroke-width="2"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
         <circle
           v-for="p in linePts"
           :key="'p' + p.i"
           :cx="p.x"
           :cy="p.y"
           :r="hover && hover.i === p.i ? 4 : 2.5"
-          :fill="line.color"
+          :style="{ fill: line.color }"
         />
         <text v-for="t in lineTicks" :key="'l' + t.v" :x="width - padR + 8" :y="t.y + 3.5" class="tick">
           {{ formatLine ? formatLine(t.v) : t.v }}
