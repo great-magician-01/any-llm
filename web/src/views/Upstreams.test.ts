@@ -1,5 +1,5 @@
 /**
- * 经典皮肤「上游管理」页的组件测试（本仓库第一个真实页面测试）。
+ * 「上游管理」页的组件测试（本仓库第一个真实页面测试）。
  *
  * 断言只落在两件事上：
  *   1. 用户看到什么（渲染出来的行、警告/错误文案、确认框）；
@@ -30,6 +30,7 @@ function upstream(over: Partial<Upstream> = {}): Upstream {
     api_key: 'sk-***masked***',
     format: 'openai',
     remark: '',
+    tag: 'official',
     enabled: true,
     daily_token_limit: 0,
     monthly_token_limit: 0,
@@ -87,7 +88,7 @@ async function pickConfigFile(content: string): Promise<void> {
   await flush()
 }
 
-describe('Upstreams 页（经典皮肤）', () => {
+describe('Upstreams 页', () => {
   // 规则：列表默认只查「启用中」，开页即加载余额快照并静默刷新一轮厂商余额
   it('打开页面按「启用中」档位查询，并把上游渲染进表格', async () => {
     await open()
@@ -306,5 +307,118 @@ describe('Upstreams 页（经典皮肤）', () => {
 
     expect(api.callsTo('get', '/upstreams').length).toBe(listBefore + 1)
     expect(api.callsTo('get', '/balances').length).toBe(balBefore + 1)
+  })
+
+  // 规则：附加端点在表单里增删成行，创建时随表单一起提交
+  it('附加格式端点：添加一行并随创建请求提交', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://api.deepseek.com/v1')
+    await fillInput(inputByLabel('API Key'), 'sk-real')
+
+    await clickButton('添加端点')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    expect(epInput).toBeTruthy()
+    await fillInput(epInput, 'https://api.deepseek.com/anthropic')
+
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds' }) })
+    await clickButton('添加')
+
+    const posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    // 附加端点默认取第一个未被主格式占用的协议（主格式 openai → anthropic）
+    expect(posts[0].data.extra_endpoints).toEqual([{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }])
+    expect(messagesOf('success')).toContain('已添加')
+  })
+
+  // 规则：主格式与附加端点撞车时在表单里给出可操作的提示，并阻止保存
+  // （后端同样 400，但用户应该更早看到该删哪一行）
+  it('主格式与附加端点重复：提示删除重复项且不发保存请求', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://api.deepseek.com/v1')
+    await clickButton('添加端点')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    await fillInput(epInput, 'https://api.deepseek.com/anthropic')
+    // 此刻尚无重复（主格式 openai + 附加 anthropic）
+    expect(bodyHas('请删除重复项')).toBe(false)
+
+    // 把主格式切到 Anthropic → 与附加端点撞车，提示出现
+    const radio = Array.from(document.querySelectorAll('.n-radio'))
+      .find(el => (el.textContent ?? '').replace(/\s+/g, '') === 'Anthropic') as HTMLElement
+    expect(radio).toBeTruthy()
+    radio.click()
+    await flush()
+    expect(bodyHas('附加端点与主格式重复')).toBe(true)
+
+    // 保存被拦截：提示 + 不发创建请求
+    await clickButton('添加')
+    expect(messagesOf('error').join('|')).toContain('请删除重复项')
+    expect(api.callsTo('post', '/upstreams')).toHaveLength(0)
+
+    // 移除重复行后提示消失、可以保存
+    await clickButton('移除')
+    expect(bodyHas('请删除重复项')).toBe(false)
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds', format: 'anthropic' }) })
+    await clickButton('添加')
+    const posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    expect(posts[0].data.format).toBe('anthropic')
+    expect(posts[0].data.extra_endpoints).toEqual([])
+  })
+
+  // 规则：编辑带附加端点的上游时端点回填进表单；直接保存原样带回（不能丢）
+  it('编辑时回填附加端点，保存原样提交', async () => {
+    const withExtras = upstream({
+      extra_endpoints: [{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }],
+    })
+    await open([withExtras])
+    api.on('put', '/upstreams/1', { data: withExtras })
+
+    await clickButton('编辑')
+    const epInput = document.querySelector('input[placeholder="该格式端点的 Base URL"]') as HTMLInputElement
+    expect(epInput?.value).toBe('https://api.deepseek.com/anthropic')
+
+    await clickButton('保存')
+    const puts = api.callsTo('put', '/upstreams/1')
+    expect(puts).toHaveLength(1)
+    expect(puts[0].data.extra_endpoints).toEqual([{ format: 'anthropic', base_url: 'https://api.deepseek.com/anthropic' }])
+    // 没改过的标记原样带回
+    expect(puts[0].data.tag).toBe('official')
+    expect(messagesOf('success')).toContain('已保存')
+  })
+
+  // 规则：标记（官方/中转）随创建请求提交；编辑时把上游的标记回填进表单，
+  // 只发 enabled 的开关 PATCH 不带它（后端指针三态：nil = 保留现值）
+  it('标记：默认官方随创建提交，编辑可改成中转', async () => {
+    await open()
+    await clickButton('添加上游')
+    await fillInput(inputByLabel('名称'), 'ds')
+    await fillInput(inputByLabel('Base URL'), 'https://x/v1')
+
+    api.on('post', '/upstreams', { data: upstream({ id: 2, name: 'ds' }) })
+    await clickButton('添加')
+    let posts = api.callsTo('post', '/upstreams')
+    expect(posts).toHaveLength(1)
+    // 表单里没动标记，发出去的也是默认官方
+    expect(posts[0].data.tag).toBe('official')
+    // 列表给这一行渲染「官方」tag（后端没给 tag 的老数据同样落官方）
+    expect(bodyHas('官方')).toBe(true)
+
+    // 重新拉列表后编辑同一个上游：表单回填官方，切到「中转」再保存
+    await open()
+    await clickButton('编辑')
+    const relay = Array.from(document.querySelectorAll('.n-radio'))
+      .find(el => (el.textContent ?? '').replace(/\s+/g, '') === '中转') as HTMLElement
+    expect(relay).toBeTruthy()
+    relay.click()
+    await flush()
+    api.on('put', '/upstreams/1', { data: upstream({ id: 1, tag: 'relay' }) })
+    await clickButton('保存')
+    const puts = api.callsTo('put', '/upstreams/1')
+    expect(puts[puts.length - 1].data.tag).toBe('relay')
+    expect(messagesOf('success')).toContain('已保存')
   })
 })

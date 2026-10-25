@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -178,10 +177,8 @@ func migrateSoftDeleteSQLite(d *sql.DB) error {
 	}
 	for _, spec := range sqliteSoftDeleteSpecs {
 		var sqlText string
+		// 表必然存在：migrateAll 先跑 migrateMain 建齐所有表，本函数随后执行。
 		if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, spec.table).Scan(&sqlText); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue // 表不存在（新库尚未建）：交给主迁移处理
-			}
 			return fmt.Errorf("read %s schema: %w", spec.table, err)
 		}
 		if !spec.rebuildIf(sqlText) {
@@ -264,13 +261,18 @@ func migratePartialUniqueIndexes(d *sql.DB) error {
 	return nil
 }
 
-// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的三个、
+// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的四个、
 // response_sessions 与 balance_snapshots 各一个。与部分唯一索引分开：它们不依赖
-// is_active，且 SQLite 表重建后同样要重建。MySQL 的索引内联在 CREATE TABLE，
-// 对它是 no-op。
+// is_active，且 SQLite 表重建后同样要重建。
+//
+// PG/SQLite 直接 CREATE INDEX IF NOT EXISTS。MySQL 没有 IF NOT EXISTS、索引又
+// 内联在 CREATE TABLE 里——新库天然齐全，但存量库升级到「声明了新索引」的版本
+// 后，CREATE TABLE IF NOT EXISTS 不会回头补（response_sessions/balance_snapshots
+// 的索引就曾因此在 SQLite/PG 上缺席过）：走 migratePlainIndexesMySQL 逐一存在性
+// 检查后补建，让「声明即可建」在三种方言、新老库里都成立。
 func migratePlainIndexes(d *sql.DB) error {
 	if DialectOf(d) == DialectMySQL {
-		return nil
+		return migratePlainIndexesMySQL(d)
 	}
 	dialect := DialectOf(d)
 	cfg := DDLConfig{IfNotExists: true}
@@ -291,6 +293,80 @@ func migratePlainIndexes(d *sql.DB) error {
 	return nil
 }
 
+// migratePlainIndexesMySQL 给存量 MySQL 库补建缺失的普通索引。已存在的（内联建
+// 的、或上次启动补建的）一律跳过，幂等；新库上所有声明索引都在，等价 no-op。
+func migratePlainIndexesMySQL(d *sql.DB) error {
+	for _, tbl := range tablesFor(DialectMySQL) {
+		for _, ix := range tbl.Idx {
+			if ix.Unique {
+				continue
+			}
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+				WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+				tbl.Name, ix.Name).Scan(&n); err != nil {
+				return fmt.Errorf("check index %s on %s (mysql): %w", ix.Name, tbl.Name, err)
+			}
+			if n > 0 {
+				continue
+			}
+			stmt, err := tbl.indexCreateMySQL(ix)
+			if err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+			if _, err := d.Exec(stmt); err != nil {
+				return fmt.Errorf("create index %s: %w", ix.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// upstreamNameIndexName 是历史版本建在 upstreams.name 上的「仅活跃行」部分唯一
+// 索引名。唯一性口径已改为应用层判定（启用行不重名，见 schema.go 的 upstreams
+// 表注释），这里只剩一件事：把存量库上的旧索引删掉。名字集中一处定义，防止
+// DROP 与存在性检查漂移。
+const upstreamNameIndexName = "idx_upstreams_name"
+
+// migrateDropLegacyUpstreamNameIndex 删除存量库上的 upstreams.name 部分唯一索引。
+// 新装的库不再声明该索引（schema.go），本函数对它们是 no-op；老库（SQLite/PG 的
+// CREATE UNIQUE INDEX、MySQL 的生成列 + 内联唯一键）在启动时被降级。幂等：
+// 索引已不存在时什么都不做。必须在 migratePartialUniqueIndexes 之后调用，
+// 防止老库重建路径（migrateSoftDeleteSQLite）之外的新老形态互相干扰。
+func migrateDropLegacyUpstreamNameIndex(d *sql.DB) error {
+	if DialectOf(d) == DialectMySQL {
+		// MySQL 没有 DROP INDEX IF EXISTS：先查 information_schema 再删。
+		// 顺序必须是先删唯一键再删生成列——生成列被唯一键引用着，直接删列
+		// 会把键一起删掉（语义等价但日志口径混乱），反过来则总是合法的。
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND index_name = ?`,
+			upstreamNameIndexName).Scan(&n); err != nil {
+			return fmt.Errorf("check legacy %s on mysql: %w", upstreamNameIndexName, err)
+		}
+		if n > 0 {
+			if _, err := d.Exec(`ALTER TABLE upstreams DROP INDEX ` + upstreamNameIndexName); err != nil {
+				return fmt.Errorf("drop legacy %s on mysql: %w", upstreamNameIndexName, err)
+			}
+		}
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = 'upstreams' AND column_name = ?`,
+			generatedColName(upstreamNameIndexName)).Scan(&n); err != nil {
+			return fmt.Errorf("check legacy column %s on mysql: %w", generatedColName(upstreamNameIndexName), err)
+		}
+		if n > 0 {
+			if _, err := d.Exec(`ALTER TABLE upstreams DROP COLUMN ` + generatedColName(upstreamNameIndexName)); err != nil {
+				return fmt.Errorf("drop legacy column %s on mysql: %w", generatedColName(upstreamNameIndexName), err)
+			}
+		}
+		return nil
+	}
+	if _, err := d.Exec(`DROP INDEX IF EXISTS ` + upstreamNameIndexName); err != nil {
+		return fmt.Errorf("drop legacy %s: %w", upstreamNameIndexName, err)
+	}
+	return nil
+}
+
 // extKeyLabelIndexDDL 从 schema.go 的规范定义渲染 label 唯一索引（PG/SQLite）。
 // 它是 ext_keys.label 唯一性的 DB 兜底，口径与应用层 ExtKeyLabelTaken 一致（空名
 // 不参与、软删行不占名额）。它在 schema 里标了 Tolerant：历史库可能存在唯一性
@@ -304,11 +380,11 @@ func extKeyLabelIndexDDL(d Dialect) (string, error) {
 		return "", fmt.Errorf("ext_keys not in schema")
 	}
 	for _, ix := range tbl.Idx {
-		if ix.Name == "idx_ext_keys_label" {
+		if ix.Name == extKeyLabelIndexName {
 			return tbl.indexDef(d, ix, DDLConfig{IfNotExists: true})
 		}
 	}
-	return "", fmt.Errorf("idx_ext_keys_label not declared in schema")
+	return "", fmt.Errorf("%s not declared in schema", extKeyLabelIndexName)
 }
 
 // ensureExtKeyLabelIndex 在每次启动时尝试建立 label 唯一索引。历史库有重名活跃
@@ -320,7 +396,8 @@ func ensureExtKeyLabelIndex(d *sql.DB) {
 		// 检查，缺失时告警（被人为 DROP 掉时 PG/SQLite 会自愈，MySQL 不会）。
 		var n int
 		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.statistics
-			WHERE table_schema = DATABASE() AND table_name = 'ext_keys' AND index_name = 'idx_ext_keys_label'`).Scan(&n); err == nil && n == 0 {
+			WHERE table_schema = DATABASE() AND table_name = 'ext_keys' AND index_name = ?`,
+			extKeyLabelIndexName).Scan(&n); err == nil && n == 0 {
 			logger.Warn("db: ext_keys label 唯一键缺失（MySQL）；应用层检查仍生效，需人工补建")
 		}
 		return

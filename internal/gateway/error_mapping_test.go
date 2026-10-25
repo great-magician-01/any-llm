@@ -157,7 +157,7 @@ func TestCompletion_Upstream5xxMapsToServerError(t *testing.T) {
 		t.Errorf("error.message=%q want the upstream message", msg)
 	}
 
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v want one with status=error", records)
 	}

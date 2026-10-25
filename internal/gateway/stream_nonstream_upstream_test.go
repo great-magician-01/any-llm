@@ -76,7 +76,7 @@ func TestStreamNonStreamJSONUpstreamForwardsContent(t *testing.T) {
 			t.Errorf("缺少 [DONE] 结束帧：%q", w.Body.String())
 		}
 
-		records, _, err := store.UsageRecordsList(d, 1, 10)
+		records, _, err := store.UsageRecordsList(d, 1, 10, "")
 		if err != nil {
 			t.Fatal(err)
 		}

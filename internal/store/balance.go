@@ -61,18 +61,13 @@ func LatestBalanceSnapshots(d *sql.DB) ([]BalanceSnapshot, error) {
 		s.Payload = json.RawMessage(payload)
 		out = append(out, s)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // BalanceSnapshotsList pages one upstream's snapshot history, newest first,
 // following the UsageRecordsList clamp/COUNT/LIMIT-OFFSET pattern.
 func BalanceSnapshotsList(d *sql.DB, upstreamID int64, page, size int) ([]BalanceSnapshot, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 200 {
-		size = 50
-	}
+	page, size = normalizePage(page, size)
 	var total int
 	if err := d.QueryRow(db.Rebind(d, `SELECT COUNT(*) FROM balance_snapshots WHERE upstream_id = ?`), upstreamID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count balance snapshots: %w", err)
@@ -94,5 +89,5 @@ func BalanceSnapshotsList(d *sql.DB, upstreamID int64, page, size int) ([]Balanc
 		s.Payload = json.RawMessage(payload)
 		out = append(out, s)
 	}
-	return out, total, nil
+	return out, total, rows.Err()
 }

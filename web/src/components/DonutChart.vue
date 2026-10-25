@@ -101,7 +101,7 @@ function pct(i: number): string {
           :cy="cx"
           :r="r"
           fill="none"
-          :stroke="s.color"
+          :style="{ stroke: s.color }"
           :stroke-width="hover && hover.i === s.key ? thickness + 4 : thickness"
           :stroke-dasharray="s.dash"
           :stroke-dashoffset="s.offset"

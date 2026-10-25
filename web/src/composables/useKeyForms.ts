@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { createKey, updateKey, type ExtKey } from '../api/keys'
+import { errText } from '../utils/errText'
 
 // 两套 UI 皮肤（views/Keys.vue 与 glass/views/GlassKeys.vue）共用的密钥表单
 // 状态与保存逻辑——规则只维护这一份，不要复制回页面。
@@ -72,8 +73,8 @@ export function useKeyForms(keys: Ref<ExtKey[]>, opts: {
       newlyCreatedKey.value = k.key
       createModalState.value = 'done'
       await opts.reload()
-    } catch (e: any) {
-      message.error('创建失败：' + (e?.response?.data?.error || e?.message || String(e)))
+    } catch (e) {
+      message.error('创建失败：' + errText(e))
     }
   }
 
@@ -118,8 +119,8 @@ export function useKeyForms(keys: Ref<ExtKey[]>, opts: {
       editing.value = null
       await opts.reload()
       message.success('已保存')
-    } catch (e: any) {
-      message.error('保存失败：' + (e?.response?.data?.error || e?.message || String(e)))
+    } catch (e) {
+      message.error('保存失败：' + errText(e))
     }
   }
 

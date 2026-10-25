@@ -201,9 +201,33 @@ type StreamEvent struct {
 }
 
 type Delta struct {
-	Type        string // "text_delta" | "input_json_delta" | "thinking_delta"
+	Type        string // "text_delta" | "input_json_delta" | "thinking_delta" | "signature_delta"
 	Text        string // text_delta
 	PartialJSON string // input_json_delta
 	Thinking    string // thinking_delta
 	Signature   string // signature_delta (used by some upstreams)
+}
+
+// KeySafeguardResults 是 Claude Code 服务端分类器判决的字段名（非流式响应
+// 的顶层字段 / 流式 message_delta 的 delta 字段）。IR 不解析语义，只原样
+// 透传，保证同格式回环不丢。
+const KeySafeguardResults = "safeguard_results"
+
+// ExtractExtra 返回 all 中不在 known 里的键值对——请求体内 IR 未建模、
+// 原样透传给同格式上游的字段。各格式的解码器共用（已知键表各自维护）；
+// 无剩余字段时返回 nil（IR 对 Extra 的约定：nil = 没有额外字段）。
+func ExtractExtra(all map[string]any, known map[string]bool) map[string]any {
+	if len(all) == 0 {
+		return nil
+	}
+	extra := map[string]any{}
+	for k, v := range all {
+		if !known[k] {
+			extra[k] = v
+		}
+	}
+	if len(extra) == 0 {
+		return nil
+	}
+	return extra
 }

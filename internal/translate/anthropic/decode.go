@@ -71,7 +71,7 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 	if len(known.ToolChoice) > 0 {
 		req.ToolChoice = decodeAnthropicToolChoice(known.ToolChoice)
 	}
-	req.Extra = extractExtra(all)
+	req.Extra = translate.ExtractExtra(all, knownAnthropicKeys)
 	return req, nil
 }
 
@@ -119,29 +119,41 @@ func decodeBlocks(raw json.RawMessage) ([]translate.ContentBlock, error) {
 		switch head.Type {
 		case "text":
 			var tp rawTextPart
-			_ = json.Unmarshal(p, &tp)
+			if err := json.Unmarshal(p, &tp); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed text block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "text", Text: tp.Text})
 		case "image":
 			var ip rawImagePart
-			_ = json.Unmarshal(p, &ip)
+			if err := json.Unmarshal(p, &ip); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed image block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "image", Image: anthropicImage(ip.Source)})
 		case "thinking":
 			var tp rawThinkingPart
-			_ = json.Unmarshal(p, &tp)
+			if err := json.Unmarshal(p, &tp); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed thinking block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "thinking", Thinking: tp.Thinking, Signature: tp.Signature})
 		case "redacted_thinking":
 			var rp rawRedactedThinkingPart
-			_ = json.Unmarshal(p, &rp)
+			if err := json.Unmarshal(p, &rp); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed redacted_thinking block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "redacted_thinking", Data: rp.Data})
 		case "tool_use":
 			var tu rawToolUsePart
-			_ = json.Unmarshal(p, &tu)
+			if err := json.Unmarshal(p, &tu); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed tool_use block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "tool_use", ToolUse: &translate.ToolUse{
 				ID: tu.ID, Name: tu.Name, Input: tu.Input,
 			}})
 		case "tool_result":
 			var tr rawToolResultPart
-			_ = json.Unmarshal(p, &tr)
+			if err := json.Unmarshal(p, &tr); err != nil {
+				return nil, fmt.Errorf("anthropic content: malformed tool_result block: %w", err)
+			}
 			out = append(out, translate.ContentBlock{Type: "tool_result", ToolResult: &translate.ToolResult{
 				ToolUseID: tr.ToolUseID,
 				Content:   decodeResultContent(tr.Content),
@@ -204,22 +216,6 @@ var knownAnthropicKeys = map[string]bool{
 	"max_tokens": true, "temperature": true, "top_p": true, "stream": true, "stop_sequences": true,
 }
 
-func extractExtra(all map[string]any) map[string]any {
-	if len(all) == 0 {
-		return nil
-	}
-	extra := map[string]any{}
-	for k, v := range all {
-		if !knownAnthropicKeys[k] {
-			extra[k] = v
-		}
-	}
-	if len(extra) == 0 {
-		return nil
-	}
-	return extra
-}
-
 // anthropicImage 归一化 Anthropic 的图片 source：base64 source 保留载荷，
 // url source（以及塞在 url 里的 data URL）统一走 translate.NewImage。
 // 只认 base64 source 会让 {"type":"url",...} 的图片整块变成空图片。
@@ -252,7 +248,7 @@ func DecodeResponse(body []byte) (*translate.Response, error) {
 	}
 	resp.Content = blocks
 	if len(rr.SafeguardResults) > 0 {
-		resp.Extra = map[string]any{"safeguard_results": json.RawMessage(rr.SafeguardResults)}
+		resp.Extra = map[string]any{translate.KeySafeguardResults: json.RawMessage(rr.SafeguardResults)}
 	}
 	return resp, nil
 }

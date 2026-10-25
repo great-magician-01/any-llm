@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { THEME_STORAGE_KEY } from './useTheme'
+import { ACCENT_STORAGE_KEY, THEME_STORAGE_KEY } from './useTheme'
 
 type ThemeModule = typeof import('./useTheme')
 
@@ -34,6 +34,7 @@ function stubSystemPreference(prefersLight: boolean) {
 beforeEach(() => {
   localStorage.clear()
   document.documentElement.removeAttribute('data-theme')
+  document.documentElement.removeAttribute('data-accent')
   stubSystemPreference(false)
 })
 
@@ -105,5 +106,39 @@ describe('useTheme', () => {
     initTheme()
     expect(document.documentElement.dataset.theme).toBe('light')
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+  })
+})
+
+describe('useTheme: accent 配色维度', () => {
+  it('initTheme 默认 default 配色并写到 <html data-accent>', async () => {
+    const { initTheme, useTheme } = await freshTheme()
+    initTheme()
+    expect(useTheme().accent.value).toBe('default')
+    expect(document.documentElement.dataset.accent).toBe('default')
+    expect(localStorage.getItem(ACCENT_STORAGE_KEY)).toBeNull()
+  })
+
+  it('setAccent 立即同步 <html> 并落盘（accent 没有跟随系统的语义）', async () => {
+    const { initTheme, useTheme } = await freshTheme()
+    initTheme()
+    useTheme().setAccent('eva-01')
+    expect(document.documentElement.dataset.accent).toBe('eva-01')
+    expect(localStorage.getItem(ACCENT_STORAGE_KEY)).toBe('eva-01')
+  })
+
+  it('initTheme 恢复已保存的配色', async () => {
+    const { initTheme, useTheme } = await freshTheme()
+    localStorage.setItem(ACCENT_STORAGE_KEY, 'eva-02')
+    initTheme()
+    expect(useTheme().accent.value).toBe('eva-02')
+    expect(document.documentElement.dataset.accent).toBe('eva-02')
+  })
+
+  it('忽略非法的配色记录', async () => {
+    const { initTheme, useTheme } = await freshTheme()
+    localStorage.setItem(ACCENT_STORAGE_KEY, 'magenta')
+    initTheme()
+    expect(useTheme().accent.value).toBe('default')
+    expect(document.documentElement.dataset.accent).toBe('default')
   })
 })

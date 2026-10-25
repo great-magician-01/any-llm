@@ -516,7 +516,7 @@ func TestStreamAllCandidatesFailWritesInbandErrorFrame(t *testing.T) {
 				t.Fatalf("failed stream must not carry a completion frame: %q", body)
 			}
 
-			records, total, _ := store.UsageRecordsList(d, 1, 10)
+			records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 			if total != 2 {
 				t.Fatalf("usage records=%d want 2 (one per attempted candidate)", total)
 			}
@@ -604,7 +604,7 @@ func TestStreamMidStreamUpstreamErrorIsNotSwallowed(t *testing.T) {
 				t.Fatalf("error stream must not be closed with a completion frame: %q", w.Body.String())
 			}
 
-			records, total, _ := store.UsageRecordsList(d, 1, 10)
+			records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 			if total != 1 {
 				t.Fatalf("usage records=%d want 1", total)
 			}
@@ -683,7 +683,7 @@ func TestStreamNoFailoverAfterContentFramesFlowed(t *testing.T) {
 	if strings.Contains(body, "[DONE]") {
 		t.Fatalf("stream that ended in upstream failure must not emit [DONE]: %q", body)
 	}
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d want 1 (only the candidate that actually ran)", total)
 	}
@@ -727,7 +727,7 @@ func TestAliasSkipsExpiredCandidateAndServesNext(t *testing.T) {
 		t.Fatalf("status=%d body=%s (expired candidate must fall through to the next binding)", w.Code, w.Body.String())
 	}
 	// 过期候选从未被调用：只有第二候选的一条 usage
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d want 1 (expired candidate never dispatched)", total)
 	}
@@ -768,7 +768,7 @@ func TestAliasAllCandidatesExpired404(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "no available bindings") {
 		t.Fatalf("body=%s want 'no available bindings'", w.Body.String())
 	}
-	if _, total, _ := store.UsageRecordsList(d, 1, 10); total != 0 {
+	if _, total, _ := store.UsageRecordsList(d, 1, 10, ""); total != 0 {
 		t.Fatalf("usage records=%d want 0 (no candidate was dispatched)", total)
 	}
 }

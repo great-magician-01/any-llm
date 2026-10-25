@@ -41,6 +41,34 @@ describe('UPSTREAM_PRESETS 数据完整性', () => {
       expect(p.label.length).toBeGreaterThan(0)
     }
   })
+
+  // 附加端点与主格式同等口径：合法协议、不与主格式重复、列表内不重复、
+  // URL 规范（https、无尾斜杠、anthropic 不带 /v1 由网关自补）。
+  it('extra 附加端点格式合法且不与主格式撞车', () => {
+    for (const p of UPSTREAM_PRESETS) {
+      const seen = new Set<string>([p.format])
+      for (const ep of p.extra ?? []) {
+        expect(['openai', 'anthropic', 'responses']).toContain(ep.format)
+        expect(seen.has(ep.format)).toBe(false)
+        seen.add(ep.format)
+        expect(ep.baseUrl).toMatch(/^https:\/\//)
+        expect(ep.baseUrl.endsWith('/')).toBe(false)
+        if (ep.format === 'anthropic') {
+          expect(ep.baseUrl).not.toMatch(/\/v1(\/|$)/)
+        } else {
+          expect(ep.baseUrl).toMatch(/\/v\d+(\/|$)/)
+        }
+      }
+    }
+  })
+
+  it('合并后的多格式预设带出附加端点', () => {
+    expect(findPreset('deepseek')?.extra).toEqual([{ format: 'anthropic', baseUrl: 'https://api.deepseek.com/anthropic' }])
+    expect(findPreset('openai')?.extra).toEqual([{ format: 'responses', baseUrl: 'https://api.openai.com/v1' }])
+    // 被合并掉的独立条目不再存在
+    expect(findPreset('deepseek-anthropic')).toBeUndefined()
+    expect(findPreset('openai-responses')).toBeUndefined()
+  })
 })
 
 describe('findPreset / presetSelectOptions', () => {

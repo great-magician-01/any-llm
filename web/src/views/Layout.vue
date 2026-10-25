@@ -1,36 +1,44 @@
 <script setup lang="ts">
-import { h } from 'vue'
+import { computed, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
-import { switchSuite } from '@/utils/suite'
+import AccentPicker from '@/components/AccentPicker.vue'
+import { isGlassPath, suitePath, switchSuite } from '@/utils/suite'
 
 const router = useRouter()
 const route = useRoute()
+/** 一套视图服务两套 URL 树：glass 下所有内部跳转都要带 /glass 前缀 */
+const isGlass = computed(() => isGlassPath(route.path))
 
 async function logout() {
-  await client.post('/logout')
+  try {
+    await client.post('/logout')
+  } catch {
+    // 登出接口失败也要清本地态并回登录页，否则用户卡在一个即将失效的会话里
+  }
   localStorage.removeItem('authed')
-  router.push('/glass/login')
+  router.push(suitePath(route.path, '/login'))
 }
 
-function item(label: string, key: string, icon: IconName) {
+function item(label: string, path: string, icon: IconName) {
   return {
     label,
-    key,
+    // 菜单 key 直接用当前套件内的完整路径：高亮与跳转都天然正确
+    key: suitePath(route.path, path),
     icon: () => h(AppIcon, { name: icon, size: 16 }),
   }
 }
 
 const menuItems = [
-  item('概览', 'glass-dashboard', 'dashboard'),
-  item('上游管理', 'glass-upstreams', 'layers'),
-  item('模型别名', 'glass-aliases', 'link'),
-  item('API 密钥', 'glass-keys', 'key'),
-  item('用量统计', 'glass-usage', 'chart'),
-  item('对话记录', 'glass-conversations', 'chat'),
+  item('概览', '/dashboard', 'dashboard'),
+  item('上游管理', '/upstreams', 'layers'),
+  item('模型别名', '/aliases', 'link'),
+  item('API 密钥', '/keys', 'key'),
+  item('用量统计', '/usage', 'chart'),
+  item('对话记录', '/conversations', 'chat'),
 ]
 </script>
 
@@ -46,10 +54,10 @@ const menuItems = [
           </div>
         </div>
         <n-menu
-          :value="route.name as string"
+          :value="route.path"
           :options="menuItems"
           :indent="18"
-          @update:value="(v: string) => router.push({ name: v })"
+          @update:value="(v: string) => router.push(v)"
         />
         <div class="sider-footer">
           <div class="admin-chip">
@@ -57,6 +65,7 @@ const menuItems = [
             <span class="admin-name">管理员</span>
           </div>
           <div class="footer-actions">
+            <AccentPicker />
             <ThemeToggle />
             <button class="logout-btn" title="退出登录" @click="logout">
               <AppIcon name="logout" :size="15" />
@@ -66,7 +75,7 @@ const menuItems = [
         </div>
         <div class="suite-switch" @click="router.push(switchSuite(route.fullPath))">
           <AppIcon name="swap" :size="14" />
-          <span>切换到经典版</span>
+          <span>{{ isGlass ? '切换到经典版' : '切换到液态玻璃版' }}</span>
         </div>
       </div>
     </n-layout-sider>
@@ -82,8 +91,8 @@ const menuItems = [
 .sider {
   border-right: 1px solid var(--border-soft);
   background: var(--sider-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--sider-blur);
+  -webkit-backdrop-filter: var(--sider-blur);
 }
 .sider-inner {
   display: flex;
@@ -138,7 +147,7 @@ const menuItems = [
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 0 10px rgba(123, 163, 255, 0.4);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--brand) 40%, transparent);
 }
 .admin-name {
   font-size: 13px;
@@ -166,8 +175,8 @@ const menuItems = [
     background 0.15s ease;
 }
 .logout-btn:hover {
-  color: #fc8a9b;
-  background: rgba(251, 113, 133, 0.1);
+  color: #fb7185;
+  background: rgba(251, 113, 133, 0.08);
 }
 .suite-switch {
   margin-top: 10px;
@@ -177,28 +186,29 @@ const menuItems = [
   gap: 6px;
   padding: 7px 10px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: var(--suite-bg);
+  box-shadow: var(--suite-glow);
   color: var(--text-3);
   font-size: 12px;
   cursor: pointer;
   transition:
     color 0.15s ease,
     border-color 0.15s ease,
+    background 0.15s ease,
     box-shadow 0.15s ease;
 }
 .suite-switch:hover {
   color: var(--brand-hover);
-  border-color: rgba(123, 163, 255, 0.4);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    0 4px 14px rgba(123, 163, 255, 0.18);
+  border-color: var(--brand-border);
+  background: var(--suite-bg-hover);
+  box-shadow: var(--suite-glow-hover);
 }
 .content {
   background: transparent;
 }
-/* 与默认主题 Layout 保持一致：宽屏放大内容上限，窄屏由表格 scroll-x 兜底 */
+/* 宽屏时放大内容上限让表格各列完整显示；窄屏自然收缩，由表格自身的
+   scroll-x 提供横向滚动（见 Upstreams/Usage 等页） */
 .page {
   max-width: 1600px;
   margin: 0 auto;

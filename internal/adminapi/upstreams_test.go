@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,8 +72,8 @@ func TestListUpstreamsStatusFilter(t *testing.T) {
 	a, d := setupAPI(t)
 	store.CreateUpstream(d, &store.Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	store.CreateUpstream(d, &store.Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
-	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
-	offID, _ := store.CreateUpstream(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	// 创建即禁用走 CreateUpstreamDisabled（单次 INSERT 落 enabled=0），无需读回再改存。
+	offID, _ := store.CreateUpstreamDisabled(d, &store.Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
 	off, _ := store.GetUpstreamByID(d, offID)
 	off.Enabled = false
 	if err := store.UpdateUpstream(d, off); err != nil {
@@ -632,6 +634,109 @@ func TestUpstreamRemark_API(t *testing.T) {
 	}
 }
 
+// TestUpstreamTag_API 覆盖管理端标记（官方/中转）的三态：创建带入与缺省默认、
+// PUT 显式改、字段缺省保留现状（只发 enabled 的开关 PATCH 尤其不能把标记抹回
+// 默认）、显式空串 = 清回默认官方，以及非法值 400。指针语义与 remark 一致。
+func TestUpstreamTag_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) int64 {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			ID  int64  `json:"id"`
+			Tag string `json:"tag"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID
+	}
+	createRaw := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 创建时带入中转
+	id := create(map[string]any{"name": "relay", "tag": store.TagRelay})
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("create tag=%q, want %q", u.Tag, store.TagRelay)
+	}
+	// 创建时不给：默认官方
+	plain := create(map[string]any{"name": "plain"})
+	if u, _ := store.GetUpstreamByID(d, plain); u.Tag != store.TagOfficial {
+		t.Fatalf("unset tag=%q, want %q", u.Tag, store.TagOfficial)
+	}
+	// 创建时非法值：400，且不落库
+	if w := createRaw(map[string]any{"name": "bad", "base_url": "https://x", "api_key": "k", "format": "openai", "tag": "official-x"}); w.Code != 400 {
+		t.Fatalf("create invalid tag status=%d, want 400", w.Code)
+	}
+	if _, err := store.GetUpstreamByName(d, "bad"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("invalid-tag upstream should not exist: err=%v", err)
+	}
+
+	// 字段缺省 → 保留现状
+	if w := do(id, map[string]any{"base_url": "https://y"}); w.Code != 200 {
+		t.Fatalf("patch status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("absent tag=%q, want preserved", u.Tag)
+	}
+
+	// 只发 enabled 的 PATCH（列表页开关走这条路）同样不得抹掉标记
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagRelay {
+		t.Fatalf("enabled-only patch reset tag=%q", u.Tag)
+	}
+
+	// 显式改回官方
+	if w := do(id, map[string]any{"tag": store.TagOfficial}); w.Code != 200 {
+		t.Fatalf("set status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); u.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q", u.Tag, store.TagOfficial)
+	}
+
+	// 显式空串 → 清回默认官方（与 remark 的「空串 = 清空」同构）
+	id2 := create(map[string]any{"name": "relay2", "tag": store.TagRelay})
+	if w := do(id2, map[string]any{"tag": ""}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id2); u.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q after clear", u.Tag, store.TagOfficial)
+	}
+
+	// 非法值 400，且库里不变
+	if w := do(id2, map[string]any{"tag": "中转"}); w.Code != 400 {
+		t.Fatalf("invalid tag status=%d, want 400", w.Code)
+	}
+	if u, _ := store.GetUpstreamByID(d, id2); u.Tag != store.TagOfficial {
+		t.Fatalf("tag after rejected patch=%q", u.Tag)
+	}
+}
+
 // TestUpstreamExpiry_API 覆盖管理端三态：创建时设置、update 显式设置/清除/
 // 缺省保留，以及非法格式 400。缺省保留这一条尤其重要——toggleEnabled 那种
 // 只发 {"enabled":...} 的部分 PATCH 不能把有效期清掉。
@@ -925,6 +1030,136 @@ func TestUpstreamConnectivity_ByID(t *testing.T) {
 	}
 }
 
+// TestUpstreamExtraEndpoints_API 覆盖管理端 extra_endpoints 的完整生命周期：
+// 创建带入、缺省保留（只发 enabled 的开关 PATCH 尤其不能清空）、显式空数组
+// 清空、非法值 400。指针三态与 remark 一致。
+func TestUpstreamExtraEndpoints_API(t *testing.T) {
+	a, d := setupAPI(t)
+
+	create := func(extra map[string]any) (int64, int) {
+		t.Helper()
+		base := map[string]any{"name": "u", "base_url": "https://x/v1", "api_key": "k", "format": "openai"}
+		for k, v := range extra {
+			base[k] = v
+		}
+		b, _ := json.Marshal(base)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		var resp struct {
+			ID int64 `json:"id"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.ID, w.Code
+	}
+	do := func(id int64, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+	eps := []map[string]any{{"format": "anthropic", "base_url": "https://x/anthropic"}}
+
+	// 创建时带入
+	id, code := create(map[string]any{"extra_endpoints": eps})
+	if code != 200 {
+		t.Fatalf("create status=%d", code)
+	}
+	u, _ := store.GetUpstreamByID(d, id)
+	if len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "anthropic" || u.ExtraEndpoints[0].BaseURL != "https://x/anthropic" {
+		t.Fatalf("create extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 创建时不给 → 无附加端点
+	plainID, code := create(map[string]any{"name": "plain"})
+	if code != 200 {
+		t.Fatalf("plain create status=%d", code)
+	}
+	if u, _ := store.GetUpstreamByID(d, plainID); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("unset extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 字段缺省 → 保留现状（含只发 enabled 的开关 PATCH）
+	if w := do(id, map[string]any{"enabled": false}); w.Code != 200 {
+		t.Fatalf("toggle status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 1 {
+		t.Fatalf("enabled-only patch cleared extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 显式替换
+	eps2 := []map[string]any{{"format": "responses", "base_url": "https://x/v1"}}
+	if w := do(id, map[string]any{"extra_endpoints": eps2}); w.Code != 200 {
+		t.Fatalf("replace status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "responses" {
+		t.Fatalf("replaced extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 显式空数组 → 清空
+	if w := do(id, map[string]any{"extra_endpoints": []map[string]any{}}); w.Code != 200 {
+		t.Fatalf("clear status=%d body=%s", w.Code, w.Body.String())
+	}
+	if u, _ := store.GetUpstreamByID(d, id); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("cleared extra_endpoints=%+v", u.ExtraEndpoints)
+	}
+
+	// 非法值 → 400：未知格式 / 空 base_url / 与主格式撞车 / 列表内重复
+	if _, code := create(map[string]any{"name": "bad1", "extra_endpoints": []map[string]any{{"format": "gemini", "base_url": "https://x"}}}); code != 400 {
+		t.Fatalf("unknown format status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad2", "extra_endpoints": []map[string]any{{"format": "anthropic", "base_url": " "}}}); code != 400 {
+		t.Fatalf("empty base_url status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad3", "extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://y"}}}); code != 400 {
+		t.Fatalf("primary collision status=%d want 400", code)
+	}
+	if _, code := create(map[string]any{"name": "bad4", "extra_endpoints": []map[string]any{
+		{"format": "anthropic", "base_url": "https://x"}, {"format": "anthropic", "base_url": "https://y"}}}); code != 400 {
+		t.Fatalf("duplicate format status=%d want 400", code)
+	}
+}
+
+// TestUpdateUpstream_FormatCollisionWithExtras：只改主 format 的 PATCH 撞上保留
+// 的附加端点（同一格式出现两个 URL）必须 400 响亮拒绝——读路径上没有隐式
+// 优先级，二义配置不允许落库。管理员需在同一请求里同时修正 extra_endpoints。
+func TestUpdateUpstream_FormatCollisionWithExtras(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "u", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+
+	do := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/admin/upstreams/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 只改主格式为 anthropic：与保留的附加端点撞车 → 400，库里的行不变
+	if w := do(map[string]any{"format": "anthropic"}); w.Code != 400 {
+		t.Fatalf("collision status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	u, _ := store.GetUpstreamByID(d, id)
+	if u.Format != "openai" || len(u.ExtraEndpoints) != 1 {
+		t.Fatalf("rejected patch should not have landed: %+v", u)
+	}
+
+	// 同一请求里同时修正 extra_endpoints → 200
+	if w := do(map[string]any{"format": "anthropic", "extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://x/v1"}}}); w.Code != 200 {
+		t.Fatalf("fix status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, _ = store.GetUpstreamByID(d, id)
+	if u.Format != "anthropic" || len(u.ExtraEndpoints) != 1 || u.ExtraEndpoints[0].Format != "openai" {
+		t.Fatalf("after fix=%+v", u)
+	}
+}
+
 // 模型写操作的错误语义：添加已存在的活跃模型返回 409（静默 200 会让管理员以为
 // 新配置生效了）；编辑不存在/已软删/跨上游的模型返回 404（更新 0 行不能假成功）。
 func TestModelWriteErrorSemantics(t *testing.T) {
@@ -968,5 +1203,120 @@ func TestModelWriteErrorSemantics(t *testing.T) {
 	}
 	if code := call("PUT", base+"/"+strconv.FormatInt(mid, 10), edit); code != 404 {
 		t.Fatalf("soft-deleted model edit status=%d, want 404", code)
+	}
+}
+
+// TestCreateUpstreamNameConflict 新的名称唯一性口径打到端点上：启用重名 400
+// （应用层判定，错误信息可读），禁用重名放行（「预建同名备用、再切换」的
+// 合法流程），PATCH 把撞名的禁用行切成启用同样被拒。
+func TestCreateUpstreamNameConflict(t *testing.T) {
+	a, d := setupAPI(t)
+	id, err := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://a", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	post := func(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/admin/upstreams", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// 启用重名 → 400 + 明确错误信息
+	w := post(t, map[string]any{"name": "ds", "base_url": "https://b", "api_key": "k2", "format": "anthropic"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("enabled dup: status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 禁用重名 → 200，行建成禁用
+	w = post(t, map[string]any{"name": "ds", "base_url": "https://b", "api_key": "k2", "format": "anthropic", "enabled": false})
+	if w.Code != 200 {
+		t.Fatalf("disabled dup: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID      int64 `json:"id"`
+		Enabled bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Enabled {
+		t.Fatalf("create-disabled must land disabled: %+v", created)
+	}
+	if created.ID == id {
+		t.Fatal("disabled duplicate must be a new row")
+	}
+
+	// 空名（含纯空白）→ 400（历史上 DB 唯一索引顺带挡第二个空名行，现在由
+	// 应用层显式必填）
+	w = post(t, map[string]any{"name": "  ", "base_url": "https://c", "api_key": "k3", "format": "openai"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "name is required") {
+		t.Fatalf("empty name: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// PATCH 把撞名的禁用行切成启用 → 400
+	patchBody, _ := json.Marshal(map[string]any{"enabled": true})
+	req := httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(patchBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("enable colliding via PATCH: status=%d body=%s", w.Code, w.Body.String())
+	}
+	// 行保持禁用（校验在写入前失败）
+	u, err := store.GetUpstreamByID(d, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Enabled {
+		t.Fatal("rejected PATCH must not flip the row")
+	}
+
+	// 名称裁剪：带空白的名称落库前去首尾空白（与导入侧对齐，避免 "foo" 与
+	// "foo " 共存使导出文件不可导入）；后续用裁剪后的名称创建撞名 400。
+	w = post(t, map[string]any{"name": "  spaced  ", "base_url": "https://s", "api_key": "k4", "format": "openai"})
+	if w.Code != 200 {
+		t.Fatalf("trimmed create: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var trimmed struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &trimmed); err != nil {
+		t.Fatal(err)
+	}
+	if trimmed.Name != "spaced" {
+		t.Fatalf("name not trimmed: %q", trimmed.Name)
+	}
+	w = post(t, map[string]any{"name": "spaced ", "base_url": "https://s2", "api_key": "k5", "format": "anthropic"})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "upstream name already exists") {
+		t.Fatalf("trimmed dup should collide: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// 把启用行禁掉之后，同样的 PATCH 放行
+	u, _ = store.GetUpstreamByID(d, id)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(patchBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("enable after the other disabled: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// PUT 纯空白的名称：视为「没给」，保留原值（不会把行改成不可路由的空白名）
+	wsBody, _ := json.Marshal(map[string]any{"name": "   "})
+	req = httptest.NewRequest("PUT", upstreamIDPath(created.ID), bytes.NewReader(wsBody))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("whitespace-only name PATCH: status=%d body=%s", w.Code, w.Body.String())
+	}
+	u, err = store.GetUpstreamByID(d, created.ID)
+	if err != nil || u.Name != "ds" {
+		t.Fatalf("name must stay %q: %+v err=%v", "ds", u, err)
 	}
 }

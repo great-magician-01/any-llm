@@ -33,7 +33,9 @@ export async function deleteKey(id: number) {
   await client.delete(`/keys/${id}`)
 }
 
-export interface UsageTotals { daily_tokens: number; monthly_tokens: number }
+import type { UsageTotals } from './types'
+
+export type { UsageTotals }
 
 export async function getKeyUsage(id: number) {
   const { data } = await client.get(`/usage/key/${id}`)

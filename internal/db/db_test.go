@@ -65,6 +65,22 @@ func TestOpenSQLite_FreshCreatesAllTables(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='expires_at' AND "notnull"=0`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("upstreams.expires_at should be nullable: n=%d err=%v", n, err)
 	}
+	// 新库 upstreams 带标记列，且老库 ALTER 补列时依赖的这个默认值真的在
+	// （SQLite 的 ADD COLUMN NOT NULL 没有默认值是非法的）
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstreams') WHERE name='tag'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("upstreams.tag missing: n=%d err=%v", n, err)
+	}
+	var tag string
+	if err := db.QueryRow(`SELECT tag FROM upstreams WHERE id=0`).Scan(&tag); err == nil {
+		t.Fatalf("unexpected row: tag=%q", tag)
+	}
+	var dflt sql.NullString
+	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('upstreams') WHERE name='tag'`).Scan(&dflt); err != nil {
+		t.Fatalf("pragma tag: %v", err)
+	}
+	if !dflt.Valid || !strings.Contains(dflt.String, "official") {
+		t.Fatalf("upstreams.tag default=%v, want 'official'", dflt)
+	}
 }
 
 // 老库（或别的程序在同一 schema 建的同名表）里的 ext_keys 可能缺 enabled/remark
@@ -322,6 +338,17 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if err := got.QueryRow(`SELECT remark FROM upstreams WHERE name='u1'`).Scan(&upRemark); err != nil || upRemark != "" {
 		t.Fatalf("upstream remark backfill: v=%q err=%v", upRemark, err)
 	}
+	// tag 也一样由 extraCols 补列，但默认值是 'official' 而不是空串：老行读回来
+	// 必须是官方，且该列要活过表重建（否则同样要等下次重启才补）。
+	for _, name := range []string{"u1", "u2", "u3"} {
+		var tag string
+		if err := got.QueryRow(`SELECT tag FROM upstreams WHERE name=?`, name).Scan(&tag); err != nil {
+			t.Fatalf("tag dropped by rebuild for %s: %v", name, err)
+		}
+		if tag != "official" {
+			t.Fatalf("%s tag=%q, want official (column default)", name, tag)
+		}
+	}
 	// 补上的列真的能用：写一个到期时刻再读回
 	if _, err := got.Exec(`UPDATE upstreams SET expires_at=? WHERE name='u1'`, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("write expires_at: %v", err)
@@ -363,12 +390,19 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if _, err := got.Exec(`INSERT INTO usage_records (ext_key_id, upstream_name, model, in_format, up_format) VALUES (999, 'x', 'y', 'z', 'w')`); err != nil {
 		t.Fatalf("no FK expected, insert bad ext_key_id: %v", err)
 	}
-	// 部分唯一索引存在；软删除后同名可重建
-	for _, idx := range []string{"idx_upstreams_name", "idx_upstream_models_uid_name", "idx_ext_keys_key"} {
+	// 部分唯一索引存在；upstreams.name 的旧唯一索引已被迁移删除
+	for _, idx := range []string{"idx_upstream_models_uid_name", "idx_ext_keys_key"} {
 		var name string
 		if err := got.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&name); err != nil {
 			t.Fatalf("partial unique index %s missing: %v", idx, err)
 		}
+	}
+	var legacyIdx int
+	if err := got.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_upstreams_name'`).Scan(&legacyIdx); err != nil {
+		t.Fatal(err)
+	}
+	if legacyIdx != 0 {
+		t.Fatal("legacy idx_upstreams_name must be dropped by migration (name uniqueness is app-level now)")
 	}
 	if _, err := got.Exec(`UPDATE upstreams SET is_active = 0 WHERE id=1`); err != nil {
 		t.Fatal(err)
@@ -376,9 +410,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x2','k1b','openai')`); err != nil {
 		t.Fatalf("re-create same name after soft delete: %v", err)
 	}
-	// 活跃行唯一性仍被强制
-	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x3','k1c','openai')`); err == nil {
-		t.Fatal("duplicate active name should violate partial unique index")
+	// 名称唯一性已下放到应用层：活跃行同名在 DB 层合法（启用行重名由
+	// store.UpstreamNameTaken 拒绝），迁移必须把旧索引拆掉才说得通
+	if _, err := got.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u1','http://x3','k1c','openai')`); err != nil {
+		t.Fatalf("duplicate active name should be allowed at DB level now: %v", err)
 	}
 	// 会话表已建
 	var tname string
@@ -531,5 +566,77 @@ func TestOpenSQLite_FreshDBHasAllDeclaredIndexesAndColumns(t *testing.T) {
 				t.Errorf("column %s.%s declared in schema but missing on a fresh database", tbl.Name, c.Name)
 			}
 		}
+	}
+	// 已下线的索引不许再出现在新库上：名称唯一性在应用层（store.UpstreamNameTaken）
+	var legacy int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, upstreamNameIndexName).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy != 0 {
+		t.Errorf("retired index %s must not be created on a fresh database", upstreamNameIndexName)
+	}
+}
+
+// 存量库（上一版本建的）缺本版本新声明的普通索引时，重新打开必须补建——
+// 「声明即可建」对新库（上面的 FreshDB 测试）与老库都要成立。
+func TestOpenSQLite_RecreatesMissingPlainIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-idx.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟上一版本的库：索引尚未声明，表已经存在
+	if _, err := d.Exec(`DROP INDEX idx_usage_model`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	d2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d2.Close()
+	var n int
+	if err := d2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_usage_model'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal("declared plain index missing on an existing database must be recreated by migration")
+	}
+}
+
+// 存量库上的 idx_upstreams_name（历史版本的「仅活跃行」部分唯一索引）必须在
+// 启动迁移中被删除：名称唯一性已改为应用层判定（启用行不重名，禁用行可重名），
+// 旧索引会把合法的禁用重名行拒之门外。模拟方式：先开一个新库（旧索引已被
+// 本版本迁移跳过），手工把旧索引建回去当作「上一版本留下的库」，再打开一次。
+func TestOpenSQLite_DropsLegacyUpstreamNameIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-idx.db")
+	d, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ` + upstreamNameIndexName + ` ON upstreams(name) WHERE is_active = 1`); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	d2, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen with legacy index: %v", err)
+	}
+	defer d2.Close()
+	var n int
+	if err := d2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, upstreamNameIndexName).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("legacy idx_upstreams_name must be dropped by migration")
+	}
+	// 旧索引拆掉后，启用重名在 DB 层合法（应用层负责拒绝）
+	if _, err := d2.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u','http://x','k','openai')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d2.Exec(`INSERT INTO upstreams (name, base_url, api_key, format) VALUES ('u','http://y','k2','anthropic')`); err != nil {
+		t.Fatalf("duplicate active name should be allowed at DB level now: %v", err)
 	}
 }

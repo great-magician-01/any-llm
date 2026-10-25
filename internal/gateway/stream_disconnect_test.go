@@ -105,7 +105,7 @@ func TestStreamClientDisconnectCancelsUpstreamAndReleasesSlot(t *testing.T) {
 		t.Fatal("upstream request context was not cancelled on client disconnect")
 	}
 	// (c) usage 记 error：断连不是成功，不能污染用量统计
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		t.Fatalf("usage records=%d want 1", total)
 	}
@@ -205,7 +205,7 @@ func TestStreamCandidateSkippedWhenBusyAndFailover(t *testing.T) {
 		t.Fatalf("busy candidate was called despite the concurrency cap: %q", body)
 	}
 	// 只记 1 条 usage（free 的成功调用）；被跳过的候选不记
-	records, total, _ := store.UsageRecordsList(d, 1, 10)
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total != 1 {
 		close(release)
 		<-done
@@ -227,7 +227,7 @@ func TestStreamCandidateSkippedWhenBusyAndFailover(t *testing.T) {
 	if !strings.Contains(w1.Body.String(), "from-A") || !strings.Contains(w1.Body.String(), "[DONE]") {
 		t.Fatalf("slow request body=%q", w1.Body.String())
 	}
-	records2, total2, _ := store.UsageRecordsList(d, 1, 10)
+	records2, total2, _ := store.UsageRecordsList(d, 1, 10, "")
 	if total2 != 2 {
 		t.Fatalf("usage records=%d want 2 after both requests ended: %+v", total2, records2)
 	}

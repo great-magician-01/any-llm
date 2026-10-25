@@ -117,22 +117,22 @@ func TestCallBiz_UpstreamErrorStatusAndMessage(t *testing.T) {
 // 标记——一个超大厂商错误页（HTML/网关模板）不能整段进日志。恰好等于上限不截断，
 // 超一个字节即截断。
 func TestBizTruncateUpstream512(t *testing.T) {
-	if got := truncateUpstream("short", 512); got != "short" {
+	if got := truncateLog("short", 512); got != "short" {
 		t.Fatalf("short body = %q, want unchanged", got)
 	}
 	exact := strings.Repeat("y", 512)
-	if got := truncateUpstream(exact, 512); got != exact {
+	if got := truncateLog(exact, 512); got != exact {
 		t.Fatalf("body exactly at the cap must not be truncated: len=%d", len(got))
 	}
 	big := strings.Repeat("x", 4096)
-	got := truncateUpstream(big, 512)
+	got := truncateLog(big, 512)
 	if len(got) != 512+len(bizTruncMarker) {
 		t.Fatalf("truncated length = %d, want %d", len(got), 512+len(bizTruncMarker))
 	}
 	if got[:512] != big[:512] || !strings.HasSuffix(got, bizTruncMarker) {
 		t.Fatalf("truncated body malformed: %q", got[:40])
 	}
-	if got := truncateUpstream(strings.Repeat("z", 513), 512); !strings.HasSuffix(got, bizTruncMarker) {
+	if got := truncateLog(strings.Repeat("z", 513), 512); !strings.HasSuffix(got, bizTruncMarker) {
 		t.Fatalf("513-byte body must be truncated: %q", got[len(got)-20:])
 	}
 }
@@ -140,7 +140,7 @@ func TestBizTruncateUpstream512(t *testing.T) {
 // 业务规则：上游返回超长错误 body 时 Call 不得 panic、不得丢掉状态码，返回的
 // *UpstreamError 仍携带完整 body（网关要按状态码映射错误类型）。
 //
-// 注意（已记入交付报告）：512 字节截断只作用于日志行（truncateUpstream），
+// 注意（已记入交付报告）：512 字节截断只作用于日志行（truncateLog），
 // UpstreamError.Body / Message() 不做截断，会被 admin/gateway 原样回给调用方。
 // 本用例钉住现状，超长 body 下的不 panic 与状态码透传。
 func TestCallBiz_HugeErrorBodyNoPanic(t *testing.T) {
@@ -164,7 +164,7 @@ func TestCallBiz_HugeErrorBodyNoPanic(t *testing.T) {
 		t.Fatalf("body len = %d, want %d (current contract: raw body preserved)", len(ue.Body), len(huge))
 	}
 	// 日志侧使用的截断函数在超长 body 上必须仍然安全且有界。
-	if got := truncateUpstream(string(ue.Body), 512); len(got) > 512+len(bizTruncMarker) {
+	if got := truncateLog(string(ue.Body), 512); len(got) > 512+len(bizTruncMarker) {
 		t.Fatalf("log-side truncation unbounded: len=%d", len(got))
 	}
 }

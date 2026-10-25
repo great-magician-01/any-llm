@@ -48,7 +48,7 @@ func TestCompletion_StreamRecordsAnthropicCacheTokens(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	records, _, err := store.UsageRecordsList(d, 1, 10)
+	records, _, err := store.UsageRecordsList(d, 1, 10, "")
 	if err != nil {
 		t.Fatalf("list usage: %v", err)
 	}

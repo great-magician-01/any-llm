@@ -136,14 +136,14 @@ const tipStyle = computed(() => {
 <style scoped>
 .cal-card {
   margin-top: 20px;
-  /* 色阶：暗色（含毛玻璃暗色）走品牌蓝的亮度递增 ramp；浅色在下方覆盖。
-     fill 与 background 写在一起：格子（svg rect）吃 fill，图例（span）吃 background，
-     各自忽略用不上的那条，一套类名两用。 */
+  /* 色阶：暗色（含毛玻璃暗色）走品牌色的亮度递增 ramp（lv3/lv4 直接跟品牌变量，
+     随配色主题换肤）；浅色在下方覆盖。fill 与 background 写在一起：
+     格子（svg rect）吃 fill，图例（span）吃 background，各自忽略用不上的那条。 */
   --lv0: rgba(148, 163, 184, 0.1);
   --lv1: #1e3a6e;
   --lv2: #2a55a3;
-  --lv3: #3d78e8;
-  --lv4: #7ba3ff;
+  --lv3: var(--brand);
+  --lv4: var(--brand-hover);
 }
 .cal-total {
   font-size: 12px;
@@ -196,8 +196,8 @@ const tipStyle = computed(() => {
   --lv0: rgba(15, 23, 42, 0.06);
   --lv1: #c9dbff;
   --lv2: #96b8ff;
-  --lv3: #5b8cff;
-  --lv4: #4673e8;
+  /* lv3/lv4 继续走 .cal-card 里的品牌变量：浅色下的 --brand/--brand-hover 深档
+     恰好就是原写死的 #5b8cff/#4673e8，删掉字面值让 EVA 配色也能跟着换 */
 }
 :root[data-theme='light'] .cell:hover {
   stroke: rgba(15, 23, 42, 0.35);

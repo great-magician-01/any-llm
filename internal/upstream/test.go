@@ -52,18 +52,17 @@ func TestConnectivity(ctx context.Context, httpClient *http.Client, u *store.Ups
 	defer resp.Body.Close()
 
 	res := &TestResult{Reachable: true, LatencyMs: time.Since(start).Milliseconds(), Status: resp.StatusCode}
+	// 这里测的是「/models 可用」，契约就是 2xx（见 TestResult 注释），
+	// 3xx 也按异常报告，因此判据与调用侧（Call）的 >= 400 口径不同。
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 错误 body 的读取错误可忽略：即使中途读失败，已读到的前缀仍用于 Detail。
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
-		res.Detail = truncateFetch(strings.TrimSpace(string(body)), 512)
+		res.Detail = truncateLog(strings.TrimSpace(string(body)), logErrorBodyCap)
 		logger.Warn("connectivity test: upstream non-2xx",
 			"url", req.URL.String(), "upstream", u.Name, "status", resp.StatusCode, "body", res.Detail)
 		return res
 	}
-	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
+	var result modelsListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		// 2xx 但应答不是模型列表（如网关类上游返回 HTML）：连通没问题，
 		// 按异常说明返回，由前端按 warning 展示。

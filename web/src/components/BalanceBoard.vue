@@ -6,6 +6,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Upstream } from '@/api/upstreams'
 import type { BalanceSnapshot } from '@/api/balances'
+import { quotaPercentFromString, quotaStatusFromString, type QuotaStatus } from '@/utils/quota'
 import { balanceView, balanceTooltip, formatFetchedAt, type BalanceView, type QuotaWindowView } from '@/utils/balance'
 import { isExpired } from '@/utils/upstreamStatus'
 
@@ -13,7 +14,7 @@ const props = defineProps<{
   upstreams: Upstream[]
   /** upstream id -> 最新余额/额度快照；无快照的上游不进看板 */
   snapshots: Record<number, BalanceSnapshot>
-  /** 点击行跳转的上游管理页路由名（经典/毛玻璃两套不同） */
+  /** 点击行跳转的上游管理页路径（由 Dashboard 按当前套件算好：/upstreams 或 /glass/upstreams） */
   to: string
 }>()
 
@@ -22,7 +23,6 @@ const router = useRouter()
 interface BoardRow {
   id: number
   name: string
-  disabled: boolean
   expired: boolean
   view: BalanceView
   fetchedAt: string
@@ -31,6 +31,7 @@ interface BoardRow {
 
 const rows = computed<BoardRow[]>(() =>
   props.upstreams.flatMap((u) => {
+    if (!u.enabled) return [] // 已禁用的上游不进看板（过期仍显示，续期即恢复）
     const s = u.id != null ? props.snapshots[u.id] : undefined
     const view = s ? balanceView(s) : null
     if (!s || !view) return []
@@ -38,8 +39,7 @@ const rows = computed<BoardRow[]>(() =>
       {
         id: u.id as number,
         name: u.name,
-        disabled: !u.enabled,
-        expired: u.enabled && isExpired(u),
+        expired: isExpired(u),
         view,
         fetchedAt: formatFetchedAt(s.created_at),
         tooltip: balanceTooltip(s, '点击查看上游'),
@@ -48,16 +48,13 @@ const rows = computed<BoardRow[]>(() =>
   }),
 )
 
-// 进度条状态阈值与上游用量面板一致：跑满为错误，>=80% 警告
+// 进度条状态阈值与上游用量面板共用 utils/quota 的公共口径（厂商返回的是
+// 百分比字符串，走字符串版本）
 function pctOf(w: QuotaWindowView): number {
-  const p = parseFloat(w.percent ?? '')
-  return Number.isNaN(p) ? 0 : Math.min(100, Math.round(p))
+  return quotaPercentFromString(w.percent)
 }
-function statusOf(w: QuotaWindowView): 'success' | 'warning' | 'error' {
-  const p = parseFloat(w.percent ?? '')
-  if (Number.isNaN(p)) return 'success'
-  if (p >= 100) return 'error'
-  return p >= 80 ? 'warning' : 'success'
+function statusOf(w: QuotaWindowView): QuotaStatus {
+  return quotaStatusFromString(w.percent)
 }
 </script>
 
@@ -69,14 +66,13 @@ function statusOf(w: QuotaWindowView): 'success' | 'warning' | 'error' {
         v-for="r in rows"
         :key="r.id"
         class="bal-row"
-        :class="{ dim: r.disabled || r.expired }"
+        :class="{ dim: r.expired }"
         :title="r.tooltip"
-        @click="router.push({ name: to })"
+        @click="router.push(to)"
       >
         <div class="bal-head">
           <span class="bal-name">{{ r.name }}</span>
-          <n-tag v-if="r.disabled" size="tiny" :bordered="false">已禁用</n-tag>
-          <n-tag v-else-if="r.expired" size="tiny" type="error" :bordered="false">已过期</n-tag>
+          <n-tag v-if="r.expired" size="tiny" type="error" :bordered="false">已过期</n-tag>
           <span class="bal-time">更新于 {{ r.fetchedAt }}</span>
         </div>
         <div v-if="r.view.kind === 'quota'" class="bal-windows">

@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,16 @@ import (
 )
 
 const sessionName = "s"
+
+// writeJSON 写一个 JSON 响应；管理端各错误出口共用（adminapi 有同名实现的
+// 前身，这里保持同一形状，避免每个出口手写三行）。
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		logger.Warn("auth: encode response failed", "err", err)
+	}
+}
 
 // neverExpires is the signed expiry for session TTLs of 0 (never expire).
 // It round-trips through RFC3339 fine and always parses as valid, so
@@ -76,9 +87,7 @@ func (m *Middleware) Wrap(handler http.Handler) http.Handler {
 		}
 		if !m.authenticate(w, r) {
 			logger.Warn("auth rejected: invalid or expired session", "remote", r.RemoteAddr, "path", r.URL.Path)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(401)
-			w.Write([]byte(`{"error":"unauthorized"}`))
+			writeJSON(w, 401, map[string]any{"error": "unauthorized"})
 			return
 		}
 		handler.ServeHTTP(w, r)
@@ -131,16 +140,14 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("auth login: invalid JSON body", "remote", r.RemoteAddr, "err", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]any{"error": "invalid json"})
+		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
-	if req.Password != m.masterPassword {
+	// 常量时间比较：明文 != 会在时间上泄漏前缀匹配长度（登录无频率限制，
+	// 比较是唯一可以做得更稳的一环）。
+	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(m.masterPassword)) != 1 {
 		logger.Warn("auth login: wrong password", "remote", r.RemoteAddr)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(401)
-		json.NewEncoder(w).Encode(map[string]any{"error": "wrong password"})
+		writeJSON(w, 401, map[string]any{"error": "wrong password"})
 		return
 	}
 	logger.Info("auth login succeeded", "remote", r.RemoteAddr)
@@ -151,14 +158,11 @@ func (m *Middleware) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token, err := SignSession(m.secret, exp)
 	if err != nil {
 		logger.Error("auth login: failed to sign session", "remote", r.RemoteAddr, "err", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]any{"error": "session error"})
+		writeJSON(w, 500, map[string]any{"error": "session error"})
 		return
 	}
 	setSessionCookie(w, token, exp)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (m *Middleware) handleLogout(w http.ResponseWriter, _ *http.Request) {
@@ -169,6 +173,5 @@ func (m *Middleware) handleLogout(w http.ResponseWriter, _ *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 	})
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true})
 }

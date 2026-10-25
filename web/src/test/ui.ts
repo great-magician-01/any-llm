@@ -12,16 +12,26 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, nextTick, type Component } from 'vue'
 import naive, { NConfigProvider, dateZhCN, zhCN } from 'naive-ui'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 export type AnyWrapper = VueWrapper<any>
 
-/** 挂载整页组件：装 naive-ui，让模板里的 n-card / n-data-table 等全局组件可用 */
+/**
+ * 挂载整页组件：装 naive-ui，让模板里的 n-card / n-data-table 等全局组件可用。
+ * 同时装一个停在 '/'（classic 侧）的最小 router——视图里的套件感知跳转
+ * （useRoute + suitePath）离开路由上下文会直接崩；需要特定路径的场景
+ * （如登录页落点契约）由测试自建 router，不走这里。
+ */
 export function mountPage(component: Component): AnyWrapper {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  })
   const Host = defineComponent({
     render: () =>
       h(NConfigProvider, { locale: zhCN, dateLocale: dateZhCN }, { default: () => h(component) }),
   })
-  return mount(Host, { global: { plugins: [naive] }, attachTo: document.body })
+  return mount(Host, { global: { plugins: [naive, router] }, attachTo: document.body })
 }
 
 /** 文案归一：忽略标签之间的换行/缩进空白（模板里的多行标签很常见） */

@@ -43,9 +43,9 @@ func bizRedirectVendorClient(t *testing.T, srv *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := balanceClient
-	balanceClient = &http.Client{Transport: bizVendorTransport{target: target}, Timeout: 5 * time.Second}
-	t.Cleanup(func() { balanceClient = old })
+	old := upstream.VendorClient
+	upstream.VendorClient = &http.Client{Transport: bizVendorTransport{target: target}, Timeout: 5 * time.Second}
+	t.Cleanup(func() { upstream.VendorClient = old })
 }
 
 // bizNewUpstream 建一个默认启用的上游并读回（拿 id / 默认 enabled）。

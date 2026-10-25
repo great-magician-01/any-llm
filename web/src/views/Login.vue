@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import AccentPicker from '@/components/AccentPicker.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
-import { switchSuite } from '@/utils/suite'
+import { errText } from '@/utils/errText'
+import { isGlassPath, suitePath, switchSuite } from '@/utils/suite'
 
 const router = useRouter()
 const route = useRoute()
-/** 深链被守卫弹到登录页时会带 ?redirect=，登录后跳回原目标而不是一律回首页 */
-const goAfterLogin = useLoginRedirect('/')
+/** 一套视图服务两套 URL 树：装饰光球只在经典版显示（玻璃版背景由 GlassShell 提供） */
+const isGlass = computed(() => isGlassPath(route.path))
+/** 深链被守卫弹到登录页时会带 ?redirect=，登录后跳回原目标而不是一律回首页；
+    无深链时回到本套件的概览页（玻璃侧 /glass/ 经守卫重定向到 /glass/dashboard） */
+const goAfterLogin = useLoginRedirect(suitePath(route.path, '/'))
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -22,8 +27,11 @@ async function login() {
     await client.post('/login', { password: password.value })
     localStorage.setItem('authed', '1')
     await goAfterLogin()
-  } catch {
-    error.value = '密码错误'
+  } catch (e) {
+    // 区分「密码错误」与网络/服务端故障：一律显示密码错误会把运维问题
+    // 误导成凭据问题（400/401 之外的失败不是用户输入的问题）。
+    const status = (e as { response?: { status?: number } })?.response?.status
+    error.value = status === 401 ? '密码错误' : '登录失败：' + errText(e)
   } finally {
     loading.value = false
   }
@@ -32,9 +40,11 @@ async function login() {
 
 <template>
   <div class="login-page">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="grid-overlay"></div>
+    <template v-if="!isGlass">
+      <div class="orb orb-1"></div>
+      <div class="orb orb-2"></div>
+      <div class="grid-overlay"></div>
+    </template>
 
     <div class="login-card">
       <div class="logo-glow">
@@ -66,8 +76,9 @@ async function login() {
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
       <div class="login-extra">
+        <AccentPicker />
         <ThemeToggle />
-        <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">切换到液态玻璃版</button>
+        <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">{{ isGlass ? '切换到经典版' : '切换到液态玻璃版' }}</button>
       </div>
     </div>
   </div>
@@ -96,14 +107,14 @@ async function login() {
   height: 480px;
   top: -160px;
   right: -80px;
-  background: radial-gradient(circle, rgba(91, 140, 255, 0.55), transparent 65%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand) 55%, transparent), transparent 65%);
 }
 .orb-2 {
   width: 420px;
   height: 420px;
   bottom: -140px;
   left: -100px;
-  background: radial-gradient(circle, rgba(34, 211, 238, 0.4), transparent 65%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--brand-2) 40%, transparent), transparent 65%);
   animation-delay: -7s;
 }
 /* 浅色主题：光球和网格都收着点，白底上原来的值太脏 */
@@ -137,25 +148,17 @@ async function login() {
   position: relative;
   width: 380px;
   padding: 44px 38px 30px;
-  background: rgba(14, 21, 38, 0.72);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 20px;
-  box-shadow:
-    0 24px 64px rgba(2, 6, 18, 0.6),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  /* 表面变量化：classic 不透明暗卡（浅色值在 style.css 的 light 块），
+     玻璃套件在 glass.css 的 .glass-root 上换成液态材质 */
+  background: var(--login-card-bg);
+  border: 1px solid var(--login-card-border);
+  border-radius: var(--login-card-radius);
+  box-shadow: var(--login-card-shadow);
+  backdrop-filter: var(--login-card-blur);
+  -webkit-backdrop-filter: var(--login-card-blur);
   display: flex;
   flex-direction: column;
   align-items: center;
-}
-/* 浅色主题：卡片转白，暗色值整体保留在上方 */
-:root[data-theme='light'] .login-card {
-  background: rgba(255, 255, 255, 0.86);
-  border-color: rgba(15, 23, 42, 0.1);
-  box-shadow:
-    0 24px 64px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 .login-card::before {
   content: '';
@@ -164,7 +167,13 @@ async function login() {
   left: 24px;
   right: 24px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(91, 140, 255, 0.7), rgba(34, 211, 238, 0.7), transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--brand) 70%, transparent),
+    color-mix(in srgb, var(--brand-2) 70%, transparent),
+    transparent
+  );
 }
 .logo-glow {
   padding: 6px;
@@ -174,10 +183,10 @@ async function login() {
 @keyframes pulse {
   0%,
   100% {
-    filter: drop-shadow(0 0 10px rgba(91, 140, 255, 0.35));
+    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--brand) 35%, transparent));
   }
   50% {
-    filter: drop-shadow(0 0 22px rgba(34, 211, 238, 0.5));
+    filter: drop-shadow(0 0 22px color-mix(in srgb, var(--brand-2) 50%, transparent));
   }
 }
 .title {
@@ -195,7 +204,7 @@ async function login() {
 .login-btn {
   margin-top: 16px;
   font-weight: 600;
-  box-shadow: 0 6px 20px rgba(91, 140, 255, 0.35);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--brand) 35%, transparent);
 }
 .login-alert {
   margin-top: 14px;

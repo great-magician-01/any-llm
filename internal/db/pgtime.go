@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,13 @@ func (p timestampLocalScanPlan) Scan(src []byte, dst any) error {
 	if tmp.Valid && tmp.InfinityModifier == pgtype.Finite {
 		tmp.Time = relabelLocal(tmp.Time)
 	}
-	return dst.(pgtype.TimestampScanner).ScanTimestamp(tmp)
+	// PlanScan 只在 dst 实现 TimestampScanner 时返回内建 plan（见 PlanScan），
+	// 这里用 checked assertion 兜底，免得 pgx 内部约定变化时在此处 panic。
+	scanner, ok := dst.(pgtype.TimestampScanner)
+	if !ok {
+		return fmt.Errorf("timestamp scan: dst %T does not implement pgtype.TimestampScanner", dst)
+	}
+	return scanner.ScanTimestamp(tmp)
 }
 
 // relabelLocal 保留墙钟（年月日时分秒不变），仅把时区标签改为 time.Local。

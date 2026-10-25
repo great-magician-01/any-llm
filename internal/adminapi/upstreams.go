@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
@@ -37,26 +38,48 @@ func (a *API) listUpstreams(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name              string  `json:"name"`
-		BaseURL           string  `json:"base_url"`
-		APIKey            string  `json:"api_key"`
-		Format            string  `json:"format"`
-		Remark            string  `json:"remark"`
-		Enabled           *bool   `json:"enabled"`
-		ExpiresAt         optTime `json:"expires_at"`
-		DailyTokenLimit   int     `json:"daily_token_limit"`
-		MonthlyTokenLimit int     `json:"monthly_token_limit"`
-		MaxConcurrent     *int    `json:"max_concurrent"`
-		FetchModels       bool    `json:"fetch_models"`
+		Name    string `json:"name"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+		Format  string `json:"format"`
+		Remark  string `json:"remark"`
+		// 上游标记（官方/中转）：缺省按默认官方，与 enabled 一样有库级默认值。
+		Tag             string  `json:"tag"`
+		Enabled         *bool   `json:"enabled"`
+		ExpiresAt       optTime `json:"expires_at"`
+		DailyTokenLimit int     `json:"daily_token_limit"`
+		// 附加格式端点（选填）：其余格式的原生入口，网关按入站 endpoint 命中
+		// 后原生直通。缺席 = 单格式上游。
+		ExtraEndpoints    []store.UpstreamEndpoint `json:"extra_endpoints"`
+		MonthlyTokenLimit int                      `json:"monthly_token_limit"`
+		MaxConcurrent     *int                     `json:"max_concurrent"`
+		FetchModels       bool                     `json:"fetch_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: create upstream invalid JSON", "err", err)
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON"})
 		return
 	}
-	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	// 名称必填（配置导入同口径）：历史上 DB 唯一索引还顺带挡住了第二个空名行，
+	// 唯一性下放到应用层后这个副作用没了，空名校验必须自己站出来——空名上游
+	// 在网关上永远不可路由（name/model 拆不出名字），只会在列表里攒垃圾行。
+	// 裁剪与导入侧对齐（validateImport）：空白名按必填拒绝，带空白的合法名
+	// 落库前去掉首尾空白，否则 "foo" 与 "foo " 会在库里共存而它们的导出文件
+	// 不可导入（见 updateUpstream 同款注释）。
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		logger.Warn("admin: create upstream empty name")
+		writeJSON(w, 400, map[string]any{"error": "name is required"})
+		return
+	}
+	if !store.IsKnownFormat(req.Format) {
 		logger.Warn("admin: create upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
+		return
+	}
+	if err := store.ValidateExtraEndpoints(req.Format, req.ExtraEndpoints); err != nil {
+		logger.Warn("admin: create upstream invalid extra_endpoints", "err", err)
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
 	if req.DailyTokenLimit < 0 || req.MonthlyTokenLimit < 0 {
@@ -68,12 +91,22 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
 		return
 	}
+	// 标记提前校验（与 format/extra_endpoints 的同款早 400）：空串归一成默认官方，
+	// 非法值在这里就拒掉，而不是等 CreateUpstream 回一句裸 store error。
+	tag, err := store.NormalizeTag(req.Tag)
+	if err != nil {
+		logger.Warn("admin: create upstream invalid tag", "tag", req.Tag, "err", err)
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
 	// 缺省给默认并发上限；显式 0 = 不限。
 	maxConcurrent := store.DefaultMaxConcurrent
 	if req.MaxConcurrent != nil {
 		maxConcurrent = *req.MaxConcurrent
 	}
 	u := &store.Upstream{Name: req.Name, BaseURL: req.BaseURL, APIKey: req.APIKey, Format: req.Format, Remark: req.Remark,
+		Tag:             tag,
+		ExtraEndpoints:  req.ExtraEndpoints,
 		DailyTokenLimit: req.DailyTokenLimit, MonthlyTokenLimit: req.MonthlyTokenLimit, MaxConcurrent: maxConcurrent}
 	if req.ExpiresAt.set {
 		u.ExpiresAt = req.ExpiresAt.value()
@@ -81,35 +114,35 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	var id int64
 	if err := a.writeSync(func(d *sql.DB) error {
 		var e error
-		id, e = store.CreateUpstream(d, u)
+		// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
+		// 配置好模型与别名后再上线」的流程。直接按目标状态 INSERT，而非先建启用行
+		// 再补一条 UPDATE——禁用行不参与名称查重，同名预建因此可行（见
+		// store.ErrUpstreamNameTaken），且客户端不会看到中间态。
+		if req.Enabled != nil && !*req.Enabled {
+			id, e = store.CreateUpstreamDisabled(d, u)
+		} else {
+			id, e = store.CreateUpstream(d, u)
+		}
 		return e
 	}); err != nil {
+		if errors.Is(err, store.ErrUpstreamNameTaken) {
+			// 与 ext key label 同款：重名是客户端可修正的请求问题，友好 400 而非
+			// 裸 store 错误。
+			logger.Warn("admin: create upstream duplicate name", "name", req.Name)
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		logger.Error("admin: create upstream DB write failed", "name", req.Name, "err", err)
 		writeSyncErr(w, 400, err)
 		return
-	}
-	// 显式 enabled=false：创建即禁用（缺省启用，与 DB 默认一致），供「预建禁用、
-	// 配置好模型与别名后再上线」的流程。读回完整行再改存，遵守 UpdateUpstream
-	// 的「先 Get 再存」约定。
-	if req.Enabled != nil && !*req.Enabled {
-		if err := a.writeSync(func(d *sql.DB) error {
-			nu, e := store.GetUpstreamByID(d, id)
-			if e != nil {
-				return e
-			}
-			nu.Enabled = false
-			return store.UpdateUpstream(d, nu)
-		}); err != nil {
-			logger.Error("admin: disable new upstream failed", "id", id, "err", err)
-			writeSyncErr(w, 400, err)
-			return
-		}
 	}
 	if req.FetchModels && a.client != nil {
 		u.ID = id
 		names, err := upstream.FetchModels(r.Context(), a.client.HTTP(), u)
 		if err == nil {
-			a.writeSync(func(d *sql.DB) error { return store.ReplaceModels(d, id, names) })
+			if err := a.writeSync(func(d *sql.DB) error { return store.ReplaceModels(d, id, names) }); err != nil {
+				logger.Warn("admin: create upstream sync models failed", "name", req.Name, "id", id, "err", err)
+			}
 		} else {
 			logger.Warn("admin: create upstream fetch models failed", "name", req.Name, "id", id, "err", err)
 		}
@@ -117,7 +150,7 @@ func (a *API) createUpstream(w http.ResponseWriter, r *http.Request) {
 	// 读回完整行返回（created_at 等字段只有库里有）。读回失败（瞬时 DB 错误，
 	// 或行被并发软删）不能吞：u 会是 nil，下一行 mask 直接 panic。行已建好，
 	// 如实报 500，前端重拉列表即可看到。
-	u, err := store.GetUpstreamByID(a.db, id)
+	u, err = store.GetUpstreamByID(a.db, id)
 	if err != nil {
 		logger.Error("admin: reload created upstream failed", "id", id, "err", err)
 		writeJSON(w, 500, map[string]any{"error": "upstream created but reload failed: " + err.Error()})
@@ -152,12 +185,16 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		Format  string `json:"format"`
 		// 指针区分「没给」与「给了空串」：只带 enabled 的 PATCH（如列表页开关）
 		// 不得顺手清空备注；显式空串才是清空。
-		Remark            *string `json:"remark"`
-		Enabled           *bool   `json:"enabled"`
-		ExpiresAt         optTime `json:"expires_at"`
-		DailyTokenLimit   *int    `json:"daily_token_limit"`
-		MonthlyTokenLimit *int    `json:"monthly_token_limit"`
-		MaxConcurrent     *int    `json:"max_concurrent"`
+		Remark *string `json:"remark"`
+		// 指针三态与 remark 同理：nil = 不动，显式空串 = 清回默认官方。
+		Tag       *string `json:"tag"`
+		Enabled   *bool   `json:"enabled"`
+		ExpiresAt optTime `json:"expires_at"`
+		// 指针三态同 remark：nil = 不动，显式空数组 = 清空附加端点。
+		ExtraEndpoints    *[]store.UpstreamEndpoint `json:"extra_endpoints"`
+		DailyTokenLimit   *int                      `json:"daily_token_limit"`
+		MonthlyTokenLimit *int                      `json:"monthly_token_limit"`
+		MaxConcurrent     *int                      `json:"max_concurrent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		logger.Warn("admin: update upstream invalid JSON", "id", id, "err", err)
@@ -176,7 +213,7 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "max_concurrent must be >= 0 (0 = unlimited)"})
 		return
 	}
-	if req.Format != "" && req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	if req.Format != "" && !store.IsKnownFormat(req.Format) {
 		logger.Warn("admin: update upstream invalid format", "format", req.Format)
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
@@ -190,10 +227,14 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 	if err := a.writeSync(func(d *sql.DB) error {
 		u, e := store.GetUpstreamByID(d, id)
 		if e != nil {
-			return e // 预检之后又被并发软删：报 400，列表重拉即消失
+			return e // 预检之后又被并发软删：闭包外映射成 404（与预检同口径）
 		}
-		if req.Name != "" {
-			u.Name = req.Name
+		// 名称在写入前裁剪（配置导入同口径，见 validateImport）：不裁的话启用中的
+		// "foo" 与 "foo " 会在库里共存（应用层查重按字符串精确比较），而它们的导出
+		// 文件裁剪后构成「两个启用条目」的重名组被整体 400——导出文件不可导入。
+		// 纯空白的名称视为「没给」，保留原值（与 req.Name != "" 的缺省语义一致）。
+		if name := strings.TrimSpace(req.Name); name != "" {
+			u.Name = name
 		}
 		if req.BaseURL != "" {
 			u.BaseURL = req.BaseURL
@@ -209,8 +250,27 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		if req.Format != "" {
 			u.Format = req.Format
 		}
+		if req.ExtraEndpoints != nil {
+			u.ExtraEndpoints = *req.ExtraEndpoints
+		}
+		// 附加端点校验放在合并之后：主格式可能被本次 PATCH 同时改掉，必须用
+		// 最终的主格式做撞车检查——新主格式与保留的附加端点撞车（同一格式两个
+		// URL）会产生路由二义性，响亮拒绝让管理员显式删除重复项。
+		if err := store.ValidateExtraEndpoints(u.Format, u.ExtraEndpoints); err != nil {
+			return err
+		}
 		if req.Remark != nil {
 			u.Remark = *req.Remark
+		}
+		// 标记在合并后归一（与下一段 ValidateExtraEndpoints「合并后再校验」同构图）：
+		// UpdateUpstream 是全量覆盖，缺省不赋值就会把库里的标记抹成官方，所以 nil =
+		// 不动必须由这里守住；显式空串 = 清回默认官方，非法值响亮拒绝（400）。
+		if req.Tag != nil {
+			t, e := store.NormalizeTag(*req.Tag)
+			if e != nil {
+				return e
+			}
+			u.Tag = t
 		}
 		if req.DailyTokenLimit != nil {
 			u.DailyTokenLimit = *req.DailyTokenLimit
@@ -231,6 +291,19 @@ func (a *API) updateUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		merged = u
 		return store.UpdateUpstream(d, u)
 	}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// 预检通过后被并发软删：与预检同报 404，而不是把裸 store 错误当 400。
+			logger.Warn("admin: update upstream vanished concurrently", "id", id)
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+			return
+		}
+		if errors.Is(err, store.ErrUpstreamNameTaken) {
+			// 改名或启用撞上启用中的同名上游：客户端可修正（换个名或先禁用另一个），
+			// 友好 400，不算服务端故障。
+			logger.Warn("admin: update upstream name conflict", "id", id, "name", merged.Name)
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		logger.Error("admin: update upstream DB write failed", "id", id, "err", err)
 		writeSyncErr(w, 400, err)
 		return
@@ -289,7 +362,7 @@ func (a *API) testUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "base_url is required"})
 		return
 	}
-	if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+	if !store.IsKnownFormat(req.Format) {
 		writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 		return
 	}
@@ -328,7 +401,7 @@ func (a *API) testUpstream(w http.ResponseWriter, r *http.Request, id int64) {
 		u.APIKey = req.APIKey
 	}
 	if req.Format != "" {
-		if req.Format != "openai" && req.Format != "anthropic" && req.Format != "responses" {
+		if !store.IsKnownFormat(req.Format) {
 			writeJSON(w, 400, map[string]any{"error": "format must be openai, anthropic or responses"})
 			return
 		}
@@ -455,6 +528,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// pageParams 取分页查询参数（page/size）。解析失败按 0 交给 store 的
+// normalizePage 钳到默认值，与 store 侧口径一致。
+func pageParams(r *http.Request) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	return page, size
 }
 
 func mask(s string) string {

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '@/api/usage'
 import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
 import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
+import { errText } from '@/utils/errText'
 import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
+import { suitePath } from '@/utils/suite'
 import { useClipboard } from '@/composables/useClipboard'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -14,6 +16,7 @@ import UsageCalendar from '@/components/UsageCalendar.vue'
 import UpstreamUsagePanel from '@/components/UpstreamUsagePanel.vue'
 import BalanceBoard from '@/components/BalanceBoard.vue'
 
+const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 const { copyText } = useClipboard()
@@ -93,8 +96,8 @@ async function load(silent = false) {
     const bMap: Record<number, BalanceSnapshot> = {}
     for (const s of snaps) bMap[s.upstream_id] = s
     balancesByUpstream.value = bMap
-  } catch (e: any) {
-    if (!silent) message.error('加载概览失败：' + (e?.message || String(e)))
+  } catch (e) {
+    if (!silent) message.error('加载概览失败：' + errText(e))
   } finally {
     loading.value = false
   }
@@ -211,11 +214,11 @@ onUnmounted(() => clearInterval(timer))
 
         <n-card title="快捷操作" class="panel">
           <div class="quick-list">
-            <n-button block class="quick-btn" @click="router.push({ name: 'glass-upstreams' })">
+            <n-button block class="quick-btn" @click="router.push(suitePath(route.path, '/upstreams'))">
               <template #icon><AppIcon name="plus" :size="15" /></template>
               配置上游
             </n-button>
-            <n-button block class="quick-btn" @click="router.push({ name: 'glass-keys' })">
+            <n-button block class="quick-btn" @click="router.push(suitePath(route.path, '/keys'))">
               <template #icon><AppIcon name="key" :size="15" /></template>
               签发密钥
             </n-button>
@@ -230,7 +233,7 @@ onUnmounted(() => clearInterval(timer))
           </p>
         </n-card>
 
-        <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" to="glass-upstreams" />
+        <BalanceBoard :upstreams="upstreamRows" :snapshots="balancesByUpstream" :to="suitePath(route.path, '/upstreams')" />
       </div>
     </div>
   </div>
@@ -289,14 +292,14 @@ onUnmounted(() => clearInterval(timer))
   margin-top: 6px;
   height: 6px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-1);
   overflow: hidden;
 }
 .rank-bar-fill {
   height: 100%;
   border-radius: 3px;
   background: var(--grad);
-  box-shadow: 0 0 8px rgba(123, 163, 255, 0.5);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--brand) 50%, transparent);
   transition: width 0.5s ease;
 }
 .rank-sub {
@@ -347,7 +350,7 @@ onUnmounted(() => clearInterval(timer))
 .quick-hint code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-2);
   color: var(--text-2);
   font-size: 11px;
 }

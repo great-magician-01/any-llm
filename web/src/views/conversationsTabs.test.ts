@@ -1,11 +1,10 @@
 /**
- * 对话记录页双主题测试：「按请求 / 按会话」两个 tab 的请求序列与渲染要素
- * 在经典与毛玻璃两套视图里必须一致。沿用 themeParity 的思路：断言落在真实
- * 发出的 HTTP 请求与用户可见文案上，允许样式差异。
+ * 对话记录页：「按请求 / 按会话」两个 tab 的请求序列与渲染要素。
+ * 断言落在真实发出的 HTTP 请求与用户可见文案上。页面 classic/glass 两套
+ * URL 树共用同一份视图，无需双跑。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ClassicConversations from './classic/views/Conversations.vue'
-import GlassConversations from './glass/views/GlassConversations.vue'
+import Conversations from './Conversations.vue'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { flush, mountPage, type AnyWrapper } from '@/test/ui'
 import { messagesOf, resetMessages } from '@/test/naiveMessage'
@@ -41,7 +40,7 @@ function clickTab(name: string) {
   tab!.click()
 }
 
-describe('对话记录页双主题', () => {
+describe('对话记录页', () => {
   let api: ApiMock
   let wrapper: AnyWrapper | undefined
 
@@ -62,11 +61,8 @@ describe('对话记录页双主题', () => {
     api.restore()
   })
 
-  it.each([
-    ['classic', ClassicConversations],
-    ['glass', GlassConversations],
-  ])('%s：默认按请求加载，切到按会话才发 conv-sessions 请求', async (_name, view) => {
-    wrapper = mountPage(view as any)
+  it('默认按请求加载，切到按会话才发 conv-sessions 请求', async () => {
+    wrapper = mountPage(Conversations as any)
     await flush()
 
     // 首屏只拉按请求列表，不拉会话
@@ -93,12 +89,9 @@ describe('对话记录页双主题', () => {
     expect(messagesOf("error")).toHaveLength(0)
   })
 
-  it.each([
-    ['classic', ClassicConversations],
-    ['glass', GlassConversations],
-  ])('%s：SQLite 归档关闭时两个 tab 都显示提示', async (_name, view) => {
+  it('SQLite 归档关闭时两个 tab 都显示提示', async () => {
     api.on('GET', '/conversations', { data: { data: [], total: 0, disabled: true } })
-    wrapper = mountPage(view as any)
+    wrapper = mountPage(Conversations as any)
     await flush()
     expect(document.body.textContent).toContain('PostgreSQL')
     expect(messagesOf("error")).toHaveLength(0)

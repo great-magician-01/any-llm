@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
@@ -18,8 +17,7 @@ func (a *API) listConvSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"data": []any{}, "total": 0, "disabled": true})
 		return
 	}
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	page, size := pageParams(r)
 	sessions, total, err := store.ConversationSessionsList(a.db, page, size)
 	if err != nil {
 		logger.Error("admin: conv session list failed", "page", page, "size", size, "err", err)

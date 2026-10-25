@@ -2,17 +2,23 @@
  * 用量统计页「用量汇总」的默认时间范围：默认本月 1 号～今天，而不是全部用量
  * （全量口径会把历史累计摊在首屏，看不出当月消耗）。
  *
- * 断言落在真实发出的请求参数上（走真实 axios，假后端只换 adapter），并且两套
- * 主题各跑一遍——经典的 /usage 与毛玻璃的 /glass/usage 是逐行重复的实现，
- * 「只改了一边」要在这里变成红灯。
+ * 断言落在真实发出的请求参数上（走真实 axios，假后端只换 adapter）。页面
+ * classic/glass 两套 URL 树共用同一份视图，无需双跑。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NDatePicker } from 'naive-ui'
-import type { Component } from 'vue'
-import ClassicUsage from './classic/views/Usage.vue'
-import GlassUsage from './glass/views/GlassUsage.vue'
+import Usage from './Usage.vue'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { flush, mountPage } from '@/test/ui'
+
+// useMessage 换成本地记录器（与 Upstreams 页测试同款）：Usage 页新增了加载
+// 失败的 message.error，挂载时必须有 message 上下文。
+vi.mock('naive-ui', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('naive-ui')>()
+  const { messageApi } = await import('@/test/naiveMessage')
+  return { ...actual, useMessage: () => messageApi }
+})
+
 
 let api: ApiMock
 let wrapper: ReturnType<typeof mountPage> | null = null
@@ -22,6 +28,7 @@ beforeEach(() => {
   api.on('get', '/usage/summary', { data: { data: [] } })
   api.on('get', '/usage/daily', { data: { data: [] } })
   api.on('get', '/usage/records', { data: { data: [], total: 0 } })
+  api.on('get', '/usage/models', { data: { data: [] } })
 })
 
 afterEach(() => {
@@ -30,8 +37,8 @@ afterEach(() => {
   api.restore()
 })
 
-async function open(component: Component) {
-  wrapper = mountPage(component)
+async function open() {
+  wrapper = mountPage(Usage)
   await flush()
 }
 
@@ -53,14 +60,9 @@ function expectCurrentMonth(params: Record<string, any>) {
   expect([to.getHours(), to.getMinutes(), to.getSeconds()]).toEqual([23, 59, 59])
 }
 
-const VIEWS: Array<[string, Component]> = [
-  ['经典', ClassicUsage],
-  ['毛玻璃', GlassUsage],
-]
-
 describe('用量统计：用量汇总默认只看本月', () => {
-  it.each(VIEWS)('%s视图首屏请求带本月范围，而不是不带范围的全量', async (_name, component) => {
-    await open(component)
+  it('首屏请求带本月范围，而不是不带范围的全量', async () => {
+    await open()
 
     const params = summaryParams()
     expect(params.group_by).toBe('model')
@@ -68,8 +70,8 @@ describe('用量统计：用量汇总默认只看本月', () => {
     expectCurrentMonth(params)
   })
 
-  it.each(VIEWS)('%s视图的 Token 构成（缓存/推理）跟随同一个范围', async (_name, component) => {
-    await open(component)
+  it('Token 构成（缓存/推理）跟随同一个范围', async () => {
+    await open()
 
     const params = summaryParams()
     // 汇总接口不含缓存/推理 token，这两个数从日聚合叠加得到：范围必须和汇总一致，
@@ -80,8 +82,8 @@ describe('用量统计：用量汇总默认只看本月', () => {
     expect(extras!.params.to).toBe(params.to)
   })
 
-  it.each(VIEWS)('%s视图清空日期范围后回到全部用量', async (_name, component) => {
-    await open(component)
+  it('清空日期范围后回到全部用量', async () => {
+    await open()
     expectCurrentMonth(summaryParams())
 
     // 清空 = 全量口径（服务端不传 from/to），这条路径不能被默认值堵死
@@ -93,8 +95,8 @@ describe('用量统计：用量汇总默认只看本月', () => {
     expect(params.to).toBeUndefined()
   })
 
-  it.each(VIEWS)('%s视图的趋势图仍走自己的 7/14/30 天窗口', async (_name, component) => {
-    await open(component)
+  it('趋势图仍走自己的 7/14/30 天窗口', async () => {
+    await open()
 
     // 趋势图的档位是独立控件，默认近 14 天：不能被汇总的月份范围顶掉，
     // 否则档位按钮显示 14 天、图上却是整月
@@ -102,16 +104,5 @@ describe('用量统计：用量汇总默认只看本月', () => {
     expect(trend, '没有找到趋势图取数请求').toBeTruthy()
     expect(trend!.params.from).toBeUndefined()
     expect(trend!.params.to).toBeUndefined()
-  })
-
-  it('两套主题的默认汇总请求完全一致', async () => {
-    await open(ClassicUsage)
-    const classic = summaryParams()
-    wrapper?.unmount()
-
-    await open(GlassUsage)
-    const glass = summaryParams()
-
-    expect(glass).toEqual(classic)
   })
 })

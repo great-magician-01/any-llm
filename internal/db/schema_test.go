@@ -124,6 +124,23 @@ func TestSchemaMySQLUpstreamRemarkIsText(t *testing.T) {
 	}
 }
 
+// TestSchemaMySQLUpstreamTagIsVarchar 盯住 upstreams.tag 在 MySQL 上的形态：
+// 短枚举列（两个取值）渲染成 VARCHAR + 裸字面量默认值，与 format /
+// usage_records.status 同款。它不是 remark 那种自由文本列，所以不走 TEXT +
+// 表达式默认值；反过来说，谁把 Len 去掉让它变成 TEXT，这里的断言就会挂——
+// 那种形态要配 DEFAULT ('official')，两件事必须一起改。
+func TestSchemaMySQLUpstreamTagIsVarchar(t *testing.T) {
+	tbl, _ := schemaTableByName("upstreams")
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(ddl, "`tag` VARCHAR(16) NOT NULL DEFAULT 'official'") {
+		t.Errorf("upstreams.tag must be VARCHAR(16) with a literal default on MySQL:\n%s", ddl)
+	}
+	// 默认值让老库的 ALTER ... NOT NULL 合法（SQLite 侧），别把它删了
+	if tbl.Cols[len(tbl.Cols)-1].Name != "tag" {
+		t.Errorf("upstreams.tag must be declared last so ALTER-appended and CREATE TABLE column order match")
+	}
+}
+
 // TestSchemaMySQLPartialUniqueIsCompositeAware 盯住复合部分唯一索引：只有最后
 // 一列换成生成列，前导列保持真实列。少了这一步，(upstream_id, model_name) 的语义
 // 就丢了。
@@ -149,6 +166,31 @@ func TestSchemaMySQLIndexKeepsSortDirection(t *testing.T) {
 	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
 	if !strings.Contains(ddl, "KEY `idx_balance_snapshots_upstream` (`upstream_id`, `id` DESC)") {
 		t.Errorf("MySQL balance_snapshots DDL lost the DESC sort direction:\n%s", ddl)
+	}
+}
+
+// TestSchemaUsageModelIndex 盯住请求明细的模型筛选索引：三种方言都从同一份声明
+// 渲染——SQLite/PG 是独立 CREATE INDEX 语句（带方向），MySQL 内联进 CREATE
+// TABLE；存量 MySQL 库的补建语句（indexCreateMySQL）必须与内联形态一致。
+func TestSchemaUsageModelIndex(t *testing.T) {
+	tbl, ok := schemaTableByName("usage_records")
+	if !ok {
+		t.Fatal("usage_records missing")
+	}
+	sqliteDDL := joinDDL(mustDDL(t, tbl, DialectSQLite, DDLConfig{IfNotExists: true})[1:])
+	if !strings.Contains(sqliteDDL, "CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model, id DESC)") {
+		t.Errorf("SQLite usage_records index statement wrong:\n%s", sqliteDDL)
+	}
+	mysqlDDL := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+	if !strings.Contains(mysqlDDL, "KEY `idx_usage_model` (`model`, `id` DESC)") {
+		t.Errorf("MySQL usage_records inline KEY lost the model index or DESC direction:\n%s", mysqlDDL)
+	}
+	create, err := tbl.indexCreateMySQL(Index{Name: "idx_usage_model", Columns: []string{"model", "id DESC"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "CREATE INDEX `idx_usage_model` ON `usage_records` (`model`, `id` DESC)"; create != want {
+		t.Errorf("MySQL standalone CREATE INDEX = %q, want %q", create, want)
 	}
 }
 
@@ -192,11 +234,11 @@ func TestSchemaMySQLRejectsIndexedTextWithoutLen(t *testing.T) {
 	}
 }
 
-// TestSchemaMySQLPartialUniqueSurvivesIndexSuffix 盯住一处容易漂移的地方：生成列
-// 名由「已套用月份后缀的索引名」派生，而 KEY 引用的也必须是同一个名字。两侧各自
-// 取后缀就会生成一份引用了未定义列的 DDL。现有分表没有部分唯一索引，所以这是
-// 潜伏问题 —— 用一张合成表把它钉死。
-func TestSchemaMySQLPartialUniqueSurvivesIndexSuffix(t *testing.T) {
+// TestSchemaMySQLPartialUniqueGeneratedColumnName 盯住一处容易漂移的地方：部分
+// 唯一索引在 MySQL 上降级为「生成列 + 普通唯一键」，生成列名由索引名派生，KEY
+// 引用的必须是同一个名字。两侧各自取名就会生成一份引用了未定义列的 DDL。
+// 用一张合成分表（索引名带月份后缀）把它钉死。
+func TestSchemaMySQLPartialUniqueGeneratedColumnName(t *testing.T) {
 	tbl := Table{
 		Name: "conv_shard",
 		Cols: []Column{
@@ -205,27 +247,21 @@ func TestSchemaMySQLPartialUniqueSurvivesIndexSuffix(t *testing.T) {
 			{Name: "is_active", Type: TypeInt, Default: "1"},
 		},
 		Idx: []Index{
-			{Name: "idx_conv_{}_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
+			{Name: "idx_conv_2026_09_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
 		},
 	}
-	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[0]
+	ddl := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
 	// 生成列与 KEY 必须用同一个名字。
 	if !strings.Contains(ddl, "`g_idx_conv_2026_09_name` VARCHAR(255) GENERATED ALWAYS AS") {
-		t.Errorf("generated column missing the suffix:\n%s", ddl)
+		t.Errorf("generated column missing:\n%s", ddl)
 	}
 	if !strings.Contains(ddl, "UNIQUE KEY `idx_conv_2026_09_name` (`g_idx_conv_2026_09_name`)") {
-		t.Errorf("KEY does not reference the suffixed generated column:\n%s", ddl)
+		t.Errorf("KEY does not reference the generated column:\n%s", ddl)
 	}
-	// 没套后缀的旧名字一个都不许出现。
-	for _, bad := range []string{"g_idx_conv{}_name", "`g_idx_conv_name`", "`idx_conv{}_name`"} {
-		if strings.Contains(ddl, bad) {
-			t.Errorf("DDL still contains un-suffixed %q:\n%s", bad, ddl)
-		}
-	}
-	// SQLite/PG 侧同样要套后缀。
-	idx := joinDDL(mustDDL(t, tbl, DialectPostgres, DDLConfig{IfNotExists: true, IndexSuffix: "2026_09"})[1:])
+	// PG/SQLite 侧仍渲染为普通的部分唯一索引。
+	idx := joinDDL(mustDDL(t, tbl, DialectPostgres, DDLConfig{IfNotExists: true})[1:])
 	if !strings.Contains(idx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_2026_09_name") {
-		t.Errorf("postgres index name missing the suffix:\n%s", idx)
+		t.Errorf("postgres index statement malformed:\n%s", idx)
 	}
 }
 

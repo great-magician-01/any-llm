@@ -8,16 +8,26 @@ import { listAliases } from '@/api/aliases'
 import { formatInt } from '@/utils/format'
 import { buildOmpYaml } from '@/utils/ompConfig'
 import { buildDshYaml } from '@/utils/dshConfig'
+import { buildPiJson } from '@/utils/piConfig'
+import { buildOpencodeJson } from '@/utils/opencodeConfig'
 import { collectExportModels, filterAllowedModels } from '@/utils/exportModels'
 import { useKeyForms } from '@/composables/useKeyForms'
+import { useClipboard } from '@/composables/useClipboard'
+import { useContainerWidth, fitColumns, fitScrollX, KEYS_FIT_COLUMNS } from '@/composables/useTableFit'
+import { errText } from '@/utils/errText'
+import { quotaPercent, quotaStatus } from '@/utils/quota'
 import AppIcon from '@/components/AppIcon.vue'
 import UsageDocDrawer from '@/components/UsageDocDrawer.vue'
 import ClaudeCodeExportDialog from '@/components/ClaudeCodeExportDialog.vue'
+import AgentConfigDrawer from '@/components/AgentConfigDrawer.vue'
 
 const message = useMessage()
+// 复制走共享实现（useClipboard）：本页此前有一份等价的本地拷贝，已合并。
+const { copyText } = useClipboard()
 const keys = ref<ExtKey[]>([])
 const usageByKey = ref<Record<number, UsageTotals>>({})
 const showDoc = ref(false)
+const showAgent = ref(false) // Agent 接入配置文档抽屉（共享组件，两套皮肤同一份）
 
 // 新增/编辑弹窗的表单状态与保存逻辑在 composables/useKeyForms（两套皮肤共用一份）
 const {
@@ -59,19 +69,31 @@ const endpoints = computed(() => [
   { label: 'Anthropic base_url', url: origin.value },
 ])
 
+// 列宽集中在一处 computed：容器变窄时按比例压缩（操作列压缩空间最大，按钮
+// 随之换行），列宽规格两套皮肤共用（KEYS_FIT_COLUMNS）；scroll-x 取
+// min(列宽总和, 容器宽)，任何屏宽都不会出横向滚动条（同 Upstreams 页的模式）
+const tableBox = ref<HTMLElement | null>(null)
+const { width: tableWidth } = useContainerWidth(tableBox)
+const colW = computed(() => fitColumns(tableWidth.value, KEYS_FIT_COLUMNS))
+const scrollX = computed(() => fitScrollX(colW.value, tableWidth.value))
+
 const columns = computed<DataTableColumns<ExtKey>>(() => [
-  { title: '名称', key: 'label', render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
+  { title: '名称', key: 'label', width: colW.value.label, render: (row) => h('span', { style: 'font-weight: 600; color: var(--text)' }, row.label) },
   {
     title: 'Key',
     key: 'key',
-    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px' }, [
-      h('code', { class: 'mono key-chip' }, row.key),
+    width: colW.value.key,
+    // naive-ui 表格自带 word-break: break-word（允许任意点断行）：38 位 key
+    // 是无空格长串，列一旦被压窄就逐字竖排、行高爆炸。code 单行 + 省略号
+    // + min-width: 0 让它在 flex 里可收缩，复制按钮不压缩。
+    render: (row) => h('div', { style: 'display: flex; align-items: center; gap: 6px; min-width: 0' }, [
+      h('code', { class: 'mono key-chip', style: 'white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0' }, row.key),
       h(
         NTooltip,
         { trigger: 'hover' },
         {
           trigger: () =>
-            h(NButton, { size: 'tiny', quaternary: true, onClick: (e: MouseEvent) => copyKey(row.key, e) }, {
+            h(NButton, { size: 'tiny', quaternary: true, style: 'flex-shrink: 0', onClick: (e: MouseEvent) => copyText(row.key, e) }, {
               icon: () => h(AppIcon, { name: 'copy', size: 13 }),
             }),
           default: () => '复制 Key',
@@ -82,13 +104,13 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '状态',
     key: 'enabled',
-    width: 80,
+    width: colW.value.enabled,
     render: (row) => h(NTag, { type: row.enabled ? 'success' : 'default', bordered: false }, { default: () => row.enabled ? '启用' : '禁用' }),
   },
   {
     title: '日 token 上限',
     key: 'daily_token_limit',
-    width: 130,
+    width: colW.value.dailyLimit,
     render: (row) => row.daily_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.daily_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -96,7 +118,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '月 token 上限',
     key: 'monthly_token_limit',
-    width: 130,
+    width: colW.value.monthlyLimit,
     render: (row) => row.monthly_token_limit > 0
       ? h('span', { class: 'mono' }, formatInt(row.monthly_token_limit))
       : h('span', { style: 'color: var(--text-4)' }, '不限'),
@@ -104,7 +126,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '模型限制',
     key: 'allowed_models',
-    width: 110,
+    width: colW.value.allowed,
     render: (row) => {
       const list = row.allowed_models ?? []
       if (list.length === 0) return h('span', { style: 'color: var(--text-4)' }, '全部')
@@ -117,7 +139,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '今日 / 本月用量',
     key: 'usage',
-    width: 200,
+    width: colW.value.usage,
     render: (row) => {
       const u = usageByKey.value[row.id]
       if (!u) return h('span', { style: 'color: var(--text-4)' }, '—')
@@ -127,8 +149,8 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
           limit > 0
             ? h(NProgress, {
                 type: 'line',
-                percentage: Math.min(100, Math.round((used / limit) * 100)),
-                status: used >= limit ? 'error' : used / limit >= 0.8 ? 'warning' : 'success',
+                percentage: quotaPercent(used, limit),
+                status: quotaStatus(used, limit),
                 height: 5,
                 showIndicator: false,
                 borderRadius: '3px',
@@ -144,7 +166,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '备注',
     key: 'remark',
-    width: 150,
+    width: colW.value.remark,
     ellipsis: { tooltip: true },
     render: (row) => (row.remark
       ? h('span', { style: 'color: var(--text-2)' }, row.remark)
@@ -153,7 +175,7 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 360,
+    width: colW.value.actions,
     render(row) {
       return h(NSpace, { size: 4 }, {
         default: () => [
@@ -174,6 +196,15 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
               trigger: () =>
                 h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyOmpConfig(row.key, row.allowed_models, e) }, { default: () => 'OMP' }),
               default: () => '复制 Oh My Pi 配置 YAML（含此密钥）',
+            },
+          ),
+          h(
+            NTooltip,
+            { trigger: 'hover' },
+            {
+              trigger: () =>
+                h(NButton, { size: 'small', quaternary: true, onClick: (e: MouseEvent) => copyPiConfig(row.key, row.allowed_models, e) }, { default: () => 'pi' }),
+              default: () => '复制 Pi agent 配置 JSON（~/.pi/agent/models.json，含此密钥）',
             },
           ),
           h(
@@ -210,7 +241,12 @@ const columns = computed<DataTableColumns<ExtKey>>(() => [
 ])
 
 async function load() {
-  keys.value = await listKeys()
+  try {
+    keys.value = await listKeys()
+  } catch (e) {
+    message.error('加载密钥失败：' + errText(e))
+    return
+  }
   // load usage in parallel
   const results = await Promise.all(keys.value.map(k => getKeyUsage(k.id).catch(() => null)))
   usageByKey.value = {}
@@ -230,34 +266,21 @@ async function del(id: number) {
 }
 
 // 导出用的模型清单（直连名 + 别名，口径与 /v1/models 一致）由
-// utils/exportModels 统一收集，opencode / OMP / dsh 三套导出器共用。
+// utils/exportModels 统一收集，opencode / OMP / pi / dsh 四套导出器共用。
 // 受限 key 只导出白名单内的模型（否则复制出的配置含该 key 用不了的模型）。
 async function exportModels(allowedModels?: string[] | null) {
   return filterAllowedModels(await collectExportModels(), allowedModels)
 }
 
 // opencode custom provider config: aggregate every exportable model into
-// the models map so the copied JSON works out of the box.
+// the models map so the copied JSON works out of the box. 生成器在
+// utils/opencodeConfig（AgentConfigDrawer 共用同一份，避免两处漂移）。
 async function buildOpencodeConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
-  const models: Record<string, { name: string; limit: { context: number; output: number } }> = {}
-  for (const m of await exportModels(allowedModels)) {
-    models[m.id] = { name: m.id, limit: { context: m.contextLength, output: m.maxOutputLength } }
-  }
-  const cfg: Record<string, unknown> = {
-    $schema: 'https://opencode.ai/config.json',
-    provider: {
-      'any-llm': {
-        npm: '@ai-sdk/openai-compatible',
-        name: 'any-llm',
-        options: {
-          baseURL: `${origin.value}/v1`,
-          apiKey,
-        },
-        models,
-      },
-    },
-  }
-  return JSON.stringify(cfg, null, 2)
+  return buildOpencodeJson({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: await exportModels(allowedModels),
+  })
 }
 
 async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
@@ -271,7 +294,7 @@ async function buildOmpConfig(apiKey: string, allowedModels?: string[] | null): 
 async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const json = await buildOpencodeConfig(apiKey, allowedModels)
-    await copyKey(json, evt)
+    await copyText(json, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -280,7 +303,24 @@ async function copyOpencodeConfig(apiKey: string, allowedModels?: string[] | nul
 async function copyOmpConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const yaml = await buildOmpConfig(apiKey, allowedModels)
-    await copyKey(yaml, evt)
+    await copyText(yaml, evt)
+  } catch (e: any) {
+    message.error('生成配置失败：' + (e?.message || String(e)))
+  }
+}
+
+async function buildPiConfig(apiKey: string, allowedModels?: string[] | null): Promise<string> {
+  return buildPiJson({
+    baseUrl: `${origin.value}/v1`,
+    apiKey,
+    models: (await exportModels(allowedModels)).map((m) => ({ id: m.id, contextWindow: m.contextLength, maxTokens: m.maxOutputLength })),
+  })
+}
+
+async function copyPiConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
+  try {
+    const json = await buildPiConfig(apiKey, allowedModels)
+    await copyText(json, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -297,7 +337,7 @@ async function buildDshConfig(apiKey: string, allowedModels?: string[] | null): 
 async function copyDshConfig(apiKey: string, allowedModels?: string[] | null, evt?: MouseEvent) {
   try {
     const yaml = await buildDshConfig(apiKey, allowedModels)
-    await copyKey(yaml, evt)
+    await copyText(yaml, evt)
   } catch (e: any) {
     message.error('生成配置失败：' + (e?.message || String(e)))
   }
@@ -312,75 +352,6 @@ function openClaudeCodeExport(apiKey: string, allowedModels?: string[] | null) {
   claudeCodeKey.value = apiKey
   claudeCodeAllowed.value = allowedModels ?? null
   claudeCodeShow.value = true
-}
-
-async function copyKey(key: string, evt?: MouseEvent) {
-  // prefer the modern async clipboard API (HTTPS / localhost only)
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(key)
-      message.success('已复制到剪贴板')
-      return
-    } catch {
-      // permission denied or non-secure context — fall through
-    }
-  }
-  // legacy fallback for HTTP non-localhost:
-  // the temp textarea must live INSIDE the modal (otherwise naive-ui's focus
-  // trap steals focus and clears the selection before execCommand runs).
-  // We also intercept the copy event to force the correct data in, in case
-  // the selection is still lost.
-  const anchor = (evt?.currentTarget as HTMLElement | undefined) || (document.activeElement as HTMLElement) || document.body
-  let ok = false
-  try {
-    ok = execCopy(key, anchor)
-  } catch {
-    ok = false
-  }
-  if (ok) {
-    message.success('已复制到剪贴板')
-  } else {
-    message.error('复制失败，请手动选择复制')
-  }
-}
-
-function execCopy(text: string, anchor: HTMLElement): boolean {
-  // mount the textarea inside the same modal/card as the clicked button
-  // so the modal's focus trap does not steal focus from it.
-  const container = anchor.parentElement || document.body
-  const ta = document.createElement('textarea')
-  ta.setAttribute('readonly', '')
-  ta.value = text
-  ta.style.position = 'absolute'
-  ta.style.left = '-9999px'
-  ta.style.top = '0'
-  ta.style.width = '1px'
-  ta.style.height = '1px'
-  ta.style.opacity = '0'
-  container.appendChild(ta)
-
-  let ok = false
-  // safety net: force the clipboard payload even if the selection is cleared
-  const onCopy = (e: ClipboardEvent) => {
-    try {
-      e.preventDefault()
-      e.clipboardData?.setData('text/plain', text)
-      ok = true
-    } catch {
-      // ignore
-    }
-  }
-  document.addEventListener('copy', onCopy)
-  try {
-    ta.focus()
-    ta.select()
-    ta.setSelectionRange(0, text.length)
-    document.execCommand('copy')
-  } finally {
-    document.removeEventListener('copy', onCopy)
-    try { container.removeChild(ta) } catch { /* already removed */ }
-  }
-  return ok
 }
 
 onMounted(load)
@@ -398,6 +369,10 @@ onMounted(load)
           <template #icon><AppIcon name="doc" :size="15" /></template>
           使用文档
         </n-button>
+        <n-button quaternary @click="showAgent = true">
+          <template #icon><AppIcon name="link" :size="15" /></template>
+          Agent 配置
+        </n-button>
         <n-button quaternary circle @click="load">
           <template #icon><AppIcon name="refresh" :size="16" /></template>
         </n-button>
@@ -412,7 +387,7 @@ onMounted(load)
         <n-input-group v-for="ep in endpoints" :key="ep.url">
           <n-tag :bordered="false" type="info" class="mono" style="min-width: 150px; justify-content: center; height: auto; align-self: stretch">{{ ep.label }}</n-tag>
           <n-input :value="ep.url" readonly style="font-family: monospace" />
-          <n-button type="primary" @click="copyKey(ep.url, $event)">
+          <n-button type="primary" @click="copyText(ep.url, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制
           </n-button>
@@ -427,7 +402,10 @@ onMounted(load)
           新增密钥
         </n-button>
       </template>
-      <n-data-table :bordered="false" :columns="columns" :data="keys" />
+      <!-- tableBox 量出表格可用宽度，驱动各列自适应（见 useTableFit） -->
+      <div ref="tableBox">
+        <n-data-table :bordered="false" :columns="columns" :data="keys" :scroll-x="scrollX" />
+      </div>
     </n-card>
 
     <n-modal :show="showCreateModal" @update:show="(s: boolean) => { showCreateModal = s }">
@@ -466,7 +444,7 @@ onMounted(load)
           </n-alert>
           <n-input-group>
             <n-input :value="newlyCreatedKey" readonly style="font-family: monospace" />
-            <n-button type="primary" @click="copyKey(newlyCreatedKey, $event)">复制</n-button>
+            <n-button type="primary" @click="copyText(newlyCreatedKey, $event)">复制</n-button>
           </n-input-group>
           <n-button block style="margin-top: 12px" @click="copyOpencodeConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
@@ -475,6 +453,10 @@ onMounted(load)
           <n-button block style="margin-top: 8px" @click="copyOmpConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
             复制 Oh My Pi 配置 YAML（含此密钥）
+          </n-button>
+          <n-button block style="margin-top: 8px" @click="copyPiConfig(newlyCreatedKey, createForm.allowed_models, $event)">
+            <template #icon><AppIcon name="copy" :size="14" /></template>
+            复制 Pi agent 配置 JSON（含此密钥）
           </n-button>
           <n-button block style="margin-top: 8px" @click="copyDshConfig(newlyCreatedKey, createForm.allowed_models, $event)">
             <template #icon><AppIcon name="copy" :size="14" /></template>
@@ -537,6 +519,7 @@ onMounted(load)
 
     <ClaudeCodeExportDialog v-model:show="claudeCodeShow" :api-key="claudeCodeKey" :allowed-models="claudeCodeAllowed" />
     <UsageDocDrawer v-model:show="showDoc" />
+    <AgentConfigDrawer v-model:show="showAgent" :keys="keys" />
   </div>
 </template>
 
@@ -544,7 +527,7 @@ onMounted(load)
 .key-chip {
   padding: 3px 8px;
   border-radius: 6px;
-  background: rgba(148, 163, 184, 0.1);
+  background: var(--overlay-1);
   border: 1px solid var(--border-soft);
   font-size: 12px;
   color: var(--text-2);
@@ -552,7 +535,7 @@ onMounted(load)
 .code-chip {
   padding: 1px 6px;
   border-radius: 5px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--overlay-2);
   color: var(--text-2);
   font-size: 12px;
 }

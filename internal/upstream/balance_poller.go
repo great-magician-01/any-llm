@@ -27,15 +27,15 @@ type BalancePoller struct {
 	stopped  bool
 }
 
-// NewBalancePoller creates a poller writing through w. It uses its own
-// 15s-timeout HTTP client (not the gateway's unbounded one, which is tuned
-// for long-lived SSE streams).
+// NewBalancePoller creates a poller writing through w. It uses the shared
+// VendorClient (15s timeout) — not the gateway's unbounded one, which is
+// tuned for long-lived SSE streams.
 func NewBalancePoller(d *sql.DB, w *db.Writer, interval time.Duration) *BalancePoller {
 	return &BalancePoller{
 		d:        d,
 		writer:   w,
 		interval: interval,
-		client:   &http.Client{Timeout: 15 * time.Second},
+		client:   VendorClient,
 		stopCh:   make(chan struct{}),
 	}
 }

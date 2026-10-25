@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -402,5 +403,79 @@ func TestCacheHitDeepCopyIsolationOfPointerFields(t *testing.T) {
 	}
 	if targets2[0].ModelName != "m1" || targets2[0].Upstream.Name != "u1" || !targets2[0].Upstream.ExpiresAt.Equal(exp) {
 		t.Fatalf("别名候选被调用方改到了缓存内部: %+v", targets2[0])
+	}
+}
+
+// 规则：名称重复（禁用行与启用行同名）时，按名缓存条目必须跟随「启用优先」的
+// 解析口径翻转——读到的行随启用位变化而切换，缓存逐出不能只认 ID。
+func TestCacheInvalidationDuplicateNamesFollowEnabledPreference(t *testing.T) {
+	pinTTL(t, time.Hour)
+	d := testDB(t)
+
+	// 先建禁用行（低 id），再建启用行（高 id）：启用优先让读落在高 id 行上，
+	// 之后每次状态翻转都能观察到缓存条目换行。
+	offID, err := CreateUpstreamDisabled(d, &Upstream{Name: "dup", BaseURL: "https://a", APIKey: "k1", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	onID, err := CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "https://b", APIKey: "k2", Format: "anthropic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 预热：同名读到启用行（高 id 被「启用优先」抬到前面）
+	u, err := CachedUpstreamByName(d, "dup")
+	if err != nil || u.ID != onID || !u.Enabled {
+		t.Fatalf("first read: u=%+v err=%v, want enabled row %d", u, err, onID)
+	}
+	// 禁用启用行：两行都禁用 → 读落到 id 更小的禁用行
+	cur, _ := GetUpstreamByID(d, onID)
+	cur.Enabled = false
+	if err := UpdateUpstream(d, cur); err != nil {
+		t.Fatal(err)
+	}
+	u, err = CachedUpstreamByName(d, "dup")
+	if err != nil || u.ID != offID || u.Enabled {
+		t.Fatalf("after disable: u=%+v err=%v, want low-id disabled row %d", u, err, offID)
+	}
+	// 低 id 行切回启用（高 id 行已禁用，不撞名）：读翻转回启用行
+	cur, _ = GetUpstreamByID(d, offID)
+	cur.Enabled = true
+	if err := UpdateUpstream(d, cur); err != nil {
+		t.Fatal(err)
+	}
+	u, err = CachedUpstreamByName(d, "dup")
+	if err != nil || u.ID != offID || !u.Enabled {
+		t.Fatalf("after re-enable: u=%+v err=%v, want re-enabled row %d", u, err, offID)
+	}
+	// 高 id 行再启用要撞名被拒（应用层判定；缓存里的条目保持原样）
+	cur, _ = GetUpstreamByID(d, onID)
+	cur.Enabled = true
+	if err := UpdateUpstream(d, cur); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("re-enable colliding row: err=%v, want ErrUpstreamNameTaken", err)
+	}
+	u, _ = CachedUpstreamByName(d, "dup")
+	if u.ID != offID || !u.Enabled {
+		t.Fatalf("rejected write must not change the cached row: %+v", u)
+	}
+	// 关键场景：缓存条目持有 A 行，而改名的是同名的另一行 B——逐出必须按名
+	// 兜底（B 启用后才是按名解析应返回的行，仅按 ID 扫会留下指向 A 的陈旧条目）。
+	// 先让缓存持有禁用的 A（低 id 在全禁用时优先），再启用 B。
+	cur, _ = GetUpstreamByID(d, offID)
+	cur.Enabled = false
+	if err := UpdateUpstream(d, cur); err != nil {
+		t.Fatal(err)
+	}
+	u, err = CachedUpstreamByName(d, "dup")
+	if err != nil || u.ID != offID {
+		t.Fatalf("warm cache with disabled low-id row: u=%+v err=%v", u, err)
+	}
+	cur, _ = GetUpstreamByID(d, onID)
+	cur.Enabled = true
+	if err := UpdateUpstream(d, cur); err != nil {
+		t.Fatal(err)
+	}
+	u, err = CachedUpstreamByName(d, "dup")
+	if err != nil || u.ID != onID || !u.Enabled {
+		t.Fatalf("enable the other row must flip the cached entry: u=%+v err=%v, want %d", u, err, onID)
 	}
 }

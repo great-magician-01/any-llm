@@ -1,18 +1,16 @@
 /**
- * 经典皮肤「概览」页的组件测试。
+ * 「概览」页的组件测试。
  *
  * 守的规则：
  *   - 「复制 Base URL」必须走共享的 useClipboard（HTTP + 非 localhost 的局域网部署下
  *     navigator.clipboard 不存在，只能退回 execCommand 才能真正复制成功——直接调
  *     navigator.clipboard.writeText 会永远弹「复制失败」）；
- *   - 复制成功/失败的提示都要带上 Base URL 原文：失败时用户得知道该手动复制什么；
- *   - 两套 Dashboard 必须共用同一份实现（源码级 parity，防止只改一边）。
+ *   - 复制成功/失败的提示都要带上 Base URL 原文：失败时用户得知道该手动复制什么。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Dashboard from './Dashboard.vue'
-// ?raw 取源码做双主题 parity 断言（vite/client 已声明 *?raw 模块）
-import CLASSIC_SRC from './Dashboard.vue?raw'
-import GLASS_SRC from '../../glass/views/GlassDashboard.vue?raw'
+// ?raw 取源码做防回归断言（vite/client 已声明 *?raw 模块）
+import SRC from './Dashboard.vue?raw'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { clickButton, flush, mountPage } from '@/test/ui'
 import { messagesOf, resetMessages } from '@/test/naiveMessage'
@@ -82,7 +80,7 @@ async function open() {
   await flush()
 }
 
-describe('Dashboard 页（经典皮肤）', () => {
+describe('Dashboard 页', () => {
   // 规则：剪贴板 API 不可用（局域网 HTTP）时点「复制 Base URL」必须退回 execCommand
   // 复制成功，不能直接弹复制失败
   it('剪贴板 API 不可用时仍能复制 Base URL（退回 execCommand）', async () => {
@@ -111,14 +109,50 @@ describe('Dashboard 页（经典皮肤）', () => {
     expect(document.querySelector('textarea')).toBeNull()
   })
 
-  // 规则：两套 Dashboard 必须共用同一份复制实现；任何一边自己调
-  // navigator.clipboard 都会在这里露馅（这次修的就是经典/毛玻璃各写了一份）
-  it('两套 Dashboard 都从共享的 useClipboard 复制，不私藏剪贴板实现', () => {
-    for (const [name, src] of [['classic', CLASSIC_SRC], ['glass', GLASS_SRC]] as const) {
-      expect(src, `${name} 必须引入共享的 useClipboard`).toContain("from '@/composables/useClipboard'")
-      expect(src, `${name} 必须调用 useClipboard()`).toContain('useClipboard()')
-      expect(src, `${name} 不允许直接调用剪贴板 API 写文本`).not.toContain('navigator.clipboard.writeText')
-      expect(src, `${name} 不允许私藏 execCopy 回退实现`).not.toContain('function execCopy')
-    }
+  // 规则：概览的「上游用量」和「余额/额度」卡片只展示启用中的上游——
+  // 已禁用代表下线观察，不应再占概览版面（过期的仍显示，续期即恢复服务）
+  it('上游用量与余额/额度卡片隐藏已禁用的上游', async () => {
+    api.on('get', '/usage/summary', { data: { data: [] } })
+    api.on('get', '/usage/daily', { data: { data: [] } })
+    api.on('get', '/keys', { data: { data: [] } })
+    api.on('get', '/upstreams', {
+      data: {
+        data: [
+          { id: 1, name: 'up-enabled', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 },
+          { id: 2, name: 'up-disabled', enabled: false, daily_token_limit: 0, monthly_token_limit: 0 },
+        ],
+      },
+    })
+    api.on('get', '/usage/upstream/1', { data: { daily_tokens: 100, monthly_tokens: 200 } })
+    api.on('get', '/usage/upstream/2', { data: { daily_tokens: 5, monthly_tokens: 6 } })
+    const snapshot = (id: number, upstreamId: number, name: string) => ({
+      id,
+      upstream_id: upstreamId,
+      upstream_name: name,
+      vendor: 'deepseek',
+      payload: {
+        kind: 'balance',
+        is_available: true,
+        balances: [{ currency: 'CNY', total: '169.29', granted: '0', topped_up: '169.29' }],
+      },
+      created_at: new Date().toISOString(),
+    })
+    api.on('get', '/balances', { data: { data: [snapshot(11, 1, 'up-enabled'), snapshot(12, 2, 'up-disabled')] } })
+
+    wrapper = mountPage(Dashboard)
+    await flush()
+
+    const text = wrapper.text()
+    expect(text).toContain('up-enabled')
+    expect(text).not.toContain('up-disabled')
+  })
+
+  // 规则：复制必须走共享的 useClipboard——直接调 navigator.clipboard 在
+  // HTTP + 非 localhost 的部署下会永远弹「复制失败」（历史上私藏过实现）
+  it('从共享的 useClipboard 复制，不私藏剪贴板实现', () => {
+    expect(SRC, '必须引入共享的 useClipboard').toContain("from '@/composables/useClipboard'")
+    expect(SRC, '必须调用 useClipboard()').toContain('useClipboard()')
+    expect(SRC, '不允许直接调用剪贴板 API 写文本').not.toContain('navigator.clipboard.writeText')
+    expect(SRC, '不允许私藏 execCopy 回退实现').not.toContain('function execCopy')
   })
 })

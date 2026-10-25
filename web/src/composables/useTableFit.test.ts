@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { effectScope, nextTick, ref } from 'vue'
-import { fitColumns, fitScrollX, useContainerWidth, UPSTREAM_FIT_COLUMNS } from './useTableFit'
+import { fitColumns, fitScrollX, useContainerWidth, UPSTREAM_FIT_COLUMNS, KEYS_FIT_COLUMNS } from './useTableFit'
 
 /**
  * useTableFit 的行为契约：
@@ -79,6 +79,41 @@ describe('fitScrollX', () => {
   it('容器宽度未知（<= 0）时退化为列宽总和', () => {
     const w = fitColumns(0, UPSTREAM_FIT_COLUMNS)
     expect(fitScrollX(w, 0)).toBe(sum(w))
+  })
+})
+
+// API 密钥页的列宽规格（KEYS_FIT_COLUMNS）走同一套 fitColumns/fitScrollX，
+// 这里把同样的不变量跑一遍——当初就是它没设列宽，fixed 布局把 Key 列压到
+// 不足一个字符宽，38 位 key 逐字竖排把行高撑爆。
+describe('KEYS_FIT_COLUMNS', () => {
+  const KEYS_WIDE = KEYS_FIT_COLUMNS.reduce((s, c) => s + c.wide, 0)
+  const KEYS_MIN = KEYS_FIT_COLUMNS.reduce((s, c) => s + c.min, 0)
+
+  it('每列 min <= wide，且 key 列理想宽度足以完整显示 38 位 key', () => {
+    for (const col of KEYS_FIT_COLUMNS) {
+      expect(col.min, col.key).toBeLessThanOrEqual(col.wide)
+      expect(col.min, col.key).toBeGreaterThan(0)
+    }
+    // 「all-sk-」+ 32 位 base62 在 12px 等宽下约 274px，加上 chip 内边距、
+    // 复制按钮与单元格内边距，低于 300 就一定会截断完整 key
+    expect(KEYS_FIT_COLUMNS.find((c) => c.key === 'key')!.wide).toBeGreaterThanOrEqual(300)
+  })
+
+  it('容器收窄时各列夹在 [min, wide]、总和不超过容器宽；scroll-x 永不出横向滚动条', () => {
+    for (const c of [320, 640, 900, KEYS_MIN, 1200, 1486, KEYS_WIDE - 1, KEYS_WIDE, 2500]) {
+      const w = fitColumns(c, KEYS_FIT_COLUMNS)
+      expect(sum(w), `sum@${c}`).toBeLessThanOrEqual(Math.max(c, KEYS_MIN))
+      for (const col of KEYS_FIT_COLUMNS) {
+        expect(w[col.key], `${col.key}@${c}`).toBeGreaterThanOrEqual(col.min)
+        expect(w[col.key], `${col.key}@${c}`).toBeLessThanOrEqual(col.wide)
+      }
+      expect(fitScrollX(w, c), `scrollX@${c}`).toBeLessThanOrEqual(c)
+    }
+  })
+
+  it('缺口超过总压缩能力时各列停在下限', () => {
+    const w = fitColumns(KEYS_MIN - 100, KEYS_FIT_COLUMNS)
+    for (const col of KEYS_FIT_COLUMNS) expect(w[col.key]).toBe(col.min)
   })
 })
 

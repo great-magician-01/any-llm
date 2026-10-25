@@ -154,6 +154,28 @@ func blocksToText(blocks []translate.ContentBlock) string {
 	return s
 }
 
+// buildRawUsage 汇总 OpenAI usage 的公共构造：total / cache-hit / cache-miss /
+// reasoning 的派生口径统一在这里，非流式响应与流式 message_delta 共用，
+// 防止两条路径各自演化出细微差异。
+func buildRawUsage(u translate.Usage) *rawUsage {
+	usage := &rawUsage{
+		PromptTokens:     u.InputTokens,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      u.InputTokens + u.OutputTokens,
+	}
+	if u.CacheReadTokens > 0 {
+		usage.PromptTokensDetails = &rawPromptTokensDetails{CachedTokens: u.CacheReadTokens}
+		usage.PromptCacheHitTokens = u.CacheReadTokens
+		if miss := u.InputTokens - u.CacheReadTokens; miss > 0 {
+			usage.PromptCacheMissTokens = miss
+		}
+	}
+	if u.ReasoningTokens > 0 {
+		usage.CompletionTokensDetails = &rawCompletionTokensDetails{ReasoningTokens: u.ReasoningTokens}
+	}
+	return usage
+}
+
 // EncodeResponse produces a non-stream OpenAI chat completion response.
 func EncodeResponse(resp *translate.Response) ([]byte, error) {
 	rm := rawRespMessage{Role: "assistant"}
@@ -186,22 +208,7 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		}},
 	}
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-		usage := &rawUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		}
-		if resp.Usage.CacheReadTokens > 0 {
-			usage.PromptTokensDetails = &rawPromptTokensDetails{CachedTokens: resp.Usage.CacheReadTokens}
-			usage.PromptCacheHitTokens = resp.Usage.CacheReadTokens
-			if miss := resp.Usage.InputTokens - resp.Usage.CacheReadTokens; miss > 0 {
-				usage.PromptCacheMissTokens = miss
-			}
-		}
-		if resp.Usage.ReasoningTokens > 0 {
-			usage.CompletionTokensDetails = &rawCompletionTokensDetails{ReasoningTokens: resp.Usage.ReasoningTokens}
-		}
-		rr.Usage = usage
+		rr.Usage = buildRawUsage(resp.Usage)
 	}
 	b, err := json.Marshal(rr)
 	if err != nil {
@@ -210,6 +217,10 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 	return b, nil
 }
 
+// mapStopReasonToOpenAI 把 IR 停止原因映射为 OpenAI 词表。OpenAI 客户端对
+// 未知 finish_reason 的处理不如 Anthropic 宽容，未识别的值统一兜底为 "stop"
+// ——这是与 anthropic/responses 编码器（未知值原样透传）有意不同的策略，
+// 不要为「一致性」改成透传。
 func mapStopReasonToOpenAI(reason string) string {
 	switch reason {
 	case "stop", "end_turn":

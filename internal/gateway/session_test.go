@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,7 +19,23 @@ func newSessionStore(t *testing.T, ttl time.Duration) *SessionStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
-	return NewSessionStore(d, ttl)
+	// nil writer = 直写（生产路径走 Gateway 装配的 writer，另测）
+	return NewSessionStore(d, nil, ttl)
+}
+
+func newWriterSessionStore(t *testing.T, ttl time.Duration) (*SessionStore, *db.Writer, *sql.DB) {
+	t.Helper()
+	// 不用 :memory:：writer 是独立 goroutine，池化多连接下各连接拿到的是不同
+	// 的空库（router_test/writer_test 同款做法——文件型临时库所有连接共享）。
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	w := db.NewWriter(d, 16)
+	w.Start()
+	t.Cleanup(w.Stop)
+	return NewSessionStore(d, w, ttl), w, d
 }
 
 func TestSessionStore_PutGet(t *testing.T) {
@@ -95,5 +114,50 @@ func TestSessionStore_SweepOnPut(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("sweep failed: %d rows remain", n)
+	}
+}
+
+func TestSessionStore_WriterPath(t *testing.T) {
+	s, w, d := newWriterSessionStore(t, time.Hour)
+
+	msgs := []translate.Message{{Role: "user", Content: []translate.ContentBlock{{Type: "text", Text: "hi"}}}}
+	if err := s.Put("resp_1", msgs); err != nil {
+		t.Fatal(err)
+	}
+	// Put 走 DoSync：返回即已落库，Get（直读）必须立刻命中
+	got, ok, err := s.Get("resp_1")
+	if err != nil || !ok {
+		t.Fatalf("get after sync put: ok=%v err=%v", ok, err)
+	}
+	if len(got) != 1 || got[0].Content[0].Text != "hi" {
+		t.Fatalf("got=%+v", got)
+	}
+
+	// 直接塞一行已过期的会话（绕过 Store，模拟历史遗留），再 Put 触发异步清扫
+	old := time.Now().Add(-2 * time.Hour)
+	if _, err := d.Exec(`INSERT INTO response_sessions (id, messages, created_at, last_used_at) VALUES (?, ?, ?, ?)`,
+		"resp_old", "[]", old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("resp_2", msgs); err != nil {
+		t.Fatal(err)
+	}
+	w.Stop() // 排空 DoAsync 队列，清扫必须已执行
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM response_sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("sweep through writer failed: %d rows remain", n)
+	}
+}
+
+func TestSessionStore_WriterStopped(t *testing.T) {
+	s, w, _ := newWriterSessionStore(t, time.Hour)
+	w.Stop()
+	// 关停后 DoSync 必须立刻报错返回，而不是阻塞或静默丢
+	err := s.Put("resp_x", nil)
+	if !errors.Is(err, db.ErrWriterStopped) {
+		t.Fatalf("err=%v", err)
 	}
 }

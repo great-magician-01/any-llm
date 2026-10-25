@@ -60,7 +60,7 @@ func TestCompletion_StreamCrossFormat_OAIin_ANTup(t *testing.T) {
 	if !strings.Contains(body, `"prompt_tokens":10`) {
 		t.Fatalf("missing prompt_tokens=10 in usage: %s", body)
 	}
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 {
 		t.Fatalf("records=%d", len(records))
 	}
@@ -107,7 +107,7 @@ func TestCompletion_StreamSSE_NoSpaceAfterColon(t *testing.T) {
 	if !strings.Contains(body, "[DONE]") {
 		t.Fatalf("missing [DONE]: %s", body)
 	}
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 || records[0].TotalTokens != 5 {
 		t.Fatalf("records=%+v", records)
 	}
@@ -161,7 +161,7 @@ func TestCompletion_StreamCrossFormat_ANTin_OAIup(t *testing.T) {
 	if !strings.Contains(body, `"stop_reason":"end_turn"`) {
 		t.Fatalf("missing stop_reason end_turn: %s", body)
 	}
-	records, _, _ := store.UsageRecordsList(d, 1, 10)
+	records, _, _ := store.UsageRecordsList(d, 1, 10, "")
 	if len(records) != 1 {
 		t.Fatalf("records=%d", len(records))
 	}

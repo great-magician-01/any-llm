@@ -1,12 +1,14 @@
 /**
- * 登录页的落点契约（classic 与 glass 两边都要守）：
+ * 登录页的落点契约（同一视图在 /login 与 /glass/login 两种挂载路径下都要守）：
  *   - 带 `?redirect=` 时登录成功要回到原目标（深链分享、会话过期回来都靠它）；
- *   - 没有 redirect 时回各主题的默认落地页；
+ *   - 没有 redirect 时回当前套件的默认落地页（classic → /dashboard，
+ *     glass → /glass/dashboard，由 useLoginRedirect 的套件感知 fallback 决定）；
  *   - 开放重定向必须被挡住：`//evil.com`（协议相对 URL）、`https://evil.com`、
  *     `/\evil.com`（部分浏览器把 '\' 当 '/'）一律回落默认页，绝不跳外站；
  *   - 登录失败时不跳转，并显示「密码错误」。
  *
- * 这是 A4 的回归网：路由守卫负责把原目标写进 `?redirect=`，登录页负责安全消费。
+ * 这是路由守卫与登录页之间的回归网：守卫负责把原目标写进 `?redirect=`，
+ * 登录页负责安全消费。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -14,8 +16,7 @@ import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import naive from 'naive-ui'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
 import { bodyHas, clickButton, flush } from '@/test/ui'
-import Login from './classic/views/Login.vue'
-import GlassLogin from './glass/views/GlassLogin.vue'
+import Login from './Login.vue'
 import type { AnyWrapper } from '@/test/ui'
 
 let api: ApiMock
@@ -31,7 +32,7 @@ function makeRouter(): Router {
       { path: '/', redirect: '/dashboard' },
       { path: '/glass', redirect: '/glass/dashboard' },
       { path: '/login', name: 'login', component: Login },
-      { path: '/glass/login', name: 'glass-login', component: GlassLogin },
+      { path: '/glass/login', name: 'glass-login', component: Login },
       { path: '/dashboard', name: 'dashboard', component: blank },
       { path: '/usage', name: 'usage', component: blank },
       { path: '/glass/dashboard', name: 'glass-dashboard', component: blank },
@@ -40,11 +41,11 @@ function makeRouter(): Router {
   })
 }
 
-async function mountLoginAt(component: unknown, initial: string): Promise<void> {
+async function mountLoginAt(initial: string): Promise<void> {
   router = makeRouter()
   await router.push(initial)
   await router.isReady()
-  wrapper = mount(component as any, { global: { plugins: [naive, router] }, attachTo: document.body })
+  wrapper = mount(Login as any, { global: { plugins: [naive, router] }, attachTo: document.body })
   await flush()
 }
 
@@ -67,10 +68,10 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('classic 登录页', () => {
+describe('classic 登录页（挂载在 /login）', () => {
   it('带 ?redirect= 时登录后回到原目标（含 query）', async () => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(Login, '/login?redirect=%2Fusage%3Frange%3D7d')
+    await mountLoginAt('/login?redirect=%2Fusage%3Frange%3D7d')
 
     await submitLogin('s3cret')
 
@@ -82,7 +83,7 @@ describe('classic 登录页', () => {
 
   it('没有 redirect 时回默认落地页', async () => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(Login, '/login')
+    await mountLoginAt('/login')
 
     await submitLogin()
 
@@ -95,7 +96,7 @@ describe('classic 登录页', () => {
     ['/\\evil.com', '反斜杠变体'],
   ])('开放重定向被挡住：%s（%s）', async (redirect) => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(Login, `/login?redirect=${encodeURIComponent(redirect)}`)
+    await mountLoginAt(`/login?redirect=${encodeURIComponent(redirect)}`)
 
     await submitLogin()
 
@@ -104,7 +105,7 @@ describe('classic 登录页', () => {
 
   it('登录失败不跳转并提示密码错误', async () => {
     api.on('post', '/login', { status: 401, data: { error: 'wrong password' } })
-    await mountLoginAt(Login, '/login?redirect=%2Fusage')
+    await mountLoginAt('/login?redirect=%2Fusage')
 
     await submitLogin('wrong')
 
@@ -113,10 +114,10 @@ describe('classic 登录页', () => {
   })
 })
 
-describe('glass 登录页', () => {
+describe('glass 登录页（同一视图挂载在 /glass/login）', () => {
   it('带 ?redirect= 时登录后回到玻璃主题的原目标', async () => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(GlassLogin, '/glass/login?redirect=%2Fglass%2Fusage')
+    await mountLoginAt('/glass/login?redirect=%2Fglass%2Fusage')
 
     await submitLogin()
 
@@ -125,7 +126,7 @@ describe('glass 登录页', () => {
 
   it('没有 redirect 时回玻璃 dashboard', async () => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(GlassLogin, '/glass/login')
+    await mountLoginAt('/glass/login')
 
     await submitLogin()
 
@@ -134,7 +135,7 @@ describe('glass 登录页', () => {
 
   it('开放重定向被挡住', async () => {
     api.on('post', '/login', { data: { ok: true } })
-    await mountLoginAt(GlassLogin, '/glass/login?redirect=%2F%2Fevil.com')
+    await mountLoginAt('/glass/login?redirect=%2F%2Fevil.com')
 
     await submitLogin()
 

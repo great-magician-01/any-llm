@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -16,6 +17,10 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 	to := r.URL.Query().Get("to")
 	summaries, err := store.UsageSummaryByGroup(a.db, groupBy, from, to)
 	if err != nil {
+		if errors.Is(err, store.ErrInvalidGroupBy) {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 		logger.Error("admin: usage summary failed", "group_by", groupBy, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
@@ -23,17 +28,30 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"data": summaries})
 }
 
-// usageRecords serves GET /api/admin/usage/records?page=&size=.
+// usageRecords serves GET /api/admin/usage/records?page=&size=&model=.
+// model 非空时按模型精确筛选（请求明细页的模型下拉框）。
 func (a *API) usageRecords(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
-	records, total, err := store.UsageRecordsList(a.db, page, size)
+	page, size := pageParams(r)
+	model := r.URL.Query().Get("model")
+	records, total, err := store.UsageRecordsList(a.db, page, size, model)
 	if err != nil {
-		logger.Error("admin: usage records list failed", "page", page, "size", size, "err", err)
+		logger.Error("admin: usage records list failed", "page", page, "size", size, "model", model, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"data": records, "total": total})
+}
+
+// usageModels serves GET /api/admin/usage/models — usage_records 里出现过的
+// 模型名去重清单，作为请求明细筛选下拉框的选项。
+func (a *API) usageModels(w http.ResponseWriter, r *http.Request) {
+	models, err := store.UsageModels(a.db)
+	if err != nil {
+		logger.Error("admin: usage models list failed", "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"data": models})
 }
 
 // usageDaily serves GET /api/admin/usage/daily?days=&from=&to=.

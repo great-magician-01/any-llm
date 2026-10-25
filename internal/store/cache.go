@@ -17,7 +17,7 @@ import (
 //
 //   - 一致性主要由写路径保证。所有配置写库都走本包的 Create/Update/Delete 系列
 //     （管理端 CRUD 与配置导入全部复用它们），那些函数在写库成功后同步维护缓存，
-//     且必然运行在 webapi 的 writeSync 闭包里——先落库、后改内存，中间没有窗口。
+//     且必然运行在 adminapi 的 writeSync 闭包里——先落库、后改内存，中间没有窗口。
 //     所以「管理端改完，下一个请求即生效」的语义与加缓存前一致。
 //   - 查询绝不在持锁状态下执行：loadThrough 先 RLock 探一次，未命中就锁外查库。
 //     争 leader 与回填各自只占锁一瞬间，查询本身不占。
@@ -379,19 +379,12 @@ func cloneUpstream(u *Upstream) *Upstream {
 		t := *u.ExpiresAt
 		c.ExpiresAt = &t
 	}
+	// ExtraEndpoints 是 slice：浅拷贝会共享底层数组，调用方（网关并发读）若
+	// 追加/改元素会直接改到缓存里的条目。与 cloneExtKey 的 AllowedModels 同理深拷贝。
+	if u.ExtraEndpoints != nil {
+		c.ExtraEndpoints = append([]UpstreamEndpoint(nil), u.ExtraEndpoints...)
+	}
 	return &c
-}
-
-func cloneTargets(targets []AliasTarget) []AliasTarget {
-	if targets == nil {
-		return nil
-	}
-	out := make([]AliasTarget, len(targets))
-	for i, t := range targets {
-		t.Upstream = cloneUpstream(t.Upstream)
-		out[i] = t
-	}
-	return out
 }
 
 // ResetConfigCache 清空读缓存。测试隔离用：缓存是包级、进程内的，而每个测试

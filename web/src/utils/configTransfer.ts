@@ -12,7 +12,7 @@ export function configFileName(now: Date): string {
 
 /** 解析并做基本结构校验，错误信息面向用户（中文）。 */
 export function parseConfigFile(text: string): ConfigFile {
-  let data: any
+  let data: unknown
   try {
     data = JSON.parse(text)
   } catch {
@@ -21,10 +21,11 @@ export function parseConfigFile(text: string): ConfigFile {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
     throw new Error('配置文件格式不正确')
   }
-  if (typeof data.version === 'number' && data.version > CONFIG_VERSION) {
-    throw new Error(`不支持的配置文件版本 ${data.version}（当前支持 v${CONFIG_VERSION}）`)
+  const obj = data as { version?: unknown; upstreams?: unknown; aliases?: unknown }
+  if (typeof obj.version === 'number' && obj.version > CONFIG_VERSION) {
+    throw new Error(`不支持的配置文件版本 ${obj.version}（当前支持 v${CONFIG_VERSION}）`)
   }
-  if (!Array.isArray(data.upstreams) || !Array.isArray(data.aliases)) {
+  if (!Array.isArray(obj.upstreams) || !Array.isArray(obj.aliases)) {
     throw new Error('配置文件缺少 upstreams / aliases 字段')
   }
   return data as ConfigFile
@@ -34,7 +35,7 @@ export function parseConfigFile(text: string): ConfigFile {
 export function describeConfigFile(f: ConfigFile): string {
   return `该文件包含 ${f.upstreams.length} 个上游、${f.aliases.length} 个别名。` +
     '导入后：同名配置将被覆盖，其余现有配置保持不变。' +
-    '注意：地址、API Key、格式等基础字段以文件为准（缺省会清空原值），启用状态、限额、有效期与备注缺省则保持现状。'
+    '注意：地址、API Key、格式等基础字段以文件为准（缺省会清空原值），启用状态、限额、有效期、备注、标记、模型列表与附加端点缺省则保持现状。'
 }
 
 /** 导入完成后的结果摘要。 */

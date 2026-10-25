@@ -4,16 +4,7 @@ import { ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { listUpstreams, updateUpstream, type Upstream, type UpstreamStatusFilter } from '../api/upstreams'
 import { listLatestBalances, type BalanceSnapshot } from '../api/balances'
-
-function errText(e: any): string {
-  const r = e?.response
-  if (r?.data) {
-    if (typeof r.data === 'string') return r.data
-    if (r.data.error) return String(r.data.error)
-    return JSON.stringify(r.data)
-  }
-  return e?.message || String(e)
-}
+import { errText } from '../utils/errText'
 
 /**
  * 上游列表 + 启用状态过滤 + 最新余额快照。

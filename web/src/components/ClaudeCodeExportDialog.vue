@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NModal, NCard, NButton, NSelect, NCheckbox, NAlert } from 'naive-ui'
+import { NModal, NCard, NButton, NSelect, NCheckbox, NAlert, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import { useClipboard } from '../composables/useClipboard'
 import { collectExportModels, filterAllowedModels } from '../utils/exportModels'
 import { buildClaudeCodeSh, type ClaudeCodeMapping } from '../utils/claudeCodeConfig'
+import { errText } from '../utils/errText'
 
 // Claude Code（Linux）配置导出弹窗：两套 Keys 皮肤共用一份。
 // 把各模型槽位映射到该密钥可用的网关模型后，生成追加到 ~/.bashrc 的
@@ -13,6 +14,7 @@ const props = defineProps<{ show: boolean; apiKey: string; allowedModels?: strin
 const emit = defineEmits<{ 'update:show': [boolean] }>()
 
 const { copyText } = useClipboard()
+const message = useMessage()
 const origin = window.location.origin
 
 interface SlotState {
@@ -63,6 +65,9 @@ watch(
       const list = filterAllowedModels(await collectExportModels(), props.allowedModels)
       models.value = list.map((m) => m.id)
       slots.value = freshSlots(models.value[0] ?? null)
+    } catch (e) {
+      // 失败时模型清单保持为空，弹窗会按「没有可用模型」的既有分支提示
+      message.error('加载模型清单失败：' + errText(e))
     } finally {
       loading.value = false
     }

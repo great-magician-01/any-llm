@@ -122,6 +122,252 @@ func TestUpstreamRemark(t *testing.T) {
 	}
 }
 
+// TestUpstreamExtraEndpoints 盯住 extra_endpoints 的完整往返（与 TestUpstreamRemark
+// 同款理由：UpdateUpstream 是全量覆盖，UPDATE 漏了该列会在每次保存——含只改
+// enabled 的开关 PATCH——时静默清空附加端点）。
+func TestUpstreamExtraEndpoints(t *testing.T) {
+	d := testDB(t)
+	eps := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://api.deepseek.com/anthropic"}}
+	id, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "https://api.deepseek.com/v1", APIKey: "k", Format: "openai", ExtraEndpoints: eps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 无附加端点的上游：读回为 nil/空，而不是 NULL 扫描失败或脏值
+	plain, err := CreateUpstream(d, &Upstream{Name: "plain", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := mustGet(t, d, plain); len(u.ExtraEndpoints) != 0 {
+		t.Fatalf("unset extra_endpoints=%+v, want empty", u.ExtraEndpoints)
+	}
+
+	for _, tc := range []struct {
+		name string
+		u    *Upstream
+	}{
+		{"byID", mustGet(t, d, id)},
+		{"byName", mustGetByName(t, d, "u")},
+	} {
+		if len(tc.u.ExtraEndpoints) != 1 || tc.u.ExtraEndpoints[0] != eps[0] {
+			t.Fatalf("%s extra_endpoints=%+v", tc.name, tc.u.ExtraEndpoints)
+		}
+	}
+	list, err := ListUpstreams(d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || len(list[0].ExtraEndpoints) != 1 || list[0].ExtraEndpoints[0] != eps[0] {
+		t.Fatalf("list extra_endpoints=%+v (len=%d)", list[0].ExtraEndpoints, len(list))
+	}
+
+	// 全量保存（只改别的字段）不得抹掉附加端点
+	u := mustGet(t, d, id)
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	again := mustGet(t, d, id)
+	if len(again.ExtraEndpoints) != 1 || again.ExtraEndpoints[0] != eps[0] || again.Enabled {
+		t.Fatalf("after update=%+v", again)
+	}
+	// 清空附加端点也要落库
+	again.ExtraEndpoints = nil
+	if err := UpdateUpstream(d, again); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, d, id); len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("clear extra_endpoints=%+v", got.ExtraEndpoints)
+	}
+}
+
+// TestUpstreamWriteValidation 撞车配置（附加端点与主格式同格式）必须在写库
+// 边界被拒绝：adminapi 各入口的提前校验只是体验优化，store 是最后防线——
+// 配置导入「文件改主格式 + 缺省保留库中附加端点」的合并结果只有这层兜得住。
+func TestUpstreamWriteValidation(t *testing.T) {
+	d := testDB(t)
+	bad := []UpstreamEndpoint{{Format: "openai", BaseURL: "https://y"}}
+	if _, err := CreateUpstream(d, &Upstream{Name: "c", BaseURL: "b", APIKey: "k", Format: "openai", ExtraEndpoints: bad}); err == nil {
+		t.Fatal("create with extra colliding with primary format must fail")
+	}
+	id, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := mustGet(t, d, id)
+	u.ExtraEndpoints = bad
+	if err := UpdateUpstream(d, u); err == nil {
+		t.Fatal("update with extra colliding with primary format must fail")
+	}
+	// 合法更新照常成功
+	u.ExtraEndpoints = []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://y"}}
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatalf("valid update rejected: %v", err)
+	}
+}
+
+// TestUpstreamWriteValidation 之外，标记的往返由 TestUpstreamTag 覆盖（同款
+// 理由：UpdateUpstream 是全量覆盖，UPDATE 漏了 tag 会在每次保存——含只改
+// enabled 的开关 PATCH——时把标记静默抹回默认值）。
+func TestUpstreamTag(t *testing.T) {
+	d := testDB(t)
+	// 中转标记创建带入
+	relay, err := CreateUpstream(d, &Upstream{Name: "relay", BaseURL: "b", APIKey: "k", Format: "openai", Tag: TagRelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 没填标记的上游：默认官方（不是空串）
+	def, err := CreateUpstream(d, &Upstream{Name: "def", BaseURL: "b", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := GetUpstreamByID(d, def); u.Tag != TagOfficial {
+		t.Fatalf("unset tag=%q, want %q", u.Tag, TagOfficial)
+	}
+
+	for _, got := range []struct {
+		name string
+		u    *Upstream
+	}{
+		{"byID", mustGet(t, d, relay)},
+		{"byName", mustGetByName(t, d, "relay")},
+	} {
+		if got.u.Tag != TagRelay {
+			t.Fatalf("%s tag=%q, want %q", got.name, got.u.Tag, TagRelay)
+		}
+	}
+	list, err := ListUpstreams(d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Tag != TagRelay || list[1].Tag != TagOfficial {
+		t.Fatalf("list tags=%q,%q (len=%d)", list[0].Tag, list[1].Tag, len(list))
+	}
+
+	// 全量保存不得抹掉标记
+	u := mustGet(t, d, relay)
+	u.BaseURL = "https://changed"
+	u.Enabled = false
+	if err := UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	again := mustGet(t, d, relay)
+	if again.Tag != TagRelay || again.BaseURL != "https://changed" || again.Enabled {
+		t.Fatalf("after update=%+v", again)
+	}
+	// 改标记本身（中转 → 官方）也要落库
+	again.Tag = TagOfficial
+	if err := UpdateUpstream(d, again); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, d, relay); got.Tag != TagOfficial {
+		t.Fatalf("tag update=%q", got.Tag)
+	}
+	// 手拼字面量（Tag 为空串）落默认官方而不是报错：TestUpdateIgnoresSoftDeleted
+	// 走的正是这条路，空串必须是合法输入。
+	if err := UpdateUpstream(d, &Upstream{ID: def, Name: "def", BaseURL: "b", APIKey: "k", Format: "openai"}); err != nil {
+		t.Fatalf("update with empty tag rejected: %v", err)
+	}
+	if got := mustGet(t, d, def); got.Tag != TagOfficial {
+		t.Fatalf("empty tag update=%q, want %q", got.Tag, TagOfficial)
+	}
+	// 非法标记在写库边界被拒（两条路径都要）
+	if _, err := CreateUpstream(d, &Upstream{Name: "bad", BaseURL: "b", APIKey: "k", Format: "openai", Tag: "official " + "x"}); err == nil {
+		t.Fatal("create with invalid tag must fail")
+	}
+	bad := mustGet(t, d, def)
+	bad.Tag = "中转"
+	if err := UpdateUpstream(d, bad); err == nil {
+		t.Fatal("update with invalid tag must fail")
+	}
+}
+
+func TestNormalizeTag(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", TagOfficial},
+		{"   ", TagOfficial},
+		{TagOfficial, TagOfficial},
+		{" official ", TagOfficial},
+		{TagRelay, TagRelay},
+		{" relay ", TagRelay},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeTag(tc.in)
+		if err != nil {
+			t.Fatalf("NormalizeTag(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("NormalizeTag(%q)=%q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"official-x", "中转", "OFFICIAL", "relays"} {
+		if _, err := NormalizeTag(bad); err == nil {
+			t.Fatalf("NormalizeTag(%q): expected error", bad)
+		}
+	}
+}
+
+// TestReadTagDirty 脏数据（手改库写入的未知标记）按默认官方处理并 warn，与
+// parseExtraEndpoints 对坏 JSON 的容忍同款：一行坏数据不能让上游读不出来。
+func TestReadTagDirty(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":           TagOfficial,
+		"  ":         TagOfficial,
+		TagOfficial:  TagOfficial,
+		TagRelay:     TagRelay,
+		" relay ":    TagRelay,
+		"official-x": TagOfficial,
+		"中转":         TagOfficial,
+	} {
+		if got := readTag(raw); got != want {
+			t.Fatalf("readTag(%q)=%q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestValidateExtraEndpoints(t *testing.T) {
+	good := []UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}}
+	if err := ValidateExtraEndpoints("openai", good); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	if err := ValidateExtraEndpoints("openai", nil); err != nil {
+		t.Fatalf("nil should be valid: %v", err)
+	}
+	cases := []struct {
+		name    string
+		primary string
+		eps     []UpstreamEndpoint
+	}{
+		{"unknown format", "openai", []UpstreamEndpoint{{Format: "gemini", BaseURL: "https://x"}}},
+		{"empty base_url", "openai", []UpstreamEndpoint{{Format: "anthropic", BaseURL: "  "}}},
+		{"duplicates primary", "openai", []UpstreamEndpoint{{Format: "openai", BaseURL: "https://x"}}},
+		{"duplicate within list", "openai", []UpstreamEndpoint{
+			{Format: "anthropic", BaseURL: "https://x"}, {Format: "anthropic", BaseURL: "https://y"}}},
+	}
+	for _, tc := range cases {
+		if err := ValidateExtraEndpoints(tc.primary, tc.eps); err == nil {
+			t.Fatalf("%s: expected error", tc.name)
+		}
+	}
+}
+
+// TestParseExtraEndpointsDirty 脏数据（非法 JSON）按无附加端点处理而不是报错：
+// 该列在网关热路径上被读，一条坏数据不能把整个上游读挂。
+func TestParseExtraEndpointsDirty(t *testing.T) {
+	if got := parseExtraEndpoints(""); got != nil {
+		t.Fatalf("empty=%v", got)
+	}
+	if got := parseExtraEndpoints("{not-json"); got != nil {
+		t.Fatalf("dirty=%v", got)
+	}
+	got := parseExtraEndpoints(`[{"format":"anthropic","base_url":"https://x"}]`)
+	if len(got) != 1 || got[0].Format != "anthropic" || got[0].BaseURL != "https://x" {
+		t.Fatalf("parsed=%+v", got)
+	}
+}
+
 func mustGet(t *testing.T, d *sql.DB, id int64) *Upstream {
 	t.Helper()
 	u, err := GetUpstreamByID(d, id)
@@ -144,8 +390,30 @@ func TestUniqueName(t *testing.T) {
 	d := testDB(t)
 	_, _ = CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "u", APIKey: "k", Format: "openai"})
 	_, err := CreateUpstream(d, &Upstream{Name: "dup", BaseURL: "u2", APIKey: "k2", Format: "anthropic"})
-	if err == nil {
-		t.Fatal("expected duplicate name error")
+	if !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("expected ErrUpstreamNameTaken, got %v", err)
+	}
+	// 禁用行不占名称：与启用行同名可建（口径是「启用中不重复」）
+	if _, err := CreateUpstreamDisabled(d, &Upstream{Name: "dup", BaseURL: "u3", APIKey: "k3", Format: "openai"}); err != nil {
+		t.Fatalf("disabled duplicate should be allowed: %v", err)
+	}
+	rows, err := d.Query(`SELECT id, enabled FROM upstreams WHERE name='dup' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []int64
+	var enabled []int
+	for rows.Next() {
+		var id, en int64
+		if err := rows.Scan(&id, &en); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		enabled = append(enabled, int(en))
+	}
+	if len(ids) != 2 || enabled[0] != 1 || enabled[1] != 0 {
+		t.Fatalf("rows=%v enabled=%v, want 2 rows (enabled, disabled)", ids, enabled)
 	}
 }
 
@@ -183,7 +451,8 @@ func TestListUpstreamsEnabledFilter(t *testing.T) {
 	CreateUpstream(d, &Upstream{Name: "on1", BaseURL: "b", APIKey: "k", Format: "openai"})
 	CreateUpstream(d, &Upstream{Name: "on2", BaseURL: "b", APIKey: "k", Format: "anthropic"})
 	offID, _ := CreateUpstream(d, &Upstream{Name: "off", BaseURL: "b", APIKey: "k", Format: "openai"})
-	// CreateUpstream 的 INSERT 不含 enabled 列（DB 默认启用），创建即禁用需读回再改存。
+	// 创建即禁用走 CreateUpstreamDisabled（单次 INSERT 落 enabled=0），不需要
+	// 「读回再改存」的旧套路；这里保留读回改存路径以覆盖 UpdateUpstream 的禁用。
 	off, _ := GetUpstreamByID(d, offID)
 	off.Enabled = false
 	if err := UpdateUpstream(d, off); err != nil {
@@ -306,13 +575,13 @@ func TestSoftDeleteUpstream(t *testing.T) {
 	if err := d.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name='u'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("row should be kept: n=%d err=%v", n, err)
 	}
-	// 同名可重建（部分唯一索引只约束活跃行）
+	// 同名可重建（唯一性只约束启用行，软删行不占名额）
 	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b2", APIKey: "k2", Format: "anthropic"}); err != nil {
 		t.Fatalf("re-create same name after soft delete: %v", err)
 	}
-	// 活跃行唯一性仍生效
-	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b3", APIKey: "k3", Format: "openai"}); err == nil {
-		t.Fatal("duplicate active name should be rejected")
+	// 启用行重名仍被应用层拒绝（DB 层不再有唯一索引，靠 UpstreamNameTaken）
+	if _, err := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b3", APIKey: "k3", Format: "openai"}); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("duplicate enabled name should be rejected, got %v", err)
 	}
 }
 
@@ -655,5 +924,71 @@ func TestUpdateModelScopedByUpstream(t *testing.T) {
 	models, _ = ListModels(d, u1)
 	if models[0].ContextLength != 1000 || !models[0].Multimodal {
 		t.Fatalf("legit update did not land: %+v", models[0])
+	}
+}
+
+// TestUpstreamNameEnabledOnlyUniqueness 钉住放宽后的名称唯一性口径：只有启用行
+// 之间不重名（应用层判定，DB 层无唯一索引）。禁用行可与任何行同名；启用一个
+// 名称撞车的禁用行要被拒绝；改名/重建各通道的判定一致。
+func TestUpstreamNameEnabledOnlyUniqueness(t *testing.T) {
+	d := testDB(t)
+	onID, _ := CreateUpstream(d, &Upstream{Name: "app", BaseURL: "b1", APIKey: "k", Format: "openai"})
+	// 禁用重名可建；按名解析要拿到启用行（禁用行被遮蔽）
+	offID, err := CreateUpstreamDisabled(d, &Upstream{Name: "app", BaseURL: "b2", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatalf("disabled duplicate name should be allowed: %v", err)
+	}
+	if byName := mustGetByName(t, d, "app"); byName.ID != onID {
+		t.Fatalf("GetUpstreamByName returned id=%d, want the enabled row %d", byName.ID, onID)
+	}
+	// 启用撞名的禁用行：被拒（启用集合不允许重名）
+	off := mustGet(t, d, offID)
+	off.Enabled = true
+	if err := UpdateUpstream(d, off); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("enable colliding name: err=%v, want ErrUpstreamNameTaken", err)
+	}
+	// 禁用撞名的启用行：允许（禁用行不占名称），此后按名解析落到禁用行
+	on := mustGet(t, d, onID)
+	on.Enabled = false
+	if err := UpdateUpstream(d, on); err != nil {
+		t.Fatalf("disable enabled duplicate: %v", err)
+	}
+	if byName := mustGetByName(t, d, "app"); byName.Enabled {
+		t.Fatalf("both rows disabled, GetUpstreamByName should return a disabled row: %+v", byName)
+	}
+	// 现在启用另一行不再撞车
+	off = mustGet(t, d, offID)
+	off.Enabled = true
+	if err := UpdateUpstream(d, off); err != nil {
+		t.Fatalf("enable after the other was disabled: %v", err)
+	}
+	// 启用行的名字可以改到只被禁用行占用的名字上；改成别的启用行的名字被拒
+	CreateUpstreamDisabled(d, &Upstream{Name: "spare", BaseURL: "b3", APIKey: "k", Format: "openai"})
+	otherID, _ := CreateUpstream(d, &Upstream{Name: "other", BaseURL: "b4", APIKey: "k", Format: "anthropic"})
+	moved := mustGet(t, d, offID)
+	moved.Name = "spare"
+	if err := UpdateUpstream(d, moved); err != nil {
+		t.Fatalf("rename onto disabled-only name: %v", err)
+	}
+	moved = mustGet(t, d, offID)
+	moved.Name = "other"
+	if err := UpdateUpstream(d, moved); !errors.Is(err, ErrUpstreamNameTaken) {
+		t.Fatalf("rename onto enabled name: err=%v, want ErrUpstreamNameTaken", err)
+	}
+	// 无关字段保存不被查重卡住（名称与启用位没变）
+	other := mustGet(t, d, otherID)
+	other.BaseURL = "b5"
+	if err := UpdateUpstream(d, other); err != nil {
+		t.Fatalf("unrelated field save should pass: %v", err)
+	}
+	// 软删行不占名称：删除禁用的 spare 后，启用行可改名过去
+	spare := mustGetByName(t, d, "spare")
+	if err := DeleteUpstream(d, spare.ID); err != nil {
+		t.Fatal(err)
+	}
+	other = mustGet(t, d, otherID)
+	other.Name = "spare"
+	if err := UpdateUpstream(d, other); err != nil {
+		t.Fatalf("rename onto soft-deleted name: %v", err)
 	}
 }

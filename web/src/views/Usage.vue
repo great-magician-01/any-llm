@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { NTag } from 'naive-ui'
+import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { fetchSummary, fetchRecords, fetchDaily, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
+import { fetchSummary, fetchRecords, fetchDaily, fetchUsageModels, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '@/utils/format'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import BarChart from '@/components/BarChart.vue'
 import DonutChart from '@/components/DonutChart.vue'
+import { errText } from '@/utils/errText'
 
 const groupBy = ref('model')
+const message = useMessage()
 const summaries = ref<UsageSummary[]>([])
 const records = ref<UsageRecord[]>([])
 const daily = ref<UsageDayStat[]>([])
@@ -51,16 +53,53 @@ function rangeParams(): { from?: string; to?: string } {
   return { from: localISO(from), to: localISO(to) }
 }
 
+// 请求明细的模型筛选：选项来自 usage_records 里实际出现过的模型（去重）。
+// 只作用于明细表——汇总/趋势/构成图维持自己的时间范围口径，不受影响。
+const modelFilter = ref<string | null>(null)
+const modelOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadRecords() {
+  try {
+    const r = await fetchRecords(page.value, pageSize, modelFilter.value ?? undefined)
+    records.value = r.data
+    total.value = r.total
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
+}
+
+// 切换模型筛选：回到第 1 页再查（筛选后的结果集变小，旧页码可能越界）
+function onModelFilterChange(v: string | null) {
+  modelFilter.value = v
+  page.value = 1
+  loadRecords()
+}
+
 async function load() {
-  const { from, to } = rangeParams()
-  summaries.value = await fetchSummary(groupBy.value, from, to)
-  const r = await fetchRecords(page.value, pageSize)
-  records.value = r.data
-  total.value = r.total
+  try {
+    const { from, to } = rangeParams()
+    summaries.value = await fetchSummary(groupBy.value, from, to)
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
+  await loadRecords()
+}
+
+// 模型筛选项单独加载：失败时下拉框少一些选项，明细列表本身不受影响
+async function loadModels() {
+  try {
+    modelOptions.value = (await fetchUsageModels()).map((m) => ({ label: m, value: m }))
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
 }
 
 async function loadDaily(from?: string, to?: string, days?: number) {
-  daily.value = await fetchDaily(days ?? trendDays.value, from, to)
+  try {
+    daily.value = await fetchDaily(days ?? trendDays.value, from, to)
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
+  }
 }
 
 // 选中日期范围（不超过窗口上限）时，趋势图对齐该范围；清除则回到近 N 天
@@ -83,10 +122,11 @@ const trendLabels = computed(() =>
 )
 const showPrompt = ref(true)
 const showCompletion = ref(true)
+// 输入/输出系列色跟品牌变量走（随配色主题换肤）；下方 PALETTE 是数据可视化固定色板
 const tokenSeries = computed(() => {
   const out = []
-  if (showPrompt.value) out.push({ name: '输入 Token', color: '#5b8cff', values: daily.value.map((d) => d.prompt_tokens) })
-  if (showCompletion.value) out.push({ name: '输出 Token', color: '#22d3ee', values: daily.value.map((d) => d.completion_tokens) })
+  if (showPrompt.value) out.push({ name: '输入 Token', color: 'var(--brand)', values: daily.value.map((d) => d.prompt_tokens) })
+  if (showCompletion.value) out.push({ name: '输出 Token', color: 'var(--brand-2)', values: daily.value.map((d) => d.completion_tokens) })
   return out
 })
 const reqSeries = computed(() => [
@@ -121,8 +161,8 @@ const distSlices = computed(() => {
 const compSlices = computed(() => {
   const uncached = Math.max(0, totals.value.prompt - cacheTokens.value.read)
   return [
-    { name: '输入（非缓存）', value: uncached, color: '#5b8cff' },
-    { name: '输出', value: totals.value.completion, color: '#22d3ee' },
+    { name: '输入（非缓存）', value: uncached, color: 'var(--brand)' },
+    { name: '输出', value: totals.value.completion, color: 'var(--brand-2)' },
     { name: '缓存读取', value: cacheTokens.value.read, color: '#34d399' },
     { name: '推理', value: reasoningTokens.value, color: '#a78bfa' },
   ].filter((s) => s.value > 0)
@@ -140,11 +180,15 @@ const statusSlices = computed(() => [
 // 汇总接口不含缓存/推理 token，按当前范围从日聚合叠加得到
 const rangeExtras = ref({ cache: { read: 0 }, reasoning: 0 })
 async function loadRangeExtras() {
-  const { from, to } = rangeParams()
-  const all = await fetchDaily(90, from, to)
-  rangeExtras.value = {
-    cache: { read: all.reduce((a, d) => a + d.cache_read_tokens, 0) },
-    reasoning: all.reduce((a, d) => a + d.reasoning_tokens, 0),
+  try {
+    const { from, to } = rangeParams()
+    const all = await fetchDaily(90, from, to)
+    rangeExtras.value = {
+      cache: { read: all.reduce((a, d) => a + d.cache_read_tokens, 0) },
+      reasoning: all.reduce((a, d) => a + d.reasoning_tokens, 0),
+    }
+  } catch (e) {
+    message.error('加载用量数据失败：' + errText(e))
   }
 }
 
@@ -152,6 +196,7 @@ function loadAll() {
   load()
   loadDaily()
   loadRangeExtras()
+  loadModels()
 }
 
 const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
@@ -239,8 +284,8 @@ onMounted(loadAll)
             <div class="legend-toggle">
               <button
                 v-for="t in [
-                  { key: 'prompt', name: '输入', color: '#5b8cff', on: showPrompt },
-                  { key: 'completion', name: '输出', color: '#22d3ee', on: showCompletion },
+                  { key: 'prompt', name: '输入', color: 'var(--brand)', on: showPrompt },
+                  { key: 'completion', name: '输出', color: 'var(--brand-2)', on: showCompletion },
                 ]"
                 :key="t.key"
                 class="legend-chip"
@@ -253,7 +298,7 @@ onMounted(loadAll)
           </div>
         </template>
         <template #header-extra>
-          <n-radio-group v-model:value="trendDays" size="small" @update:value="loadDaily">
+          <n-radio-group v-model:value="trendDays" size="small" @update:value="() => loadDaily()">
             <n-radio-button :value="7">7 天</n-radio-button>
             <n-radio-button :value="14">14 天</n-radio-button>
             <n-radio-button :value="30">30 天</n-radio-button>
@@ -356,7 +401,20 @@ onMounted(loadAll)
 
     <n-card title="请求明细" class="panel">
       <template #header-extra>
-        <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
+        <div class="records-toolbar">
+          <n-select
+            class="model-filter"
+            :value="modelFilter"
+            size="small"
+            clearable
+            filterable
+            placeholder="按模型筛选"
+            :options="modelOptions"
+            :consistent-menu-width="false"
+            @update:value="(v: string | null) => onModelFilterChange(v)"
+          />
+          <span class="toolbar-label">共 {{ formatInt(total) }} 条</span>
+        </div>
       </template>
       <n-data-table
         :bordered="false"
@@ -364,7 +422,7 @@ onMounted(loadAll)
         :data="records"
         :scroll-x="1210"
         remote
-        :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; load() } }"
+        :pagination="{ page: page, pageSize, itemCount: total, onChange: (p: number) => { page = p; loadRecords() } }"
       />
     </n-card>
   </div>
@@ -466,5 +524,14 @@ onMounted(loadAll)
   text-align: center;
   color: var(--text-4);
   font-size: 13px;
+}
+/* 请求明细头部：模型筛选 + 条数 */
+.records-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.model-filter {
+  width: 190px;
 }
 </style>

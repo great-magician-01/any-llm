@@ -63,7 +63,7 @@ func TestInsertUsageAndSummary(t *testing.T) {
 	}
 
 	// duration_ms 随记录读出
-	records, _, err := UsageRecordsList(d, 1, 10)
+	records, _, err := UsageRecordsList(d, 1, 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,19 +260,108 @@ func TestUsageRecordsList(t *testing.T) {
 			InFormat: "openai", UpFormat: "openai", TotalTokens: i + 1, Status: "ok",
 		})
 	}
-	records, total, err := UsageRecordsList(d, 1, 3)
+	for i := 0; i < 3; i++ {
+		InsertUsage(d, &UsageRecord{
+			UpstreamID: &uid, UpstreamName: "u", Model: "other",
+			InFormat: "openai", UpFormat: "openai", TotalTokens: i + 1, Status: "ok",
+		})
+	}
+	records, total, err := UsageRecordsList(d, 1, 3, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 5 {
-		t.Fatalf("total=%d want 5", total)
+	if total != 8 {
+		t.Fatalf("total=%d want 8", total)
 	}
 	if len(records) != 3 {
 		t.Fatalf("page len=%d want 3", len(records))
 	}
-	records2, _, _ := UsageRecordsList(d, 2, 3)
-	if len(records2) != 2 {
-		t.Fatalf("page 2 len=%d want 2", len(records2))
+	records2, _, _ := UsageRecordsList(d, 2, 3, "")
+	if len(records2) != 3 {
+		t.Fatalf("page 2 len=%d want 3", len(records2))
+	}
+}
+
+// TestUsageRecordsListModelFilter 按模型筛选请求明细：count 与 list 共用同一
+// WHERE 条件——total 反映筛选后的行数（前端分页靠它翻页），不筛时回到全量。
+func TestUsageRecordsListModelFilter(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	for i := 0; i < 5; i++ {
+		InsertUsage(d, &UsageRecord{
+			UpstreamID: &uid, UpstreamName: "u", Model: "m",
+			InFormat: "openai", UpFormat: "openai", TotalTokens: i + 1, Status: "ok",
+		})
+	}
+	for i := 0; i < 2; i++ {
+		InsertUsage(d, &UsageRecord{
+			UpstreamID: &uid, UpstreamName: "u", Model: "other",
+			InFormat: "openai", UpFormat: "openai", TotalTokens: i + 1, Status: "ok",
+		})
+	}
+	records, total, err := UsageRecordsList(d, 1, 10, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 {
+		t.Fatalf("filtered total=%d want 5", total)
+	}
+	if len(records) != 5 {
+		t.Fatalf("filtered len=%d want 5", len(records))
+	}
+	for _, r := range records {
+		if r.Model != "m" {
+			t.Fatalf("filtered row has model %q, want m", r.Model)
+		}
+	}
+	// 分页在筛选后的结果上进行
+	page2, total2, _ := UsageRecordsList(d, 2, 3, "m")
+	if total2 != 5 || len(page2) != 2 {
+		t.Fatalf("filtered page 2: total=%d len=%d want 5/2", total2, len(page2))
+	}
+	// 不存在的模型返回空列表而不是错误
+	none, totalNone, err := UsageRecordsList(d, 1, 10, "missing")
+	if err != nil || totalNone != 0 || len(none) != 0 {
+		t.Fatalf("missing model: err=%v total=%d len=%d", err, totalNone, len(none))
+	}
+	// 空字符串 = 不过滤，与无参调用一致
+	all, totalAll, err := UsageRecordsList(d, 1, 10, "")
+	if err != nil || totalAll != 7 || len(all) != 7 {
+		t.Fatalf("empty model: err=%v total=%d len=%d want nil/7/7", err, totalAll, len(all))
+	}
+}
+
+// TestUsageModels 模型筛选下拉框的选项：usage_records 里出现过的模型去重
+// 有序返回（含历史模型——旧记录也要能被筛出来）。
+func TestUsageModels(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	for _, m := range []string{"b-model", "a-model", "b-model", "c-model"} {
+		if err := InsertUsage(d, &UsageRecord{
+			UpstreamID: &uid, UpstreamName: "u", Model: m,
+			InFormat: "openai", UpFormat: "openai", TotalTokens: 1, Status: "ok",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	models, err := UsageModels(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a-model", "b-model", "c-model"}
+	if len(models) != len(want) {
+		t.Fatalf("models=%v want %v", models, want)
+	}
+	for i := range want {
+		if models[i] != want[i] {
+			t.Fatalf("models=%v want %v", models, want)
+		}
+	}
+	// 空库返回空列表而不是错误
+	d2 := testDB(t)
+	empty, err := UsageModels(d2)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty db: err=%v models=%v", err, empty)
 	}
 }
 

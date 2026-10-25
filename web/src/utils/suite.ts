@@ -1,4 +1,21 @@
 /**
+ * 当前路由是否落在玻璃套件（/glass 前缀）。共享视图据此生成对侧感知的
+ * 路径——视图只有一份，同一页面在两套 URL 树下要跳到各自树内的目标。
+ */
+export function isGlassPath(path: string): boolean {
+  return path.startsWith('/glass')
+}
+
+/**
+ * 把经典侧路径（以 / 开头）换算成当前套件的对应路径：
+ * classic 下原样返回，glass 下加 /glass 前缀。
+ * 例：suitePath('/glass/login', '/dashboard') === '/glass/dashboard'。
+ */
+export function suitePath(path: string, target: string): string {
+  return isGlassPath(path) ? `/glass${target}` : target
+}
+
+/**
  * 经典版与液态玻璃版路由一一对应：/x ↔ /glass/x（配对关系由
  * router.navigation.test.ts 保障）。切换套件时跳到当前页面在对侧的
  * 对应页面而不是对侧首页，并保留 query——登录页互切时连 ?redirect=

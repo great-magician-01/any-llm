@@ -54,7 +54,8 @@ func extractConversationID(r *http.Request, irReq *translate.Request, prevRespID
 		out.sessionID = "hdr:" + v
 	}
 	if len(out.sessionID) > sessionIDMaxLen {
-		out.sessionID = out.sessionID[:sessionIDMaxLen]
+		// 头值可能含多字节字符，按字节切会切断 rune 并写入非法 UTF-8。
+		out.sessionID = cutUTF8(out.sessionID, sessionIDMaxLen)
 	}
 	return out
 }

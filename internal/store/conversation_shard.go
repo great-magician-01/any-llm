@@ -200,21 +200,14 @@ func (r *shardRegistry) ensure(d *sql.DB, t time.Time) error {
 }
 
 // ---------------------------------------------------------------------------
-// conversation_records 的对外包装（保持既有签名，测试与 main.go 不动）
+// conversation_records 的对外包装
 // ---------------------------------------------------------------------------
-
-// convShardNameRe 校验月分表名。来自 catalog 或自身生成的表名必须过此
-// 白名单才允许拼进动态 SQL，杜绝注入面。
-var convShardNameRe = convShards.nameRe
 
 // ConvShardName 返回 t 所属月份的分表名（本地时区，与全项目墙钟约定一致）。
 func ConvShardName(t time.Time) string { return convShards.shardName(t) }
 
 // convMonthKey 返回注册缓存用的月份键（"2006-01"）。
 func convMonthKey(t time.Time) string { return convShards.monthKey(t) }
-
-// convShardNameToKey 把表名转回月份键；调用前需已过 convShardNameRe。
-func convShardNameToKey(name string) string { return convShards.nameToKey(name) }
 
 // LoadConvShards 从 catalog 全量重载分表注册缓存。由启动流程调用，可重复调用
 // （每次重载）—— e2e 测试用它做 schema 隔离。
@@ -225,13 +218,6 @@ func convShardSnapshot(d *sql.DB) ([]string, error) { return convShards.snapshot
 
 // convShardForMonth 查月份键对应的分表名。
 func convShardForMonth(key string) (string, bool) { return convShards.forMonth(key) }
-
-// registerConvShard 把新分表注册进缓存，保持 months 新→旧有序。幂等。
-func registerConvShard(key, name string) { convShards.register(key, name) }
-
-// convShardDDL 生成一张月分表的完整 DDL（共享序列 + 建表 + 索引）。
-// 表名必须已过 convShardNameRe 白名单。
-func convShardDDL(d db.Dialect, name string) ([]string, error) { return convShards.ddl(d, name) }
 
 // EnsureConversationShard 确保 t 所属月份的分表存在并注册进缓存。幂等。
 // 由启动流程（预建当月）与写入路径（缺表兜底）触发，跨月自愈，无需定时任务。
@@ -256,6 +242,35 @@ func EnsureSessionShard(d *sql.DB, t time.Time) error { return sessShards.ensure
 // ---------------------------------------------------------------------------
 // 跨分表分页（两组分表共用）
 // ---------------------------------------------------------------------------
+
+// pageAcrossShards 是跨分表分页的公共管线：各分表行数（一条 UNION ALL）→
+// 全局页映射为各分表窗口 → 只查命中的分表、按新→旧拼接。对话记录
+// （ConversationRecordsList）与会话聚合（ConversationSessionsList）共用，
+// 差异只在「取单张分表一页」的查询本身。
+func pageAcrossShards[T any](d *sql.DB, shards []string, page, size int, listFrom func(table string, limit, offset int) ([]T, error)) ([]T, int, error) {
+	if len(shards) == 0 {
+		return []T{}, 0, nil
+	}
+	countBy, err := countConversationsByShard(d, shards)
+	if err != nil {
+		return nil, 0, err
+	}
+	counts := make([]int, len(shards))
+	total := 0
+	for i, t := range shards {
+		counts[i] = countBy[t]
+		total += counts[i]
+	}
+	out := make([]T, 0, size)
+	for _, w := range convPageWindows(counts, (page-1)*size, size) {
+		rows, err := listFrom(shards[w.shard], w.limit, w.offset)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, rows...)
+	}
+	return out, total, nil
+}
 
 // convWindow 描述一页结果在某张分表上的截取范围。
 type convWindow struct {

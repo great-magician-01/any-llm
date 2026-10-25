@@ -671,3 +671,357 @@ func TestExportConfig_ExpiresAt(t *testing.T) {
 		t.Fatalf("permanent expires_at=%v, want null", v)
 	}
 }
+
+// TestConfigExportImport_ExtraEndpoints 盯住 extra_endpoints 的配置文件语义：
+// 导出带出（没有该字段的上游也显式导出空数组）；导入新建写入、字段缺席保留
+// 现值（旧版导出文件没有该字段）、显式空数组清空、非法值整体 400。
+func TestConfigExportImport_ExtraEndpoints(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+	store.CreateUpstream(d, &store.Upstream{Name: "plain", BaseURL: "https://p", APIKey: "k", Format: "openai"})
+
+	// 导出带出
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	eps, ok := out.Upstreams[0]["extra_endpoints"].([]any)
+	if !ok || len(eps) != 1 {
+		t.Fatalf("exported extra_endpoints=%v", out.Upstreams[0]["extra_endpoints"])
+	}
+	ep := eps[0].(map[string]any)
+	if ep["format"] != "anthropic" || ep["base_url"] != "https://x/anthropic" {
+		t.Fatalf("exported endpoint=%v", ep)
+	}
+	// 无附加端点的上游也必须显式导出空数组：缺省在导入侧是「保留现值」，
+	// 不写该键的导出文件永远无法清空目标实例上的附加端点（有损往返）。
+	v, ok := out.Upstreams[1]["extra_endpoints"]
+	if !ok {
+		t.Fatalf("extra_endpoints key missing for plain upstream: %v", out.Upstreams[1])
+	}
+	if eps, ok := v.([]any); !ok || len(eps) != 0 {
+		t.Fatalf("plain upstream extra_endpoints=%v, want []", v)
+	}
+
+	// 字段缺席 → 保留现值（模拟旧版导出文件再导入）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai"},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 1 {
+		t.Fatalf("absent field must preserve extras: %+v", got.ExtraEndpoints)
+	}
+
+	// 显式空数组 → 清空
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai", "extra_endpoints": []map[string]any{}},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("explicit empty should clear: %+v", got.ExtraEndpoints)
+	}
+
+	// 非法值（与主格式撞车）→ 整体 400，不写库
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai",
+			"extra_endpoints": []map[string]any{{"format": "openai", "base_url": "https://y"}}},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("invalid import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	// 被拒的写入与现态的差异字段是 extra_endpoints（上一步已清空，被拒文件
+	// 要带一条撞车端点）：必须断言它仍为空——断言 api_key 是空话，被拒文件
+	// 里的 api_key 与现值本来就是同一个。
+	if got, _ := store.GetUpstreamByID(d, id); len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("rejected import should not have landed: %+v", got)
+	}
+}
+
+// TestConfigExportImport_Tag 盯住标记在配置传输里的往返：导出无条件写出
+// （与 extra_endpoints 同理——缺省在导入侧是「保留」，不写该键的导出文件永远
+// 改不了目标实例上的标记）；导入字段缺席保留现值（旧版导出文件没有该字段）、
+// 显式空串回默认官方、非法值整体 400。
+func TestConfigExportImport_Tag(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai", Tag: store.TagRelay,
+	})
+	store.CreateUpstream(d, &store.Upstream{Name: "plain", BaseURL: "https://p", APIKey: "k", Format: "openai"})
+
+	// 导出带出（不给标记的上游也要写，值就是默认官方）
+	w := getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out configExport
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := out.Upstreams[0]["tag"]; !ok || v != store.TagRelay {
+		t.Fatalf("exported tag=%v (present=%v)", v, ok)
+	}
+	if v, ok := out.Upstreams[1]["tag"]; !ok || v != store.TagOfficial {
+		t.Fatalf("plain upstream tag=%v, want %q", v, store.TagOfficial)
+	}
+
+	// 字段缺席 → 保留现值（模拟旧版导出文件再导入）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai"},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Tag != store.TagRelay {
+		t.Fatalf("absent tag must be preserved: %q", got.Tag)
+	}
+
+	// 文件显式给出官方 → 覆盖
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k2", "format": "openai", "tag": store.TagOfficial},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("set import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Tag != store.TagOfficial {
+		t.Fatalf("tag=%q, want %q", got.Tag, store.TagOfficial)
+	}
+
+	// 显式空串 → 清回默认官方
+	if _, err := store.CreateUpstream(d, &store.Upstream{Name: "r2", BaseURL: "https://p", APIKey: "k", Format: "openai", Tag: store.TagRelay}); err != nil {
+		t.Fatal(err)
+	}
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "r2", "base_url": "https://p", "api_key": "k", "format": "openai", "tag": ""},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByName(d, "r2"); got.Tag != store.TagOfficial {
+		t.Fatalf("explicit empty tag=%q, want %q", got.Tag, store.TagOfficial)
+	}
+
+	// 非法值 → 整体 400，不写库（同文件前一个合法条目也不得落地）
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "zzz", "base_url": "https://z", "api_key": "kz", "format": "openai"},
+		{"name": "ds", "base_url": "https://x/v1", "api_key": "k3", "format": "openai", "tag": "official-x"},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("invalid tag import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.APIKey != "k2" {
+		t.Fatalf("rejected import should not have landed: %+v", got)
+	}
+	if _, err := store.GetUpstreamByName(d, "zzz"); err == nil {
+		t.Fatal("earlier valid upstream must not have landed either")
+	}
+}
+
+// TestConfigImport_MergedFormatConflict 盯住合并校验缺口：文件改了主格式但
+// 缺省 extra_endpoints（= 保留库中现值）时，保留的附加端点可能与新主格式
+// 撞车（同一格式两个 URL）。validateImport 是纯文件校验看不到库，必须由导入
+// 路径在任何写入前按合并口径整体拒绝——否则写进库的冲突行连「只改 enabled」
+// 的 PATCH 都会被 updateUpstream 的合并校验拒绝，行无法禁用。
+func TestConfigImport_MergedFormatConflict(t *testing.T) {
+	a, d := setupAPI(t)
+	id, _ := store.CreateUpstream(d, &store.Upstream{
+		Name: "ds", BaseURL: "https://x/v1", APIKey: "k", Format: "openai",
+		ExtraEndpoints: []store.UpstreamEndpoint{{Format: "anthropic", BaseURL: "https://x/anthropic"}},
+	})
+
+	// 撞车文件：ds 改主格式为 anthropic 且缺省 extra_endpoints → 保留的
+	// anthropic 附加端点与新主格式撞车。同文件前面夹一个合法新上游，验证
+	// 整体拒绝（不留半导入状态）。
+	w := postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "zzz", "base_url": "https://z", "api_key": "kz", "format": "openai"},
+		{"name": "ds", "base_url": "https://new", "api_key": "k2", "format": "anthropic"},
+	}})
+	if w.Code != 400 {
+		t.Fatalf("merged-conflict import status=%d want 400, body=%s", w.Code, w.Body.String())
+	}
+	got, err := store.GetUpstreamByID(d, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != "openai" || got.BaseURL != "https://x/v1" || got.APIKey != "k" || len(got.ExtraEndpoints) != 1 {
+		t.Fatalf("rejected row mutated: %+v", got)
+	}
+	if _, err := store.GetUpstreamByName(d, "zzz"); err == nil {
+		t.Fatal("earlier valid upstream must not have landed either")
+	}
+
+	// 显式清空附加端点（或给出不撞车的新列表）即可正常换主格式：不阻塞合法导入。
+	w = postConfig(t, a, "/api/admin/config/import", map[string]any{"upstreams": []map[string]any{
+		{"name": "ds", "base_url": "https://new", "api_key": "k2", "format": "anthropic", "extra_endpoints": []map[string]any{}},
+	}})
+	if w.Code != 200 {
+		t.Fatalf("explicit-clear import status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := store.GetUpstreamByID(d, id); got.Format != "anthropic" || len(got.ExtraEndpoints) != 0 {
+		t.Fatalf("after explicit clear: %+v", got)
+	}
+}
+
+// TestImportConfig_DuplicateNameRoundTrip 新口径的核心保障：禁用行可与启用行
+// 同名（应用层判定），导出文件因此可能同名多行——导入必须按 enabled 状态配对
+// 落行、重导收敛、再导出与原文件一致（完整往返无损）。
+func TestImportConfig_DuplicateNameRoundTrip(t *testing.T) {
+	a1, d1 := setupAPI(t)
+	enabledID, _ := store.CreateUpstream(d1, &store.Upstream{Name: "app", BaseURL: "https://new.example.com", APIKey: "sk-new", Format: "anthropic"})
+	store.AddModel(d1, enabledID, store.UpstreamModel{ModelName: "chat", Manual: true, ContextLength: 128000})
+	disabledID, err := store.CreateUpstreamDisabled(d1, &store.Upstream{Name: "app", BaseURL: "https://old.example.com", APIKey: "sk-old", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AddModel(d1, disabledID, store.UpstreamModel{ModelName: "legacy", ContextLength: 8000})
+	store.CreateAlias(d1, &store.ModelAlias{Name: "app-alias", Bindings: []store.AliasBinding{{UpstreamID: enabledID, ModelName: "chat"}}})
+
+	w := getConfig(t, a1, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d", w.Code)
+	}
+	var payload map[string]any
+	json.Unmarshal(w.Body.Bytes(), &payload)
+
+	// 导入到全新实例：两个同名条目都要落行
+	a2, d2 := setupAPI(t)
+	w = postConfig(t, a2, "/api/admin/config/import", payload)
+	if w.Code != 200 {
+		t.Fatalf("import status=%d body=%s", w.Code, w.Body.String())
+	}
+	var res importResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.UpstreamsCreated != 2 {
+		t.Fatalf("counts=%+v, want 2 created", res)
+	}
+	rows, err := store.ListUpstreamsByName(d2, "app")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%d err=%v, want 2", len(rows), err)
+	}
+	if !rows[0].Enabled || rows[0].BaseURL != "https://new.example.com" {
+		t.Fatalf("enabled row wrong: %+v", rows[0])
+	}
+	if rows[1].Enabled || rows[1].BaseURL != "https://old.example.com" {
+		t.Fatalf("disabled row wrong: %+v", rows[1])
+	}
+	// 别名绑定挂到启用行（按网关同款口径解析）
+	al, err := store.GetAliasByName(d2, "app-alias")
+	if err != nil || len(al.Bindings) != 1 || al.Bindings[0].UpstreamID != rows[0].ID {
+		t.Fatalf("alias=%+v err=%v", al, err)
+	}
+	// 绑定的模型列表也按条目归位：启用行带 chat，禁用行带 legacy
+	ms, _ := store.ListModels(d2, rows[0].ID)
+	if len(ms) != 1 || ms[0].ModelName != "chat" {
+		t.Fatalf("enabled row models=%+v", ms)
+	}
+	ms, _ = store.ListModels(d2, rows[1].ID)
+	if len(ms) != 1 || ms[0].ModelName != "legacy" {
+		t.Fatalf("disabled row models=%+v", ms)
+	}
+
+	// 重导同一文件：全部转为更新（收敛，不重复建行）
+	w = postConfig(t, a2, "/api/admin/config/import", payload)
+	if w.Code != 200 {
+		t.Fatalf("re-import status=%d body=%s", w.Code, w.Body.String())
+	}
+	res = importResult{}
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.UpstreamsCreated != 0 || res.UpstreamsUpdated != 2 {
+		t.Fatalf("re-import counts=%+v, want 0 created / 2 updated", res)
+	}
+	rows2, _ := store.ListUpstreamsByName(d2, "app")
+	if len(rows2) != 2 || rows2[0].ID != rows[0].ID || rows2[1].ID != rows[1].ID {
+		t.Fatalf("re-import changed row identity: %+v vs %+v", rows2, rows)
+	}
+
+	// 再导出必须与原文件一致（去掉 exported_at）
+	payload["exported_at"] = ""
+	w = getConfig(t, a2, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("re-export status=%d", w.Code)
+	}
+	var out map[string]any
+	json.Unmarshal(w.Body.Bytes(), &out)
+	out["exported_at"] = ""
+	if fmt.Sprint(out) != fmt.Sprint(payload) {
+		t.Fatalf("round trip mismatch:\nwant=%s\ngot=%s", fmt.Sprint(payload), fmt.Sprint(out))
+	}
+}
+
+// TestImportConfig_DuplicateNameValidation 手写文件的重名条目形态校验：
+// 两个启用条目整体拒绝；缺显式 enabled 的重名组整体拒绝；两个禁用条目放行
+// （按状态配对落行）。
+func TestImportConfig_DuplicateNameValidation(t *testing.T) {
+	t.Run("two enabled entries rejected", func(t *testing.T) {
+		a, _ := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": true},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "openai", "enabled": true},
+			},
+		})
+		if w.Code != 400 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("missing explicit enabled rejected", func(t *testing.T) {
+		a, _ := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": true},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "openai"},
+			},
+		})
+		if w.Code != 400 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("two disabled entries accepted", func(t *testing.T) {
+		a, d := setupAPI(t)
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "dup", "base_url": "https://x", "api_key": "k", "format": "openai", "enabled": false},
+				{"name": "dup", "base_url": "https://y", "api_key": "k2", "format": "anthropic", "enabled": false},
+			},
+		})
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		rows, err := store.ListUpstreamsByName(d, "dup")
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("rows=%d err=%v, want 2 disabled rows", len(rows), err)
+		}
+		for _, r := range rows {
+			if r.Enabled {
+				t.Fatalf("row must be disabled: %+v", r)
+			}
+		}
+	})
+	t.Run("single enabled entry disables existing same-name row", func(t *testing.T) {
+		a, d := setupAPI(t)
+		// 库里的启用行被文件的显式 enabled=false 覆盖（同名覆盖的历史语义保留）
+		store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://old", APIKey: "k", Format: "openai"})
+		w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+			"upstreams": []map[string]any{
+				{"name": "u", "base_url": "https://new", "api_key": "k2", "format": "anthropic", "enabled": false},
+			},
+		})
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		u, err := store.GetUpstreamByName(d, "u")
+		if err != nil || u.Enabled || u.BaseURL != "https://new" {
+			t.Fatalf("u=%+v err=%v", u, err)
+		}
+	})
+}

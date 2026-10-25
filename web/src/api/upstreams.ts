@@ -1,9 +1,20 @@
 import client from './client'
 
+export interface UpstreamEndpoint {
+  format: string
+  base_url: string
+}
+
 export interface Upstream {
   id?: number; name: string; base_url: string; api_key: string; format: string
+  /** 附加格式端点（选填）：其余格式的原生入口；网关按入站 endpoint 命中后原生
+   * 直通，未命中走主格式（base_url/format）转译。空 = 单格式上游。 */
+  extra_endpoints?: UpstreamEndpoint[]
   /** 选填备注，仅管理端元数据（列表展示/配置导出用），网关路由与转发不读它 */
   remark?: string
+  /** 上游标记：official = 官方源站，relay = 中转站。缺省/未知值按默认的官方处理，
+   * 编辑时可改（显式空串 = 清回默认）。与 remark 同地位：仅管理端元数据。 */
+  tag?: string
   enabled: boolean
   daily_token_limit: number; monthly_token_limit: number
   max_concurrent: number
@@ -93,7 +104,9 @@ export async function deleteModel(upstreamId: number, modelId: number) {
   await client.delete(`/upstreams/${upstreamId}/models/${modelId}`)
 }
 
-export interface UsageTotals { daily_tokens: number; monthly_tokens: number }
+import type { UsageTotals } from './types'
+
+export type { UsageTotals }
 
 export async function getUpstreamUsage(id: number) {
   const { data } = await client.get(`/usage/upstream/${id}`)

@@ -153,6 +153,22 @@ func blocksToText(blocks []translate.ContentBlock) string {
 	return s
 }
 
+// usageMap 构造 Responses usage 对象；非流式响应与流式 response.completed
+// 共用同一口径（total 与 cached/reasoning 明细）。
+func usageMap(u translate.Usage) map[string]any {
+	usage := map[string]any{
+		"input_tokens": u.InputTokens, "output_tokens": u.OutputTokens,
+		"total_tokens": u.InputTokens + u.OutputTokens,
+	}
+	if u.CacheReadTokens > 0 {
+		usage["input_tokens_details"] = map[string]any{"cached_tokens": u.CacheReadTokens}
+	}
+	if u.ReasoningTokens > 0 {
+		usage["output_tokens_details"] = map[string]any{"reasoning_tokens": u.ReasoningTokens}
+	}
+	return usage
+}
+
 // NewID 生成客户端可见的响应 id，也是会话存储的 key。
 func NewID() string {
 	return "resp_" + randHex(16)
@@ -163,6 +179,18 @@ func randHex(n int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// Responses 的 item id 前缀：规范要求 item id 带类型专属前缀，且流式后续
+// delta 帧按前缀与 item 类型匹配（见 stream.go 的 ensureKind 注释）。
+// 集中定义防止散写字面量时前缀与 kind 拼错。
+const (
+	itemIDMessage      = "msg_"
+	itemIDReasoning    = "rs_"
+	itemIDFunctionCall = "fc_"
+)
+
+// newItemID 生成带类型前缀的 item id（非流式与流式两条编码路径共用）。
+func newItemID(prefix string) string { return prefix + randHex(8) }
 
 func EncodeResponse(resp *translate.Response) ([]byte, error) {
 	if resp.ID == "" {
@@ -183,18 +211,18 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 				}
 			}
 			out = append(out, map[string]any{
-				"type": "message", "id": "msg_" + randHex(8), "status": "completed", "role": "assistant",
+				"type": "message", "id": newItemID(itemIDMessage), "status": "completed", "role": "assistant",
 				"content": []any{map[string]any{"type": "output_text", "text": b.Text, "annotations": []any{}}},
 			})
 		case "thinking":
 			out = append(out, map[string]any{
-				"type": "reasoning", "id": "rs_" + randHex(8),
+				"type": "reasoning", "id": newItemID(itemIDReasoning),
 				"summary": []any{map[string]any{"type": "summary_text", "text": b.Thinking}},
 				"content": []any{},
 			})
 		case "tool_use":
 			out = append(out, map[string]any{
-				"type": "function_call", "id": "fc_" + randHex(8),
+				"type": "function_call", "id": newItemID(itemIDFunctionCall),
 				"call_id": b.ToolUse.ID, "name": b.ToolUse.Name,
 				"arguments": string(b.ToolUse.Input),
 			})
@@ -214,18 +242,7 @@ func EncodeResponse(resp *translate.Response) ([]byte, error) {
 		obj["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
 	}
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-		usage := map[string]any{
-			"input_tokens":  resp.Usage.InputTokens,
-			"output_tokens": resp.Usage.OutputTokens,
-			"total_tokens":  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		}
-		if resp.Usage.CacheReadTokens > 0 {
-			usage["input_tokens_details"] = map[string]any{"cached_tokens": resp.Usage.CacheReadTokens}
-		}
-		if resp.Usage.ReasoningTokens > 0 {
-			usage["output_tokens_details"] = map[string]any{"reasoning_tokens": resp.Usage.ReasoningTokens}
-		}
-		obj["usage"] = usage
+		obj["usage"] = usageMap(resp.Usage)
 	}
 	b, err := json.Marshal(obj)
 	if err != nil {

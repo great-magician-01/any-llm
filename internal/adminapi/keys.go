@@ -87,11 +87,15 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logger.Info("admin: key created", "id", k.ID, "label", k.Label, "enabled", k.Enabled)
-	writeJSON(w, 200, map[string]any{
-		"id": k.ID, "key": k.Key, "label": k.Label, "remark": k.Remark, "enabled": k.Enabled,
-		"daily_token_limit": k.DailyTokenLimit, "monthly_token_limit": k.MonthlyTokenLimit,
-		"allowed_models": k.AllowedModels,
-	})
+	// 回读整行返回（created_at/last_used_at 只有库里有）：与 updateKey/createUpstream
+	// 的「返回完整结构」口径一致，前端不必为创建结果特判字段。
+	full, err := store.GetExtKeyByID(a.db, k.ID)
+	if err != nil {
+		logger.Error("admin: reload created key failed", "id", k.ID, "err", err)
+		writeJSON(w, 500, map[string]any{"error": "key created but reload failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, 200, full)
 }
 
 // deleteKey serves DELETE /api/admin/keys/{id}.

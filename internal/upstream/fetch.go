@@ -28,22 +28,19 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		// 错误 body 的读取错误可忽略：即使中途读失败，已读到的前缀仍用于日志与文案。
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBody))
 		logger.Error("fetch models: upstream error",
 			"url", req.URL.String(),
 			"upstream", u.Name,
 			"status", resp.StatusCode,
-			"body", truncateFetch(string(body), 512),
+			"body", truncateLog(string(body), logErrorBodyCap),
 		)
 		// Truncate in the returned error too: admin handlers relay it into
 		// the JSON response, where a full vendor error page (HTML) is noise.
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateFetch(string(body), 512))
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncateLog(string(body), logErrorBodyCap))
 	}
-	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
+	var result modelsListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		logger.Error("fetch models: decode failed", "url", req.URL.String(), "upstream", u.Name, "err", err)
 		return nil, fmt.Errorf("decode models response: %w", err)
@@ -56,11 +53,19 @@ func FetchModels(ctx context.Context, httpClient *http.Client, u *store.Upstream
 	return out, nil
 }
 
+// modelsListResponse 是 /models 响应体的最小解码视图：FetchModels 与连通性
+// 测试（test.go）观测的是同一个端点，共用一套字段定义。
+type modelsListResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
 // newAuthedModelsRequest 构造 GET {base}/models 请求并按上游格式带认证头，
 // FetchModels 与连通性测试（test.go）共用。
 func newAuthedModelsRequest(ctx context.Context, u *store.Upstream) (*http.Request, error) {
-	url := endpointURL(u, "/models")
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	target := endpointURL(u, "/models")
+	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create fetch request: %w", err)
 	}
@@ -79,10 +84,3 @@ func newAuthedModelsRequest(ctx context.Context, u *store.Upstream) (*http.Reque
 // maxFetchBody caps how many bytes of an upstream GET response (models list,
 // balance/quota payload) we read into memory.
 const maxFetchBody = 1 << 20 // 1 MiB
-
-func truncateFetch(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "...(truncated)"
-}
