@@ -13,7 +13,7 @@ withDefaults(defineProps<{ size?: number }>(), { size: 32 })
   >
     <defs>
       <linearGradient id="brand-bg" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-        <!-- 渐变端点走品牌变量：跟随配色主题（data-accent）换肤 -->
+        <!-- 渐变端点走品牌变量：跟随界面主题（data-theme）换肤 -->
         <stop offset="0" style="stop-color: var(--brand)" />
         <stop offset="1" style="stop-color: var(--brand-2)" />
       </linearGradient>

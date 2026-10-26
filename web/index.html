@@ -7,28 +7,29 @@
     <title>any-llm 管理后台</title>
     <script>
       // 必须在首帧绘制前定好主题，否则会先按 :root 的暗色画一帧再跳到浅色（闪屏）。
-      // 解析顺序与 src/composables/useTheme.ts 保持一致（内联脚本无法 import 模块）。
+      // 解析顺序与 src/composables/useTheme.ts 保持一致（内联脚本无法 import 模块）：
+      // 已选主题 > 旧版配色记录（EVA 配色迁移成同名主题）> 系统深/浅偏好。
+      // 合法值清单与 src/utils/themes.ts 的 THEME_IDS 保持一致。
       ;(function () {
-        var mode = null
+        var ids = ['dark', 'light', 'eva-01', 'eva-02', 'eva-00']
+        var theme = null
         try {
           var v = localStorage.getItem('any-llm-theme')
-          if (v === 'light' || v === 'dark') mode = v
+          if (ids.indexOf(v) >= 0) theme = v
         } catch (e) {}
-        if (!mode) {
-          mode =
+        if (!theme) {
+          try {
+            var a = localStorage.getItem('any-llm-accent')
+            if (a === 'eva-01' || a === 'eva-02' || a === 'eva-00') theme = a
+          } catch (e) {}
+        }
+        if (!theme) {
+          theme =
             window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
               ? 'light'
               : 'dark'
         }
-        document.documentElement.dataset.theme = mode
-        // 配色（accent）没有系统偏好可跟随，读不到就落默认蓝。
-        // 合法值清单与 src/utils/accents.ts 的 ACCENT_IDS 保持一致。
-        var accent = null
-        try {
-          var a = localStorage.getItem('any-llm-accent')
-          if (a === 'default' || a === 'eva-01' || a === 'eva-02' || a === 'eva-00') accent = a
-        } catch (e) {}
-        document.documentElement.dataset.accent = accent || 'default'
+        document.documentElement.dataset.theme = theme
       })()
     </script>
   </head>

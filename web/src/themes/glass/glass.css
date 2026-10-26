@@ -317,13 +317,14 @@ body.glass-mode .n-cascader-menu {
 }
 
 /*
- * ---- 配色主题（accent）：只换品牌衍生变量，表面材质（玻璃填充 / 模糊）不变 ----
- * 取值与 src/utils/accents.ts 的 ACCENTS 保持同步（accents.test.ts 把关）。
- * EVA 配色的 CSS 值与经典版共用一组（default 的玻璃蓝是 glass 特调，见 .glass-root）。
- * 顺序约定同 style.css：暗色值在前，浅色组合选择器跟在后面。
+ * ---- 机体主题（初号机 / 明日香 / 凌波丽）：整套换肤 ----
+ * 品牌色、流光背景、光斑与主按钮渐变一起换；表面材质（玻璃填充 / 模糊）不变。
+ * 取值与 src/utils/themes.ts 的 THEMES 保持同步（themes.test.ts 把关）。
+ * 默认蓝的玻璃蓝是 glass 特调（见 .glass-root），机体主题与经典版共用一组值。
+ * 三个机体主题都是暗色皮肤，没有 data-theme='light' 的组合块。
  */
 
-:root[data-accent='eva-01'] .glass-root {
+:root[data-theme='eva-01'] .glass-root {
   --brand: #9b6dff;
   --brand-2: #a3e635;
   --brand-hover: #b58cff;
@@ -342,16 +343,8 @@ body.glass-mode .n-cascader-menu {
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(155, 109, 255, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
 }
-:root[data-theme='light'][data-accent='eva-01'] .glass-root {
-  --brand-hover: #6d28d9;
-  --grad: linear-gradient(135deg, #9b6dff 0%, #84cc16 100%);
-  --glass-bg-base: linear-gradient(160deg, #f1edfb 0%, #eeeffc 45%, #eef4f0 100%);
-  --shadow-hover:
-    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(155, 109, 255, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
 
-:root[data-accent='eva-02'] .glass-root {
+:root[data-theme='eva-02'] .glass-root {
   --brand: #ef4444;
   --brand-2: #fb923c;
   --brand-hover: #f87171;
@@ -370,15 +363,8 @@ body.glass-mode .n-cascader-menu {
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(239, 68, 68, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
 }
-:root[data-theme='light'][data-accent='eva-02'] .glass-root {
-  --brand-hover: #dc2626;
-  --glass-bg-base: linear-gradient(160deg, #fbf0ef 0%, #fbf1f1 45%, #f9f2ee 100%);
-  --shadow-hover:
-    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(239, 68, 68, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-}
 
-:root[data-accent='eva-00'] .glass-root {
+:root[data-theme='eva-00'] .glass-root {
   --brand: #2f9bdc;
   --brand-2: #fcd34d;
   --brand-hover: #55b5ea;
@@ -396,12 +382,4 @@ body.glass-mode .n-cascader-menu {
   --shadow-hover:
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(56, 168, 232, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
-}
-:root[data-theme='light'][data-accent='eva-00'] .glass-root {
-  --brand-hover: #0369a1;
-  --grad: linear-gradient(135deg, #2f9bdc 0%, #eab308 100%);
-  --glass-bg-base: linear-gradient(160deg, #eef5fb 0%, #edf2fc 45%, #f2f4f7 100%);
-  --shadow-hover:
-    0 18px 44px rgba(15, 23, 42, 0.14), 0 0 26px rgba(56, 168, 232, 0.26),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }

@@ -4,8 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
 import AppIcon, { type IconName } from '@/components/AppIcon.vue'
-import ThemeToggle from '@/components/ThemeToggle.vue'
-import AccentPicker from '@/components/AccentPicker.vue'
+import ThemePicker from '@/components/ThemePicker.vue'
 import { isGlassPath, suitePath, switchSuite } from '@/utils/suite'
 
 const router = useRouter()
@@ -62,8 +61,7 @@ const menuItems = [
         <div class="sider-footer">
           <span class="admin-name">管理员</span>
           <div class="footer-actions">
-            <AccentPicker />
-            <ThemeToggle />
+            <ThemePicker />
             <button class="logout-btn" title="退出登录" aria-label="退出登录" @click="logout">
               <AppIcon name="logout" :size="15" />
             </button>
@@ -136,7 +134,7 @@ const menuItems = [
   align-items: center;
   gap: 4px;
 }
-/* 图标按钮外观对齐 ThemeToggle/AccentPicker（同尺寸同边框），悬停转危险色 */
+/* 图标按钮外观对齐 ThemePicker（同尺寸同边框），悬停转危险色 */
 .logout-btn {
   display: inline-flex;
   align-items: center;
