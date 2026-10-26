@@ -1,16 +1,20 @@
 import type { GlobalThemeOverrides } from 'naive-ui'
-import { accentMenu, accentNaiveOverrides, type AccentId } from '@/utils/accents'
+import { rgba, surfaceOf, themeById, themeNaiveOverrides, type ThemeId } from '@/utils/themes'
 
 /**
- * 全局主题：经典版配色（深空暗色 navy / 浅色冷白），由 App.vue 按
- * useTheme() 的 isDark 与 accent 调 darkThemeOverrides / lightThemeOverrides 取得。
- * 两套仅表面 / 文字 / 边框不同；default 配色的品牌色内置于 commonShared，
- * EVA 配色（初号机 / 明日香 / 凌波丽）的品牌色段由 accents.ts 注入，见 buildCommon。
+ * 全局主题：经典版配色。由 App.vue 按 useTheme() 的 theme 调
+ * darkThemeOverrides / lightThemeOverrides 取得。
+ *
+ * 主题注册表（utils/themes.ts）给了每个主题的品牌色与整套表面色：
+ *   - 默认蓝（深色 / 浅色）不注入品牌覆盖，用本文件内置值；
+ *   - 机体主题（初号机 / 明日香 / 凌波丽）的品牌色段与表面调色板由注册表提供，
+ *     因此选中机体主题时连背景、卡片、浮层、描边一起换。
+ * 浅色只存在于默认蓝主题，表面的浅色值仍写在本文件与 style.css 的 light 块里。
  */
 
 type Common = NonNullable<GlobalThemeOverrides['common']>
 
-/** 两套主题共用的品牌色、圆角与字体——品牌识别不随明暗变化（default 配色专用）。 */
+/** 两套主题共用的品牌识别、圆角与字体（默认蓝的品牌色即下面的 primary 段）。 */
 const commonShared = {
   primaryColor: '#5b8cff',
   primaryColorHover: '#7ba3ff',
@@ -41,51 +45,52 @@ const commonShared = {
   fontFamilyMono: "ui-monospace, 'SF Mono', Consolas, 'Courier New', monospace",
 } satisfies Common
 
-/** common 段：default 用内置值；EVA 配色展开 accents.ts 的品牌色覆盖（明日香含 error 族）。 */
-function buildCommon(accent: AccentId): Common {
-  return { ...commonShared, ...accentNaiveOverrides(accent) }
+/** common 段：默认蓝用内置值；机体主题展开注册表的品牌色覆盖（明日香含 error 族）。 */
+function buildCommon(theme: ThemeId): Common {
+  return { ...commonShared, ...themeNaiveOverrides(theme) }
 }
 
 /**
- * 菜单激活态：default 用经典版内置蓝（glass 侧另有内置），
- * EVA 配色的文字色 / 主色 rgb 由 accents.ts 提供，透明度沿用本套的档位。
+ * 菜单激活态：默认蓝用经典版内置蓝，机体主题的激活文字色 / 主色 rgb 由注册表提供，
+ * 透明度沿用经典版的档位。
  */
-function menuActive(accent: AccentId, isDark: boolean) {
-  const m = accentMenu(accent, isDark ? 'dark' : 'light')
-  const rgb = m ? m.rgb : '91, 140, 255'
+function menuActive(theme: ThemeId, isDark: boolean) {
+  const t = themeById(theme)
+  const rgb = t.primary ? t.rgb : '91, 140, 255'
   return {
-    text: m ? m.active : isDark ? '#8fb0ff' : '#3b6fe0',
+    text: t.primary ? t.menu : isDark ? '#8fb0ff' : '#3b6fe0',
     bg: `rgba(${rgb}, ${isDark ? 0.14 : 0.12})`,
     bgHover: `rgba(${rgb}, ${isDark ? 0.2 : 0.18})`,
   }
 }
 
-export function darkThemeOverrides(accent: AccentId = 'default'): GlobalThemeOverrides {
-  const menu = menuActive(accent, true)
+export function darkThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverrides {
+  const s = surfaceOf(theme)
+  const menu = menuActive(theme, true)
   return {
     common: {
-      ...buildCommon(accent),
+      ...buildCommon(theme),
 
-      bodyColor: '#070b14',
-      cardColor: '#0e1526',
-      modalColor: '#101828',
-      popoverColor: '#141d33',
-      tableColor: '#0e1526',
-      inputColor: '#0a101f',
-      actionColor: '#0e1526',
-      hoverColor: 'rgba(148, 163, 184, 0.08)',
+      bodyColor: s.bg,
+      cardColor: s.card,
+      modalColor: s.modal,
+      popoverColor: s.popover,
+      tableColor: s.card,
+      inputColor: s.input,
+      actionColor: s.card,
+      hoverColor: rgba(s.tint, 0.08),
 
       textColorBase: '#cbd5e1',
       textColor1: '#f1f5f9',
       textColor2: '#cbd5e1',
       textColor3: '#8fa0b8',
       placeholderColor: '#5b6b82',
-      borderColor: 'rgba(148, 163, 184, 0.18)',
-      dividerColor: 'rgba(148, 163, 184, 0.12)',
+      borderColor: rgba(s.tint, 0.18),
+      dividerColor: rgba(s.tint, 0.12),
     },
     Layout: {
-      color: '#070b14',
-      siderColor: '#0a0f1d',
+      color: s.bg,
+      siderColor: s.sider,
     },
     Menu: {
       borderRadius: '10px',
@@ -98,22 +103,22 @@ export function darkThemeOverrides(accent: AccentId = 'default'): GlobalThemeOve
       itemIconColorHover: '#e2e8f0',
       itemIconColorActive: menu.text,
       itemIconColorChildActive: menu.text,
-      itemColorHover: 'rgba(148, 163, 184, 0.06)',
+      itemColorHover: rgba(s.tint, 0.06),
       itemColorActive: menu.bg,
       itemColorActiveHover: menu.bgHover,
     },
     Card: {
-      borderColor: 'rgba(148, 163, 184, 0.1)',
+      borderColor: rgba(s.tint, 0.1),
       borderRadius: '14px',
       titleFontWeight: '600',
       titleFontSizeMedium: '15px',
       paddingMedium: '18px 22px',
     },
     DataTable: {
-      borderColor: 'rgba(148, 163, 184, 0.1)',
-      thColor: 'rgba(148, 163, 184, 0.05)',
-      thColorHover: 'rgba(148, 163, 184, 0.09)',
-      tdColorHover: 'rgba(148, 163, 184, 0.04)',
+      borderColor: rgba(s.tint, 0.1),
+      thColor: rgba(s.tint, 0.05),
+      thColorHover: rgba(s.tint, 0.09),
+      tdColorHover: rgba(s.tint, 0.04),
       thTextColor: '#8fa0b8',
       tdTextColor: '#cbd5e1',
       thFontWeight: '600',
@@ -135,11 +140,12 @@ export function darkThemeOverrides(accent: AccentId = 'default'): GlobalThemeOve
   }
 }
 
-export function lightThemeOverrides(accent: AccentId = 'default'): GlobalThemeOverrides {
-  const menu = menuActive(accent, false)
+/** 浅色主题只有默认蓝一档，品牌色沿用 commonShared，表面色是固定的冷白。 */
+export function lightThemeOverrides(): GlobalThemeOverrides {
+  const menu = menuActive('light', false)
   return {
     common: {
-      ...buildCommon(accent),
+      ...commonShared,
 
       bodyColor: '#f4f6fb',
       cardColor: '#ffffff',
@@ -165,7 +171,6 @@ export function lightThemeOverrides(accent: AccentId = 'default'): GlobalThemeOv
     Menu: {
       borderRadius: '10px',
       itemHeight: '42px',
-      /** 激活态文字在白底上用深一档（EVA 配色的深档由 accents.ts 提供） */
       itemTextColor: '#64748b',
       itemTextColorHover: '#0f172a',
       itemTextColorActive: menu.text,

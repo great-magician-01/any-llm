@@ -122,7 +122,7 @@ const trendLabels = computed(() =>
 )
 const showPrompt = ref(true)
 const showCompletion = ref(true)
-// 输入/输出系列色跟品牌变量走（随配色主题换肤）；下方 PALETTE 是数据可视化固定色板
+// 输入/输出系列色跟品牌变量走（随界面主题换肤）；下方 PALETTE 是数据可视化固定色板
 const tokenSeries = computed(() => {
   const out = []
   if (showPrompt.value) out.push({ name: '输入 Token', color: 'var(--brand)', values: daily.value.map((d) => d.prompt_tokens) })

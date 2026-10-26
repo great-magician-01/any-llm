@@ -1,12 +1,14 @@
 import type { GlobalThemeOverrides } from 'naive-ui'
-import { accentMenu, accentNaiveOverrides, type AccentId } from '@/utils/accents'
+import { themeById, themeNaiveOverrides, type ThemeId } from '@/utils/themes'
 
 /**
  * 液态玻璃主题：在底色上把卡片 / 弹窗 / 表格等表面改为渐变色叠加，
  * 配合 glass.css 中的 backdrop-filter、折射亮边与流光背景使用（仅作用于 /glass 路由树）。
- * 明暗两套由 GlassShell.vue 按 useTheme() 的 isDark 与 accent 取得；
- * default 配色的品牌色内置于 commonShared（比经典版默认蓝更亮一档的玻璃蓝），
- * EVA 配色（初号机 / 明日香 / 凌波丽）的品牌色段由 accents.ts 注入，与经典版共用一组值。
+ * 由 GlassShell.vue 按 useTheme() 的 theme 取得。
+ *
+ * 表面材质（半透明白 + 模糊）对所有暗色主题一致，机体主题的差异来自 glass.css
+ * 里按主题定义的流光背景；品牌色段由注册表注入，与经典版共用同一组值。
+ * 默认蓝的玻璃蓝比经典版亮一档，仍内置在本文件；浅色只有默认蓝一档。
  */
 
 type Common = NonNullable<GlobalThemeOverrides['common']>
@@ -41,30 +43,30 @@ const commonShared = {
   fontFamilyMono: "ui-monospace, 'SF Mono', Consolas, 'Courier New', monospace",
 } satisfies Common
 
-/** common 段：default 用玻璃蓝内置值；EVA 配色展开 accents.ts 的品牌色覆盖。 */
-function buildCommon(accent: AccentId): Common {
-  return { ...commonShared, ...accentNaiveOverrides(accent) }
+/** common 段：默认蓝用玻璃蓝内置值；机体主题展开注册表的品牌色覆盖。 */
+function buildCommon(theme: ThemeId): Common {
+  return { ...commonShared, ...themeNaiveOverrides(theme) }
 }
 
 /**
- * 菜单激活态：default 用玻璃蓝内置值（激活底色透明度比经典版高一档），
- * EVA 配色的文字色 / 主色 rgb 由 accents.ts 提供，透明度沿用本套的档位。
+ * 菜单激活态：默认蓝用玻璃版内置值（激活底色透明度比经典版高一档），
+ * 机体主题的激活文字色 / 主色 rgb 由注册表提供，透明度沿用本套的档位。
  */
-function menuActive(accent: AccentId, isDark: boolean) {
-  const m = accentMenu(accent, isDark ? 'dark' : 'light')
-  const rgb = m ? m.rgb : '123, 163, 255'
+function menuActive(theme: ThemeId, isDark: boolean) {
+  const t = themeById(theme)
+  const rgb = t.primary ? t.rgb : '123, 163, 255'
   return {
-    text: m ? m.active : isDark ? '#b9cdff' : '#3560cf',
+    text: t.primary ? t.menu : isDark ? '#b9cdff' : '#3560cf',
     bg: `rgba(${rgb}, ${isDark ? 0.18 : 0.14})`,
     bgHover: `rgba(${rgb}, ${isDark ? 0.26 : 0.2})`,
   }
 }
 
-export function darkGlassThemeOverrides(accent: AccentId = 'default'): GlobalThemeOverrides {
-  const menu = menuActive(accent, true)
+export function darkGlassThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverrides {
+  const menu = menuActive(theme, true)
   return {
     common: {
-      ...buildCommon(accent),
+      ...buildCommon(theme),
 
       bodyColor: 'transparent',
       cardColor: 'rgba(255, 255, 255, 0.07)',
@@ -139,11 +141,12 @@ export function darkGlassThemeOverrides(accent: AccentId = 'default'): GlobalThe
   }
 }
 
-export function lightGlassThemeOverrides(accent: AccentId = 'default'): GlobalThemeOverrides {
-  const menu = menuActive(accent, false)
+/** 浅色玻璃只有默认蓝一档，材质换成白色液态渐变（见 glass.css 的 light 块）。 */
+export function lightGlassThemeOverrides(): GlobalThemeOverrides {
+  const menu = menuActive('light', false)
   return {
     common: {
-      ...buildCommon(accent),
+      ...commonShared,
 
       bodyColor: 'transparent',
       cardColor: 'rgba(255, 255, 255, 0.62)',
@@ -169,7 +172,6 @@ export function lightGlassThemeOverrides(accent: AccentId = 'default'): GlobalTh
     Menu: {
       borderRadius: '10px',
       itemHeight: '42px',
-      /** 激活态文字在白底上用深一档（EVA 配色的深档由 accents.ts 提供） */
       itemTextColor: '#5b6b85',
       itemTextColorHover: '#0f172a',
       itemTextColorActive: menu.text,

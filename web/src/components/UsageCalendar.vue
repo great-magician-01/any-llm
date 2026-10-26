@@ -137,7 +137,7 @@ const tipStyle = computed(() => {
 .cal-card {
   margin-top: 20px;
   /* 色阶：暗色（含毛玻璃暗色）走品牌色的亮度递增 ramp（lv3/lv4 直接跟品牌变量，
-     随配色主题换肤）；浅色在下方覆盖。fill 与 background 写在一起：
+     随界面主题换肤）；浅色在下方覆盖。fill 与 background 写在一起：
      格子（svg rect）吃 fill，图例（span）吃 background，各自忽略用不上的那条。 */
   --lv0: rgba(148, 163, 184, 0.1);
   --lv1: #1e3a6e;

@@ -3,8 +3,7 @@ import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
 import BrandMark from '@/components/BrandMark.vue'
-import ThemeToggle from '@/components/ThemeToggle.vue'
-import AccentPicker from '@/components/AccentPicker.vue'
+import ThemePicker from '@/components/ThemePicker.vue'
 import { useLoginRedirect } from '@/composables/useLoginRedirect'
 import { errText } from '@/utils/errText'
 import { isGlassPath, suitePath, switchSuite } from '@/utils/suite'
@@ -76,8 +75,7 @@ async function login() {
       </n-alert>
       <p class="foot">OpenAI / Anthropic 兼容 · 多上游聚合</p>
       <div class="login-extra">
-        <AccentPicker />
-        <ThemeToggle />
+        <ThemePicker />
         <button class="switch-link" @click="router.push(switchSuite(route.fullPath))">{{ isGlass ? '切换到经典版' : '切换到液态玻璃版' }}</button>
       </div>
     </div>

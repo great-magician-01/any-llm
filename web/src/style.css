@@ -1,10 +1,12 @@
 :root {
+  /* 默认主题：深色（data-theme='dark'）的完整取值。浅色与三个机体主题在下方
+     各自整块覆盖——一个主题同时决定品牌色与表面色（主题注册表见
+     src/utils/themes.ts，themes.test.ts 把关 CSS 与注册表同步）。 */
   --brand: #5b8cff;
   --brand-2: #22d3ee;
   --brand-hover: #7ba3ff;
   --grad: linear-gradient(135deg, #5b8cff 0%, #22d3ee 100%);
-  /* 品牌衍生色：随 accent（data-accent）换肤——body 背景光晕、选区、品牌描边。
-     取值与 src/utils/accents.ts 的 ACCENTS[x].css 同步（accents.test.ts 把关）。 */
+  /* 品牌衍生色：body 背景光晕、选区、品牌描边 */
   --bg-glow-1: rgba(91, 140, 255, 0.14);
   --bg-glow-2: rgba(34, 211, 238, 0.08);
   --selection: rgba(91, 140, 255, 0.35);
@@ -59,6 +61,8 @@
     0 24px 64px rgba(2, 6, 18, 0.6),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --login-card-blur: blur(18px);
+
+  color-scheme: dark;
 }
 
 /*
@@ -94,64 +98,77 @@
 
   color-scheme: light;
 }
-:root[data-theme='dark'] {
-  color-scheme: dark;
-}
 
 /*
- * 配色主题（accent）：只换品牌色系，表面明暗仍由 data-theme 管。
- * 取值与 src/utils/accents.ts 的 ACCENTS 保持同步（accents.test.ts 把关）。
- * 块顺序约定：暗色值在前，浅色覆盖（含白底对比度深一档）用组合选择器跟在后面——
- * 同权重的 data-theme='light' 块在上方，靠顺序与更高特异性两层保证浅色取值胜出。
+ * 机体主题（初号机 / 明日香 / 凌波丽）：一套主题 = 品牌色 + 整套表面色。
+ * 明暗、品牌色、背景 / 卡片 / 描边 / 光晕一起换，取值与 src/utils/themes.ts 的
+ * THEMES 保持同步（themes.test.ts 把关）。三个机体主题都是暗色皮肤，所以没有
+ * data-theme='light' 的组合块。
  */
-:root[data-accent='eva-01'] {
+:root[data-theme='eva-01'] {
   --brand: #9b6dff;
   --brand-2: #a3e635;
   --brand-hover: #b58cff;
   --grad: linear-gradient(135deg, #9b6dff 0%, #a3e635 100%);
-  --bg-glow-1: rgba(155, 109, 255, 0.14);
-  --bg-glow-2: rgba(163, 230, 53, 0.07);
+  --bg-glow-1: rgba(155, 109, 255, 0.18);
+  --bg-glow-2: rgba(163, 230, 53, 0.08);
   --selection: rgba(155, 109, 255, 0.35);
   --brand-border: rgba(155, 109, 255, 0.4);
-}
-:root[data-theme='light'][data-accent='eva-01'] {
-  --brand-hover: #6d28d9;
-  --grad: linear-gradient(135deg, #9b6dff 0%, #84cc16 100%);
-  --bg-glow-1: rgba(155, 109, 255, 0.1);
-  --bg-glow-2: rgba(163, 230, 53, 0.05);
+
+  /* 表面：紫黑机体色 */
+  --bg: #0a0616;
+  --surface: #150e2a;
+  --surface-2: #1a1234;
+  --border: rgba(167, 139, 250, 0.18);
+  --border-soft: rgba(167, 139, 250, 0.1);
+  --tip-bg: rgba(16, 10, 30, 0.94);
+  --login-card-bg: rgba(21, 14, 42, 0.72);
+  --overlay-1: rgba(167, 139, 250, 0.1);
+  --overlay-2: rgba(167, 139, 250, 0.12);
 }
 
-:root[data-accent='eva-02'] {
+:root[data-theme='eva-02'] {
   --brand: #ef4444;
   --brand-2: #fb923c;
   --brand-hover: #f87171;
   --grad: linear-gradient(135deg, #ef4444 0%, #fb923c 100%);
-  --bg-glow-1: rgba(239, 68, 68, 0.13);
-  --bg-glow-2: rgba(251, 146, 60, 0.08);
+  --bg-glow-1: rgba(239, 68, 68, 0.16);
+  --bg-glow-2: rgba(251, 146, 60, 0.09);
   --selection: rgba(239, 68, 68, 0.32);
   --brand-border: rgba(239, 68, 68, 0.4);
-}
-:root[data-theme='light'][data-accent='eva-02'] {
-  --brand-hover: #dc2626;
-  --bg-glow-1: rgba(239, 68, 68, 0.09);
-  --bg-glow-2: rgba(251, 146, 60, 0.06);
+
+  /* 表面：暗红机体色 */
+  --bg: #140608;
+  --surface: #220d12;
+  --surface-2: #291017;
+  --border: rgba(248, 113, 113, 0.18);
+  --border-soft: rgba(248, 113, 113, 0.1);
+  --tip-bg: rgba(28, 10, 14, 0.94);
+  --login-card-bg: rgba(34, 13, 18, 0.72);
+  --overlay-1: rgba(248, 113, 113, 0.1);
+  --overlay-2: rgba(248, 113, 113, 0.12);
 }
 
-:root[data-accent='eva-00'] {
+:root[data-theme='eva-00'] {
   --brand: #2f9bdc;
   --brand-2: #fcd34d;
   --brand-hover: #55b5ea;
   --grad: linear-gradient(135deg, #2f9bdc 0%, #fcd34d 100%);
-  --bg-glow-1: rgba(56, 168, 232, 0.13);
-  --bg-glow-2: rgba(252, 211, 77, 0.06);
+  --bg-glow-1: rgba(56, 168, 232, 0.17);
+  --bg-glow-2: rgba(252, 211, 77, 0.07);
   --selection: rgba(56, 168, 232, 0.3);
   --brand-border: rgba(56, 168, 232, 0.45);
-}
-:root[data-theme='light'][data-accent='eva-00'] {
-  --brand-hover: #0369a1;
-  --grad: linear-gradient(135deg, #2f9bdc 0%, #eab308 100%);
-  --bg-glow-1: rgba(56, 168, 232, 0.09);
-  --bg-glow-2: rgba(252, 211, 77, 0.05);
+
+  /* 表面：深蓝机体色 */
+  --bg: #04101a;
+  --surface: #0a1a29;
+  --surface-2: #0d2133;
+  --border: rgba(125, 211, 252, 0.18);
+  --border-soft: rgba(125, 211, 252, 0.1);
+  --tip-bg: rgba(8, 19, 31, 0.94);
+  --login-card-bg: rgba(10, 26, 41, 0.72);
+  --overlay-1: rgba(125, 211, 252, 0.1);
+  --overlay-2: rgba(125, 211, 252, 0.12);
 }
 
 * {

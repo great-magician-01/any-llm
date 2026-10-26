@@ -4,10 +4,10 @@ import { darkTheme, lightTheme, zhCN, dateZhCN } from 'naive-ui'
 import { useTheme } from '@/composables/useTheme'
 import { darkGlassThemeOverrides, lightGlassThemeOverrides } from './theme'
 
-const { isDark, accent } = useTheme()
+const { isDark, theme } = useTheme()
 const naiveTheme = computed(() => (isDark.value ? darkTheme : lightTheme))
 const naiveOverrides = computed(() =>
-  isDark.value ? darkGlassThemeOverrides(accent.value) : lightGlassThemeOverrides(accent.value),
+  isDark.value ? darkGlassThemeOverrides(theme.value) : lightGlassThemeOverrides(),
 )
 </script>
 

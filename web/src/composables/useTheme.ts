@@ -1,46 +1,63 @@
 import { computed, ref, watch } from 'vue'
-import { ACCENT_IDS, type AccentId } from '@/utils/accents'
+import { THEME_IDS, themeById, type ThemeId, type ThemeMode } from '@/utils/themes'
 
 /**
- * 全局主题：明暗（mode）与配色（accent）两个正交维度。
+ * 全局主题：单一维度（theme），一个主题同时决定明暗、品牌色和整套表面色。
  *
- * 明暗——单一数据源优先级：localStorage（用户手选）> 系统 prefers-color-scheme > 暗色，
- * 通过 `<html data-theme="light|dark">` 暴露给 CSS（见 style.css / glass/glass.css），
+ * 解析顺序：localStorage 里已选的主题 > 旧版配色记录（迁移）> 系统 prefers-color-scheme
+ * > 深色。选中的主题以 `<html data-theme="…">` 暴露给 CSS（见 style.css / glass.css），
  * 同时被 App.vue / glass/GlassShell.vue 用来切换 naive-ui 的 darkTheme / lightTheme。
  *
- * 配色——品牌色系（初号机 / 明日香 / 凌波丽等，见 utils/accents.ts），没有系统偏好
- * 可跟随，手选即落盘；通过 `<html data-accent="…">` 暴露给 CSS 的 accent 变量块。
+ * 主题没有「跟随系统」的语义，只有从未选择过时才跟随系统深/浅；一旦主动选过
+ * （哪怕选的就是当前值）就落盘并停止跟随。旧版本的 `any-llm-accent` 键在启动
+ * 迁移后删除——否则用户后来改主题时旧配色又会「复活」。
  *
- * 注意：index.html 里有一段等价的极简内联脚本，负责在首帧绘制前打好 data-theme 与
- * data-accent，两处逻辑必须保持一致（内联脚本在打包前，无法 import 本模块）。
+ * 注意：index.html 里有一段等价的极简内联脚本，负责在首帧绘制前打好 data-theme，
+ * 两处逻辑必须保持一致（内联脚本在打包前，无法 import 本模块）。
  */
-export type ThemeMode = 'light' | 'dark'
+export type { ThemeId, ThemeMode }
 
 export const THEME_STORAGE_KEY = 'any-llm-theme'
-export const ACCENT_STORAGE_KEY = 'any-llm-accent'
+/** 旧版正交的配色维度（default / eva-*），只在启动时用于迁移 */
+export const LEGACY_ACCENT_STORAGE_KEY = 'any-llm-accent'
 
-const mode = ref<ThemeMode>('dark')
-const accent = ref<AccentId>('default')
+const theme = ref<ThemeId>('dark')
 let watcherInstalled = false
 let systemQuery: MediaQueryList | undefined
-/** 是否为用户主动切换：只有主动切换才落盘并停止跟随系统。 */
+/** 是否为用户主动选择：只有主动选择才落盘并停止跟随系统。 */
 let manualChoice = false
 
-function readStoredMode(): ThemeMode | null {
+function isThemeId(v: string | null): v is ThemeId {
+  return v !== null && (THEME_IDS as string[]).includes(v)
+}
+
+function readStoredTheme(): ThemeId | null {
   try {
     const v = localStorage.getItem(THEME_STORAGE_KEY)
-    return v === 'light' || v === 'dark' ? v : null
+    return isThemeId(v) ? v : null // 旧的 dark / light 值本身就是合法主题 id
   } catch {
     return null // 隐私模式下读不到 localStorage，退回默认
   }
 }
 
-function readStoredAccent(): AccentId | null {
+/**
+ * 旧版配色记录：只有 EVA 配色算得上一个独立主题（旧模型里它没有背景，只有品牌色）。
+ * 旧模型的「明暗」两档在 EVA 上不再提供，统一落到机体主题的暗色皮肤。
+ */
+function readLegacyAccent(): ThemeId | null {
   try {
-    const v = localStorage.getItem(ACCENT_STORAGE_KEY)
-    return (ACCENT_IDS as string[]).includes(v ?? '') ? (v as AccentId) : null
+    const v = localStorage.getItem(LEGACY_ACCENT_STORAGE_KEY)
+    return v === 'eva-01' || v === 'eva-02' || v === 'eva-00' ? v : null
   } catch {
     return null
+  }
+}
+
+function clearLegacyAccent(): void {
+  try {
+    localStorage.removeItem(LEGACY_ACCENT_STORAGE_KEY)
+  } catch {
+    // 同上：无痕模式下没有可清理的记录
   }
 }
 
@@ -53,20 +70,24 @@ function prefersLight(): boolean {
 }
 
 /** 与 index.html 内联脚本保持一致的解析顺序。 */
-export function resolveInitialMode(): ThemeMode {
-  return readStoredMode() ?? (prefersLight() ? 'light' : 'dark')
+export function resolveInitialTheme(): ThemeId {
+  return readLegacyAccent() ?? readStoredTheme() ?? (prefersLight() ? 'light' : 'dark')
 }
 
-function apply(m: ThemeMode) {
-  document.documentElement.dataset.theme = m
+function applyTheme(t: ThemeId) {
+  document.documentElement.dataset.theme = t
 }
 
-function applyAccent(a: AccentId) {
-  document.documentElement.dataset.accent = a
+function persistTheme(t: ThemeId) {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, t)
+  } catch {
+    // 忽略：无痕模式等场景下主题仅本次会话生效
+  }
 }
 
 function onSystemThemeChange(e: MediaQueryListEvent) {
-  mode.value = e.matches ? 'light' : 'dark'
+  theme.value = e.matches ? 'light' : 'dark'
 }
 
 /** 用户手选过一次就不再跟随系统，避免系统主题一变就被改回去。 */
@@ -77,13 +98,18 @@ function detachSystemListener() {
 
 /** main.ts 启动时调用一次：定好初值，并让后续变更同步到 <html> 与 localStorage。 */
 export function initTheme(): void {
-  mode.value = resolveInitialMode()
-  apply(mode.value)
-  accent.value = readStoredAccent() ?? 'default'
-  applyAccent(accent.value)
+  const legacy = readLegacyAccent()
+  const stored = readStoredTheme()
+  const hadChoice = legacy !== null || stored !== null
+  theme.value = legacy ?? stored ?? (prefersLight() ? 'light' : 'dark')
+  applyTheme(theme.value)
+  // 迁移只做一次：旧键删掉，同时把迁移结果写进新键——否则下次启动既没有旧记录
+  // 也没有新记录，会退回系统偏好，用户选的机体主题就丢了。
+  if (legacy !== null) persistTheme(legacy)
+  clearLegacyAccent()
 
-  // 没手动选过主题时跟随系统；user choice 之后由 watcher 里解绑
-  if (!readStoredMode() && typeof window.matchMedia === 'function') {
+  // 没主动选过主题时跟随系统；选过之后由 setTheme 解绑
+  if (!hadChoice && typeof window.matchMedia === 'function') {
     systemQuery = window.matchMedia('(prefers-color-scheme: light)')
     systemQuery.addEventListener('change', onSystemThemeChange)
   }
@@ -91,53 +117,36 @@ export function initTheme(): void {
   if (watcherInstalled) return
   watcherInstalled = true
   watch(
-    mode,
-    (m) => {
-      apply(m)
-      // 只有用户主动切换才落盘：否则系统偏好会被固化成一条本地记录，
+    theme,
+    (t) => {
+      applyTheme(t)
+      // 只有用户主动选择才落盘：否则系统偏好会被固化成一条本地记录，
       // 之后就再也跟随不了系统变化了（initTheme 的初始化变更同样不算）。
       if (!manualChoice) return
-      try {
-        localStorage.setItem(THEME_STORAGE_KEY, m)
-      } catch {
-        // 忽略：无痕模式等场景下主题仅本次会话生效
-      }
+      persistTheme(t)
       detachSystemListener()
     },
     // 同步执行：改动只是给 <html> 加属性，同步应用才不会出现「按钮已切换但
     // 页面还是旧配色」的中间帧（默认的 pre flush 要等到下一个微任务）。
     { flush: 'sync' },
   )
-  // accent 没有「跟随系统」的语义，任何变更（含初始化前的手选）都直接落盘。
-  watch(
-    accent,
-    (a) => {
-      applyAccent(a)
-      try {
-        localStorage.setItem(ACCENT_STORAGE_KEY, a)
-      } catch {
-        // 同上：无痕模式下仅本次会话生效
-      }
-    },
-    { flush: 'sync' },
-  )
 }
 
 export function useTheme() {
   return {
-    mode,
-    accent,
-    isDark: computed(() => mode.value === 'dark'),
-    setMode(m: ThemeMode) {
+    theme,
+    mode: computed<ThemeMode>(() => themeById(theme.value).mode),
+    isDark: computed(() => themeById(theme.value).mode === 'dark'),
+    setTheme(t: ThemeId) {
       manualChoice = true
-      mode.value = m
-    },
-    setAccent(a: AccentId) {
-      accent.value = a
-    },
-    toggle() {
-      manualChoice = true
-      mode.value = mode.value === 'dark' ? 'light' : 'dark'
+      detachSystemListener()
+      if (theme.value === t) {
+        // 值与当前相同，watch 不会触发；显式落盘，否则「选了当前主题」
+        // 在跟随系统的状态下等于什么都没发生。
+        persistTheme(t)
+      } else {
+        theme.value = t
+      }
     },
   }
 }
