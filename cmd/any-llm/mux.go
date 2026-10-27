@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"io/fs"
 	"net/http"
 	"path"
@@ -9,8 +10,8 @@ import (
 	"github.com/great-magician-01/any-llm/internal/gateway"
 )
 
-// newMux 组装三类流量：/v1/*（公共网关）、/api/admin/*（HMAC 会话鉴权的管理
-// API）与 /*（内嵌 SPA）。
+// newMux 组装四类流量：/v1/*（公共网关）、/api/admin/*（HMAC 会话鉴权的管理
+// API）、GET /health（未鉴权探活，处理器见 health.go）与 /*（内嵌 SPA）。
 //
 // SPA 分支承载两条用户可见的缓存契约，改错了很难在本地发现：
 //   - assets/ 下的构建产物带内容哈希，可以长缓存（immutable，一年）；
@@ -19,12 +20,14 @@ import (
 //
 // 另外：找不到路径且**带扩展名**时返回 404，而不是回退成 index.html —— 把 HTML
 // 当 JS/CSS 返回会让浏览器报一堆语法错误，掩盖真正的 404。
-func newMux(frontendFS fs.FS, gatewayHandler, adminHandler http.Handler) *http.ServeMux {
+func newMux(frontendFS fs.FS, gatewayHandler, adminHandler http.Handler, d *sql.DB) *http.ServeMux {
 	spa := http.FileServer(http.FS(frontendFS))
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", gateway.LoggingMiddleware(gatewayHandler, "gateway"))
 	mux.Handle("/api/admin/", gateway.LoggingMiddleware(adminHandler, "admin"))
+	// /health 刻意不包日志中间件：探活高频轮询，逐条进日志只是噪音。
+	mux.Handle("GET /health", newHealthHandler(d))
 	// Go 1.22+: "/" only matches the exact root path; use /{$} for
 	// that and /{pathname...} as the catch-all.
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
