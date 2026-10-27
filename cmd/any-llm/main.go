@@ -133,7 +133,7 @@ func run() int {
 	}
 
 	// 路由组装见 mux.go（newMux 单独成函数以便测试 SPA 的缓存与回退契约）。
-	mux := newMux(frontendFS, gw, adminHandler)
+	mux := newMux(frontendFS, gw, adminHandler, writer.DB)
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/great-magician-01/any-llm/internal/db"
 )
 
 // testFrontendFS 模拟一次 npm run build 的产物：index.html + 带哈希的 assets。
@@ -18,11 +22,22 @@ func testFrontendFS() fs.FS {
 	}
 }
 
+// testDB 开一个临时文件库（不用 :memory:，其连接池语义与真实运行不符）。
+func testDB(t *testing.T) *sql.DB {
+	t.Helper()
+	d, err := db.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
 // TestNewMux_SPACacheAndFallback 钉住 SPA 的三条用户可见规则：
 // index.html/客户端路由必须 no-cache（否则发版后拿到旧页面）、assets 长缓存、
 // 缺失的带扩展名资源必须 404 而不是回退成 HTML。
 func TestNewMux_SPACacheAndFallback(t *testing.T) {
-	mux := newMux(testFrontendFS(), http.NotFoundHandler(), http.NotFoundHandler())
+	mux := newMux(testFrontendFS(), http.NotFoundHandler(), http.NotFoundHandler(), testDB(t))
 
 	cases := []struct {
 		name      string
@@ -74,6 +89,7 @@ func TestNewMux_GatewayAndAdminMounts(t *testing.T) {
 			adminHit = r.URL.Path
 			w.WriteHeader(http.StatusAccepted)
 		}),
+		testDB(t),
 	)
 
 	w := httptest.NewRecorder()
@@ -87,4 +103,30 @@ func TestNewMux_GatewayAndAdminMounts(t *testing.T) {
 	if w.Code != http.StatusAccepted || adminHit != "/api/admin/upstreams" {
 		t.Fatalf("admin route: status=%d hit=%q", w.Code, adminHit)
 	}
+}
+
+// TestNewMux_Health 钉住 /health 的探活契约：DB 正常时 200 ok、DB 断开时
+// 503 degraded，且精确匹配（不落进 SPA 回退），GET 模式同时覆盖 HEAD。
+func TestNewMux_Health(t *testing.T) {
+	d := testDB(t)
+	mux := newMux(testFrontendFS(), http.NotFoundHandler(), http.NotFoundHandler(), d)
+
+	assertHealth := func(method string, wantCode int, wantStatus string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, "/health", nil))
+		if w.Code != wantCode {
+			t.Fatalf("%s /health status=%d want %d (body=%q)", method, w.Code, wantCode, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), `"status":"`+wantStatus+`"`) {
+			t.Errorf("%s /health body=%q want status %q", method, w.Body.String(), wantStatus)
+		}
+	}
+
+	assertHealth("GET", http.StatusOK, "ok")
+	assertHealth("HEAD", http.StatusOK, "ok")
+
+	// DB 关闭后探活必须转 503，而不是把 ping 失败吞成 ok。
+	d.Close()
+	assertHealth("GET", http.StatusServiceUnavailable, "degraded")
 }
