@@ -62,6 +62,20 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --login-card-blur: blur(18px);
 
+  /* 登录页网格纹理（Login 的 .grid-overlay）：默认细方格，EVA 机体主题换成
+     六边形蜂窝，浅色主题在下方块覆盖深色线 */
+  --grid-image:
+    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  --grid-size: 44px 44px;
+
+  /* body 背景的第三层（见 body 规则）：EVA 机体主题的蜂窝纹理 + 扫描线，默认无 */
+  --bg-pattern: none;
+
+  /* 滚动条（EVA 机体主题染机体温） */
+  --scrollbar-thumb: rgba(148, 163, 184, 0.25);
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.4);
+
   color-scheme: dark;
 }
 
@@ -89,6 +103,10 @@
   --shadow-hover: 0 8px 24px rgba(15, 23, 42, 0.12);
   --tip-bg: rgba(255, 255, 255, 0.96);
   --code-bg: rgba(15, 23, 42, 0.05);
+  /* 登录页网格换深色细线（原 classic Login.vue 里的浅色覆盖值） */
+  --grid-image:
+    linear-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
   /* 登录卡转白（原 classic Login.vue 里的浅色覆盖值） */
   --login-card-bg: rgba(255, 255, 255, 0.86);
   --login-card-border: rgba(15, 23, 42, 0.1);
@@ -100,10 +118,14 @@
 }
 
 /*
- * 机体主题（初号机 / 明日香 / 凌波丽）：一套主题 = 品牌色 + 整套表面色。
- * 明暗、品牌色、背景 / 卡片 / 描边 / 光晕一起换，取值与 src/utils/themes.ts 的
- * THEMES 保持同步（themes.test.ts 把关）。三个机体主题都是暗色皮肤，所以没有
- * data-theme='light' 的组合块。
+ * 机体主题（初号机 / 明日香 / 凌波丽）：一套主题 = 品牌色 + 整套表面色 + 专属装饰。
+ * 明暗、品牌色、背景 / 卡片 / 描边 / 光晕、文字色阶、代码块底色、阴影、滚动条
+ * 一起换，表面与文字取值与 src/utils/themes.ts 的 THEMES 保持同步（themes.test.ts
+ * 把关）。装饰件是 NERV 风格的六边形蜂窝纹理（body 背景 + 登录页网格）与页头
+ * 标题下的双色警示条纹。三个机体主题都是暗色皮肤，没有 data-theme='light' 的组合块。
+ *
+ * 蜂窝纹理是一枚 24.25×42 的六边形描边 SVG 平铺（点顶六边形、错行半格），
+ * stroke 取各机体的 tint 色、透明度压到肉眼刚好可辨，只做质感不抢内容。
  */
 :root[data-theme='eva-01'] {
   --brand: #9b6dff;
@@ -116,15 +138,34 @@
   --brand-border: rgba(155, 109, 255, 0.4);
 
   /* 表面：紫黑机体色 */
-  --bg: #0a0616;
-  --surface: #150e2a;
-  --surface-2: #1a1234;
+  --bg: #080413;
+  --surface: #130c26;
+  --surface-2: #181031;
   --border: rgba(167, 139, 250, 0.18);
   --border-soft: rgba(167, 139, 250, 0.1);
-  --tip-bg: rgba(16, 10, 30, 0.94);
-  --login-card-bg: rgba(21, 14, 42, 0.72);
+  --tip-bg: rgba(14, 9, 27, 0.94);
+  --login-card-bg: rgba(19, 12, 38, 0.72);
+  --login-card-border: rgba(167, 139, 250, 0.22);
   --overlay-1: rgba(167, 139, 250, 0.1);
   --overlay-2: rgba(167, 139, 250, 0.12);
+  /* 文字染机体紫，代码块沉进紫黑 */
+  --text: #f2eeff;
+  --text-2: #d6cdf0;
+  --text-3: #a396cc;
+  --text-4: #7468a3;
+  --code-bg: rgba(6, 3, 14, 0.55);
+  /* 阴影与滚动条换紫黑基调 */
+  --shadow: 0 10px 30px rgba(3, 1, 12, 0.5);
+  --shadow-lg: 0 24px 64px rgba(3, 1, 12, 0.65);
+  --shadow-hover: 0 8px 24px rgba(3, 1, 12, 0.55);
+  --scrollbar-thumb: rgba(167, 139, 250, 0.3);
+  --scrollbar-thumb-hover: rgba(167, 139, 250, 0.5);
+  /* NERV 蜂窝：body 背景纹理（蜂窝 + 扫描线）与登录页网格 */
+  --bg-pattern:
+    url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23a78bfa'%20stroke-opacity='.07'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E"),
+    repeating-linear-gradient(0deg, rgba(167, 139, 250, 0.025) 0 1px, transparent 1px 4px);
+  --grid-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23a78bfa'%20stroke-opacity='.09'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --grid-size: auto;
 }
 
 :root[data-theme='eva-02'] {
@@ -138,15 +179,34 @@
   --brand-border: rgba(239, 68, 68, 0.4);
 
   /* 表面：暗红机体色 */
-  --bg: #140608;
-  --surface: #220d12;
-  --surface-2: #291017;
+  --bg: #100407;
+  --surface: #1e0b0f;
+  --surface-2: #250d13;
   --border: rgba(248, 113, 113, 0.18);
   --border-soft: rgba(248, 113, 113, 0.1);
-  --tip-bg: rgba(28, 10, 14, 0.94);
-  --login-card-bg: rgba(34, 13, 18, 0.72);
+  --tip-bg: rgba(24, 9, 12, 0.94);
+  --login-card-bg: rgba(30, 11, 15, 0.72);
+  --login-card-border: rgba(248, 113, 113, 0.22);
   --overlay-1: rgba(248, 113, 113, 0.1);
   --overlay-2: rgba(248, 113, 113, 0.12);
+  /* 文字染暖红，代码块沉进暗红 */
+  --text: #fdf1ed;
+  --text-2: #ead6d0;
+  --text-3: #c29a94;
+  --text-4: #8d655f;
+  --code-bg: rgba(10, 3, 5, 0.55);
+  /* 阴影与滚动条换暗红基调 */
+  --shadow: 0 10px 30px rgba(8, 1, 3, 0.5);
+  --shadow-lg: 0 24px 64px rgba(8, 1, 3, 0.65);
+  --shadow-hover: 0 8px 24px rgba(8, 1, 3, 0.55);
+  --scrollbar-thumb: rgba(248, 113, 113, 0.3);
+  --scrollbar-thumb-hover: rgba(248, 113, 113, 0.5);
+  /* NERV 蜂窝：body 背景纹理（蜂窝 + 扫描线）与登录页网格 */
+  --bg-pattern:
+    url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23f87171'%20stroke-opacity='.06'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E"),
+    repeating-linear-gradient(0deg, rgba(248, 113, 113, 0.025) 0 1px, transparent 1px 4px);
+  --grid-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23f87171'%20stroke-opacity='.09'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --grid-size: auto;
 }
 
 :root[data-theme='eva-00'] {
@@ -160,15 +220,34 @@
   --brand-border: rgba(56, 168, 232, 0.45);
 
   /* 表面：深蓝机体色 */
-  --bg: #04101a;
-  --surface: #0a1a29;
-  --surface-2: #0d2133;
+  --bg: #030d15;
+  --surface: #081825;
+  --surface-2: #0b1f2f;
   --border: rgba(125, 211, 252, 0.18);
   --border-soft: rgba(125, 211, 252, 0.1);
-  --tip-bg: rgba(8, 19, 31, 0.94);
-  --login-card-bg: rgba(10, 26, 41, 0.72);
+  --tip-bg: rgba(7, 18, 28, 0.94);
+  --login-card-bg: rgba(8, 24, 37, 0.72);
+  --login-card-border: rgba(125, 211, 252, 0.22);
   --overlay-1: rgba(125, 211, 252, 0.1);
   --overlay-2: rgba(125, 211, 252, 0.12);
+  /* 文字染冷蓝，代码块沉进深蓝 */
+  --text: #eef8ff;
+  --text-2: #cfdfec;
+  --text-3: #97b3c9;
+  --text-4: #5f7d94;
+  --code-bg: rgba(2, 8, 13, 0.55);
+  /* 阴影与滚动条换深蓝基调 */
+  --shadow: 0 10px 30px rgba(1, 4, 8, 0.5);
+  --shadow-lg: 0 24px 64px rgba(1, 4, 8, 0.65);
+  --shadow-hover: 0 8px 24px rgba(1, 4, 8, 0.55);
+  --scrollbar-thumb: rgba(125, 211, 252, 0.3);
+  --scrollbar-thumb-hover: rgba(125, 211, 252, 0.5);
+  /* NERV 蜂窝：body 背景纹理（蜂窝 + 扫描线）与登录页网格 */
+  --bg-pattern:
+    url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%237dd3fc'%20stroke-opacity='.07'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E"),
+    repeating-linear-gradient(0deg, rgba(125, 211, 252, 0.025) 0 1px, transparent 1px 4px);
+  --grid-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%237dd3fc'%20stroke-opacity='.09'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --grid-size: auto;
 }
 
 * {
@@ -189,10 +268,12 @@ body {
     'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* 品牌光晕用变量：暗/浅与不同 accent 的强弱差异都在 --bg-glow-* 里 */
+  /* 品牌光晕与纹理都用变量：暗/浅与不同机体主题的差异都在 --bg-glow-* /
+     --bg-pattern 里（机体主题的第三层是 NERV 蜂窝 + 扫描线，默认无） */
   background:
     radial-gradient(1100px 520px at 85% -10%, var(--bg-glow-1), transparent 60%),
     radial-gradient(900px 480px at -10% 110%, var(--bg-glow-2), transparent 60%),
+    var(--bg-pattern),
     var(--bg);
   background-attachment: fixed;
 }
@@ -239,6 +320,23 @@ body {
   flex: none;
 }
 
+/*
+ * EVA 机体主题专属装饰：页头标题下的机体温双色警示条纹（NERV 风格斜纹条），
+ * 颜色走 --brand / --brand-2，只在三个机体主题块启用，默认深/浅主题不出现。
+ */
+:root[data-theme='eva-01'] .page-header h1::after,
+:root[data-theme='eva-02'] .page-header h1::after,
+:root[data-theme='eva-00'] .page-header h1::after {
+  content: '';
+  display: block;
+  width: 76px;
+  height: 4px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(-45deg, var(--brand) 0 7px, var(--brand-2) 7px 14px);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--brand) 40%, transparent);
+}
+
 /* 表格上方工具行 */
 .toolbar {
   display: flex;
@@ -268,17 +366,17 @@ body {
   gap: 14px;
 }
 
-/* 细滚动条 */
+/* 细滚动条（颜色走变量，EVA 机体主题染机体温） */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.4);
+  background: var(--scrollbar-thumb-hover);
 }
 ::-webkit-scrollbar-track {
   background: transparent;

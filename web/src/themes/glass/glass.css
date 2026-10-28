@@ -58,6 +58,13 @@
   );
   --tip-bg: rgba(16, 22, 40, 0.88);
 
+  /* 背景噪声网格（.glass-bg-noise）：默认白色细方格，浅色块换深色线，
+     EVA 机体主题块换成六边形蜂窝 */
+  --glass-noise-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  --glass-noise-size: 46px 46px;
+
   /* 共享视图的表面语义变量：与 style.css :root 的 classic 值一一对应
      （原 Glass* 视图里的硬编码差异值，视图合并后统一由这里换肤） */
   --overlay-1: rgba(255, 255, 255, 0.06);
@@ -145,10 +152,8 @@
   position: fixed;
   inset: 0;
   z-index: -1;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 46px 46px;
+  background-image: var(--glass-noise-image);
+  background-size: var(--glass-noise-size);
   mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 35%, transparent 80%);
   -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 35%, transparent 80%);
 }
@@ -288,11 +293,9 @@ body.glass-mode .n-cascader-menu {
   --glass-bg-base: linear-gradient(160deg, #eef2fb 0%, #e9eefc 45%, #e5f1f7 100%);
   --glass-orb-1: rgba(123, 163, 255, 0.38);
   --glass-orb-2: rgba(34, 211, 238, 0.3);
-}
-/* 光斑颜色已收敛进 .glass-root 的变量，浅色只需覆盖变量本身 */
-/* 白色网格线在浅底上等于没有，换成深色细线 */
-:root[data-theme='light'] .glass-bg-noise {
-  background-image:
+
+  /* 白色网格线在浅底上等于没有，噪声网格换深色细线 */
+  --glass-noise-image:
     linear-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
     linear-gradient(90deg, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
 }
@@ -342,6 +345,8 @@ body.glass-mode .n-cascader-menu {
   --shadow-hover:
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(155, 109, 255, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  --glass-noise-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23a78bfa'%20stroke-opacity='.08'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --glass-noise-size: auto;
 }
 
 :root[data-theme='eva-02'] .glass-root {
@@ -362,6 +367,8 @@ body.glass-mode .n-cascader-menu {
   --shadow-hover:
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(239, 68, 68, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  --glass-noise-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%23f87171'%20stroke-opacity='.07'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --glass-noise-size: auto;
 }
 
 :root[data-theme='eva-00'] .glass-root {
@@ -382,4 +389,6 @@ body.glass-mode .n-cascader-menu {
   --shadow-hover:
     0 20px 48px rgba(3, 8, 24, 0.48), 0 0 28px rgba(56, 168, 232, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  --glass-noise-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24.25'%20height='42'%3E%3Cg%20fill='none'%20stroke='%237dd3fc'%20stroke-opacity='.08'%3E%3Cpath%20d='M12.125,7L24.25,14L24.25,28L12.125,35L0,28L0,14Z'/%3E%3Cpath%20d='M12.125,0L12.125,7M12.125,35L12.125,42'/%3E%3C/g%3E%3C/svg%3E");
+  --glass-noise-size: auto;
 }
