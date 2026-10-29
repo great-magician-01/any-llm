@@ -4,6 +4,8 @@ import { NTag, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { fetchSummary, fetchRecords, fetchDaily, fetchUsageModels, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '@/utils/format'
+import { bucketLabel } from '@/utils/bill'
+import { currentMonthRange } from '@/utils/range'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import BarChart from '@/components/BarChart.vue'
@@ -20,12 +22,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 // 汇总时间范围（仅影响汇总统计，明细始终显示最新）：默认本月 1 号至今，
-// 清空选择即回到全部用量
-function currentMonthRange(): [number, number] {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return [new Date(today.getFullYear(), today.getMonth(), 1).getTime(), today.getTime()]
-}
+// 清空选择即回到全部用量。快捷档与 Bills 页共用（utils/range.ts）
 const range = ref<[number, number] | null>(currentMonthRange())
 // 清空范围 = 查看全部用量，给一个一键回到本月的入口
 const rangeShortcuts: Record<string, () => [number, number]> = { '本月': currentMonthRange }
@@ -114,12 +111,9 @@ function selectRangeAsTrend() {
 }
 
 /* ---- 趋势图 ---- */
-const trendLabels = computed(() =>
-  daily.value.map((d) => {
-    const dt = new Date(d.day)
-    return `${dt.getMonth() + 1}/${dt.getDate()}`
-  }),
-)
+// 横轴标签走共享的 bucketLabel：直接取 "YYYY-MM-DD" 字符串前缀（d.day 是
+// 服务端本地日），不走 new Date() 的浏览器时区换算——跨时区浏览器会把日期看偏一天
+const trendLabels = computed(() => daily.value.map((d) => bucketLabel(d.day)))
 const showPrompt = ref(true)
 const showCompletion = ref(true)
 // 输入/输出系列色跟品牌变量走（随界面主题换肤）；下方 PALETTE 是数据可视化固定色板

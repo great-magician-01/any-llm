@@ -156,6 +156,38 @@ func TestBalancePollerBiz_StartPollsThenStops(t *testing.T) {
 	}
 }
 
+// 业务规则：PollOnce 的「归档快照 + 余额联动记账」是一条链——两次抓取之间余额
+// 下降时账单必须落库（DoSync 保证任务不丢；RecordBalanceSnapshot 保证快照与
+// 账单同进退）。真厂商 fetch 用假服务器替代。
+func TestBalancePollerBiz_PollOnceRecordsBills(t *testing.T) {
+	d := bizOpenDB(t)
+	w := bizStartWriter(t, d)
+	var body atomic.Value
+	body.Store(bizDeepSeekBody)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, body.Load().(string))
+	}))
+	t.Cleanup(srv.Close)
+	registerTestHost(t, srv.URL, VendorDeepSeek)
+	bizCreateUpstream(t, d, "ds", srv.URL)
+
+	p := NewBalancePoller(d, w, time.Hour)
+	t.Cleanup(p.Stop)
+	p.PollOnce(context.Background()) // 首次：只有基线快照，不记账
+
+	body.Store(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"108.35","granted_balance":"10.00","topped_up_balance":"98.35"}]}`)
+	p.PollOnce(context.Background()) // 余额下降 → 自动记账
+
+	// PollOnce 走 DoSync，返回即落库，无需等待异步写入
+	bills, total, err := store.BillsList(d, nil, time.Time{}, time.Time{}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || bills[0].AmountMicros != 1_650_000 || bills[0].Kind != store.BillKindAuto {
+		t.Fatalf("bills=%+v (total=%d), want one auto bill of 1.65", bills, total)
+	}
+}
+
 // 业务规则：PollOnce（定时轮询、启动时的一次性抓取、手动刷新共用）只为「厂商受支持
 // + 启用 + 未过期」的上游写 balance_snapshots；禁用、已过期、不支持厂商的上游一律
 // 跳过——且跳过必须发生在发请求之前（厂商端点命中数只能是 1）。

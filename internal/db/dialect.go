@@ -13,42 +13,41 @@ import (
 // 方言相关的小助手。原则：调用方照常用 ? 占位写 SQL，方言差异集中在这里收口，
 // 不在业务代码里散 switch。
 
+// QueryExec 是 *sql.DB 与 *sql.Tx 共有的执行面：需要「同一套 INSERT 在事务内外
+// 两用」的调用方（如 RecordBalanceSnapshot 的原子插入）用它泛化。
+type QueryExec interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // InsertReturningID 执行一条 INSERT 并取回自增 id。
 //
 // PG/SQLite 走 RETURNING；MySQL 没有 RETURNING，改用 Exec + LastInsertId。
 // query 一律按「带 RETURNING id 结尾」的形态书写，本函数负责去掉后缀。
 func InsertReturningID(d *sql.DB, query string, args ...any) (int64, error) {
-	if DialectOf(d) != DialectMySQL {
-		var id int64
-		err := d.QueryRow(Rebind(d, query), args...).Scan(&id)
-		return id, err
-	}
-	q := strings.TrimSpace(query)
-	if !strings.HasSuffix(q, "RETURNING id") {
-		return 0, fmt.Errorf("InsertReturningID: query must end in \"RETURNING id\", got %q", q)
-	}
-	q = strings.TrimSpace(strings.TrimSuffix(q, "RETURNING id"))
-	res, err := d.Exec(q, args...)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
+	return InsertReturningIDOn(d, d, query, args...)
 }
 
 // InsertReturningIDTx 是 InsertReturningID 的事务版本。MySQL 分支同样走
 // LastInsertId（驱动从 OK 包里取，任意语句都可用）。
 func InsertReturningIDTx(tx *sql.Tx, d *sql.DB, query string, args ...any) (int64, error) {
+	return InsertReturningIDOn(tx, d, query, args...)
+}
+
+// InsertReturningIDOn 是 InsertReturningID 的执行面抽象版，*sql.DB 与 *sql.Tx
+// 两用；两个具名入口都是它的薄包装。
+func InsertReturningIDOn(e QueryExec, d *sql.DB, query string, args ...any) (int64, error) {
 	if DialectOf(d) != DialectMySQL {
 		var id int64
-		err := tx.QueryRow(Rebind(d, query), args...).Scan(&id)
+		err := e.QueryRow(Rebind(d, query), args...).Scan(&id)
 		return id, err
 	}
 	q := strings.TrimSpace(query)
 	if !strings.HasSuffix(q, "RETURNING id") {
-		return 0, fmt.Errorf("InsertReturningIDTx: query must end in \"RETURNING id\", got %q", q)
+		return 0, fmt.Errorf("InsertReturningIDOn: query must end in \"RETURNING id\", got %q", q)
 	}
 	q = strings.TrimSpace(strings.TrimSuffix(q, "RETURNING id"))
-	res, err := tx.Exec(q, args...)
+	res, err := e.Exec(q, args...)
 	if err != nil {
 		return 0, err
 	}

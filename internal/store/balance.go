@@ -23,21 +23,11 @@ type BalanceSnapshot struct {
 // InsertBalanceSnapshot archives one snapshot, filling CreatedAt with the
 // server-local now when unset (project timestamp convention: Go time.Now(),
 // never SQL defaults). On success s.ID is set to the new row id.
+//
+// 快照落库 + 余额联动记账要用原子版本（同一事务）时走 RecordBalanceSnapshot；
+// 这里是「只归档、不记账」的直连路径（测试、与记账无关的写入方）。
 func InsertBalanceSnapshot(d *sql.DB, s *BalanceSnapshot) error {
-	ts := s.CreatedAt
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-	id, err := db.InsertReturningID(d, `INSERT INTO balance_snapshots
-		(upstream_id, upstream_name, vendor, payload, created_at)
-		VALUES (?,?,?,?,?) RETURNING id`,
-		s.UpstreamID, s.UpstreamName, s.Vendor, string(s.Payload), ts)
-	if err != nil {
-		return fmt.Errorf("insert balance snapshot: %w", err)
-	}
-	s.ID = id
-	s.CreatedAt = ts
-	return nil
+	return insertBalanceSnapshotOn(d, d, s)
 }
 
 // LatestBalanceSnapshots returns the newest snapshot per upstream, for list

@@ -47,9 +47,18 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		if snap == nil {
 			continue
 		}
-		if err := a.writeSync(func(d *sql.DB) error { return store.InsertBalanceSnapshot(d, snap) }); err != nil {
-			logger.Error("admin: insert balance snapshot failed", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "err", err)
+		var billed int
+		if err := a.writeSync(func(d *sql.DB) error {
+			// 快照与账单同一事务落库（见 store.RecordBalanceSnapshot）
+			n, err := store.RecordBalanceSnapshot(d, snap)
+			billed = n
+			return err
+		}); err != nil {
+			logger.Error("admin: record balance snapshot failed", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "err", err)
 			continue
+		}
+		if billed > 0 {
+			logger.Info("admin: bill recorded from balance refresh", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "entries", billed)
 		}
 		out = append(out, snap)
 	}
@@ -123,10 +132,20 @@ func (a *API) refreshBalance(w http.ResponseWriter, r *http.Request, id int64) {
 		return
 	}
 	snap := &store.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
-	if err := a.writeSync(func(d *sql.DB) error { return store.InsertBalanceSnapshot(d, snap) }); err != nil {
-		logger.Error("admin: insert balance snapshot failed", "upstream", u.Name, "id", id, "err", err)
+	// 快照与账单同一事务落库（见 store.RecordBalanceSnapshot）：记账失败连快照
+	// 一起回滚并回 500，客户端下次刷新会重新抓取、仍与旧基线对比
+	var billed int
+	if err := a.writeSync(func(d *sql.DB) error {
+		n, err := store.RecordBalanceSnapshot(d, snap)
+		billed = n
+		return err
+	}); err != nil {
+		logger.Error("admin: record balance snapshot failed", "upstream", u.Name, "id", id, "err", err)
 		writeSyncErr(w, 500, err)
 		return
+	}
+	if billed > 0 {
+		logger.Info("admin: bill recorded from balance refresh", "upstream", u.Name, "id", id, "entries", billed)
 	}
 	writeJSON(w, 200, map[string]any{"data": snap})
 }
