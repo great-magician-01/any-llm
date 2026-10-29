@@ -267,6 +267,35 @@ var schemaTables = []Table{
 		},
 	},
 	{
+		Name: "bills",
+		Cols: []Column{
+			{Name: "id", Type: TypeBigInt, AutoID: true},
+			{Name: "upstream_id", Type: TypeBigInt},
+			// 冗余存名字（usage_records / balance_snapshots 同款）：上游删了账单
+			// 照常显示历史名称。
+			{Name: "upstream_name", Type: TypeText, Len: 255},
+			// 记账来源：auto = 余额快照联动（厂商余额差额自动入账），manual = 手动记账
+			{Name: "kind", Type: TypeText, Len: 16, Default: "'manual'"},
+			// 金额以 1e-6 币种单位存整数（micros）：SUM 聚合走 SQL 整数精确运算，
+			// 展示时再除回来——避免浮点金额直接入库（balance payload 的金额串
+			// 保持字符串同样的动机）。
+			{Name: "amount_micros", Type: TypeBigInt, Default: "0"},
+			{Name: "currency", Type: TypeText, Len: 16, Default: "'CNY'"},
+			// 账单归属时刻：自动记账 = 快照时刻；手动记账 = 用户选的日期（当日零点）
+			{Name: "billed_at", Type: TypeTime},
+			// 备注（手动记账选填；自动记账留空）
+			{Name: "note", Type: TypeText, Default: "''"},
+			// 自动记账的推导依据（JSON 文本：prev/new 余额、关联快照 id），供审计；
+			// 手动记账为空串。
+			{Name: "detail", Type: TypeText, Default: "''"},
+			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
+		},
+		Idx: []Index{
+			{Name: "idx_bills_billed_at", Columns: []string{"billed_at"}},
+			{Name: "idx_bills_upstream", Columns: []string{"upstream_id", "id DESC"}},
+		},
+	},
+	{
 		// 仅 MySQL：分表共享 id 的计数器，等价于 PG 的 conversation_records_id_seq。
 		Name: "id_sequences",
 		Only: DialectMySQL,

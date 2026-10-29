@@ -60,6 +60,13 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/balances", a.listLatestBalances)
 	mux.HandleFunc("POST /api/admin/balances", a.refreshAllBalances)
 
+	// 账单（手动记账 + 余额快照联动的自动记账查询）
+	mux.HandleFunc("GET /api/admin/bills", a.listBills)
+	mux.HandleFunc("GET /api/admin/bills/summary", a.billSummary)
+	mux.HandleFunc("POST /api/admin/bills", a.createBill)
+	mux.HandleFunc("PUT /api/admin/bills/{id}", withID(a.updateBill))
+	mux.HandleFunc("DELETE /api/admin/bills/{id}", withID(a.deleteBill))
+
 	// 对话归档（只读）与配置导入导出
 	mux.HandleFunc("GET /api/admin/conversations", a.listConversations)
 	mux.HandleFunc("GET /api/admin/conversations/{id}", withID(a.getConversation))

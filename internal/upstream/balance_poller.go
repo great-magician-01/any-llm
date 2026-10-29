@@ -101,6 +101,19 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 			continue
 		}
 		snap := &store.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
-		p.writer.DoAsync(func(d *sql.DB) error { return store.InsertBalanceSnapshot(d, snap) })
+		p.writer.DoAsync(func(d *sql.DB) error {
+			if err := store.InsertBalanceSnapshot(d, snap); err != nil {
+				return err
+			}
+			// 余额下降部分自动记一笔账单；同一闭包内做「读上一条 → 插账单」，
+			// writer 单 goroutine 串行保证不会与并发快照交错重复记账
+			n, err := store.RecordBillFromBalanceDelta(d, snap)
+			if err != nil {
+				logger.Warn("balance poller: record bill failed", "upstream", u.Name, "id", u.ID, "err", err)
+			} else if n > 0 {
+				logger.Info("balance poller: bill recorded", "upstream", u.Name, "id", u.ID, "entries", n)
+			}
+			return nil
+		})
 	}
 }

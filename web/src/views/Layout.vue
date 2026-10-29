@@ -37,6 +37,7 @@ const menuItems = [
   item('模型别名', '/aliases', 'link'),
   item('API 密钥', '/keys', 'key'),
   item('用量统计', '/usage', 'chart'),
+  item('账单', '/bills', 'wallet'),
   item('对话记录', '/conversations', 'chat'),
 ]
 </script>
