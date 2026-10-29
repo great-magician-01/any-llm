@@ -7,8 +7,11 @@ import { rgba, surfaceOf, themeById, themeNaiveOverrides, type ThemeId } from '@
  *
  * 主题注册表（utils/themes.ts）给了每个主题的品牌色与整套表面色：
  *   - 默认蓝（深色 / 浅色）不注入品牌覆盖，用本文件内置值；
- *   - 机体主题（初号机 / 明日香 / 凌波丽）的品牌色段与表面调色板由注册表提供，
- *     因此选中机体主题时连背景、卡片、浮层、描边一起换。
+ *   - 机体主题（初号机 / 明日香 / 凌波丽）的品牌色段、表面调色板与文字色阶由
+ *     注册表提供，因此选中机体主题时连背景、卡片、浮层、描边、文字一起换成
+ *     机体温。默认深色注册表里的文字值就是本文件原来的 slate，渲染不变；
+ *     菜单悬停 / 图标两个档位旧值（#e2e8f0 / #6b7c98）介于文字档之间，机体
+ *     主题用注册表档位，默认蓝保留旧值，保证不选机体主题时逐像素不变。
  * 浅色只存在于默认蓝主题，表面的浅色值仍写在本文件与 style.css 的 light 块里。
  */
 
@@ -66,7 +69,11 @@ function menuActive(theme: ThemeId, isDark: boolean) {
 
 export function darkThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverrides {
   const s = surfaceOf(theme)
+  const t = themeById(theme)
   const menu = menuActive(theme, true)
+  // 默认蓝保留旧版菜单悬停/图标两个档位（介于文字档位之间），机体主题用注册表文字色
+  const menuHoverText = t.primary ? s.text.strong : '#e2e8f0'
+  const menuIcon = t.primary ? s.text.faint : '#6b7c98'
   return {
     common: {
       ...buildCommon(theme),
@@ -80,11 +87,11 @@ export function darkThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverride
       actionColor: s.card,
       hoverColor: rgba(s.tint, 0.08),
 
-      textColorBase: '#cbd5e1',
-      textColor1: '#f1f5f9',
-      textColor2: '#cbd5e1',
-      textColor3: '#8fa0b8',
-      placeholderColor: '#5b6b82',
+      textColorBase: s.text.base,
+      textColor1: s.text.strong,
+      textColor2: s.text.base,
+      textColor3: s.text.muted,
+      placeholderColor: s.text.faint,
       borderColor: rgba(s.tint, 0.18),
       dividerColor: rgba(s.tint, 0.12),
     },
@@ -95,12 +102,12 @@ export function darkThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverride
     Menu: {
       borderRadius: '10px',
       itemHeight: '42px',
-      itemTextColor: '#8fa0b8',
-      itemTextColorHover: '#e2e8f0',
+      itemTextColor: s.text.muted,
+      itemTextColorHover: menuHoverText,
       itemTextColorActive: menu.text,
       itemTextColorChildActive: menu.text,
-      itemIconColor: '#6b7c98',
-      itemIconColorHover: '#e2e8f0',
+      itemIconColor: menuIcon,
+      itemIconColorHover: menuHoverText,
       itemIconColorActive: menu.text,
       itemIconColorChildActive: menu.text,
       itemColorHover: rgba(s.tint, 0.06),
@@ -119,8 +126,8 @@ export function darkThemeOverrides(theme: ThemeId = 'dark'): GlobalThemeOverride
       thColor: rgba(s.tint, 0.05),
       thColorHover: rgba(s.tint, 0.09),
       tdColorHover: rgba(s.tint, 0.04),
-      thTextColor: '#8fa0b8',
-      tdTextColor: '#cbd5e1',
+      thTextColor: s.text.muted,
+      tdTextColor: s.text.base,
       thFontWeight: '600',
     },
     Button: {

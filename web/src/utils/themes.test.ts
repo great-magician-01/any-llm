@@ -60,22 +60,33 @@ describe('主题注册表', () => {
       } else {
         expect(t.surface?.bg).toMatch(/^#[0-9a-f]{6}$/)
         expect(t.surface?.tint).toMatch(/^\d{1,3}, \d{1,3}, \d{1,3}$/)
+        expect(t.surface?.text.strong).toMatch(/^#[0-9a-f]{6}$/)
+        expect(t.surface?.text.base).toMatch(/^#[0-9a-f]{6}$/)
+        expect(t.surface?.text.muted).toMatch(/^#[0-9a-f]{6}$/)
+        expect(t.surface?.text.faint).toMatch(/^#[0-9a-f]{6}$/)
+        expect(t.surface?.codeBg).toMatch(/^rgba\(/)
         expect(t.preview).toBe(t.surface?.bg)
       }
     }
   })
 
-  it('默认蓝不注入 naive 覆盖（内置值在 theme.ts 里），机体主题注入品牌色段', () => {
+  it('默认蓝不注入 naive 覆盖（内置值在 theme.ts 里），机体主题注入品牌与语义色段', () => {
     expect(themeNaiveOverrides('dark')).toEqual({})
     expect(themeNaiveOverrides('light')).toEqual({})
     const eva01 = themeNaiveOverrides('eva-01')
     expect(eva01.primaryColor).toBe('#9b6dff')
     expect(eva01).not.toHaveProperty('errorColor')
-    // 明日香主题：主色红与语义 error 撞车，error 族整体让位到品红
+    // 初号机：success 让位给机体的荧光绿（压深到 lime-600 保按钮白字可读）
+    expect(eva01.successColor).toBe('#65a30d')
+    expect(eva01.successColorPressed).toBe('#4d7c0f')
+    // 明日香主题：主色红与语义 error 撞车，error 族让位到品红；warning 让位到机体橙
     const eva02 = themeNaiveOverrides('eva-02')
     expect(eva02.primaryColor).toBe('#ef4444')
     expect(eva02.errorColor).toBe('#ec4899')
     expect(eva02.errorColorPressed).toBe('#db2777')
+    expect(eva02.warningColor).toBe('#ea580c')
+    // 凌波丽：默认琥珀黄已贴近机体苍黄，无语义覆盖
+    expect(themeNaiveOverrides('eva-00')).not.toHaveProperty('warningColor')
   })
 
   it('rgba 助手与 CSS 书写格式一致', () => {
@@ -101,7 +112,8 @@ describe('主题与 CSS 变量块同步', () => {
     if (a.css.glow2Light) expect(css).toContain(squash(`--bg-glow-2: ${a.css.glow2Light};`))
   })
 
-  // 机体主题的表面变量：背景 / 卡片 / 描边 / 浮层一起换，缺一项就会有一块残留在 navy
+  // 机体主题的表面变量：背景 / 卡片 / 描边 / 浮层 / 文字 / 代码块一起换，
+  // 缺一项就会有一块残留在默认 navy
   it.each(EVA_THEME_IDS)('%s：style.css 的整套表面变量与注册表一致', (id) => {
     const s = themeById(id).surface!
     const css = squash(styleSrc)
@@ -115,6 +127,22 @@ describe('主题与 CSS 变量块同步', () => {
     expect(css).toContain(squash(`--login-card-bg: ${s.loginCardBg};`))
     expect(css).toContain(squash(`--overlay-1: ${rgba(s.tint, 0.1)};`))
     expect(css).toContain(squash(`--overlay-2: ${rgba(s.tint, 0.12)};`))
+    // 文字色阶与代码块底色：机体主题不再是默认 slate / navy
+    expect(css).toContain(squash(`--text: ${s.text.strong};`))
+    expect(css).toContain(squash(`--text-2: ${s.text.base};`))
+    expect(css).toContain(squash(`--text-3: ${s.text.muted};`))
+    expect(css).toContain(squash(`--text-4: ${s.text.faint};`))
+    expect(css).toContain(squash(`--code-bg: ${s.codeBg};`))
+  })
+
+  // EVA 专属装饰件：页头警示条纹、body / 登录页 / 玻璃噪声的蜂窝纹理都要存在
+  it('机体主题带 EVA 专属装饰（警示条纹 + NERV 蜂窝纹理）', () => {
+    for (const id of EVA_THEME_IDS) {
+      expect(styleSrc).toContain(`:root[data-theme='${id}'] .page-header h1::after`)
+    }
+    expect(styleSrc.match(/--bg-pattern:\s*url\(/g)).toHaveLength(3)
+    expect(styleSrc.match(/--grid-image:\s*url\(/g)).toHaveLength(3)
+    expect(glassSrc.match(/--glass-noise-image:\s*url\(/g)).toHaveLength(3)
   })
 
   // glass.css 侧：机体主题的品牌值与流光背景块

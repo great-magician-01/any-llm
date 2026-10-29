@@ -115,14 +115,9 @@ async function login() {
   background: radial-gradient(circle, color-mix(in srgb, var(--brand-2) 40%, transparent), transparent 65%);
   animation-delay: -7s;
 }
-/* 浅色主题：光球和网格都收着点，白底上原来的值太脏 */
+/* 浅色主题：光球收着点，白底上原来的值太脏（网格深色线在 style.css 的 light 块） */
 :root[data-theme='light'] .orb {
   opacity: 0.3;
-}
-:root[data-theme='light'] .grid-overlay {
-  background-image:
-    linear-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
 }
 @keyframes drift {
   from {
@@ -135,10 +130,10 @@ async function login() {
 .grid-overlay {
   position: absolute;
   inset: 0;
-  background-image:
-    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
-  background-size: 44px 44px;
+  /* 网格纹理走变量：默认细方格，浅色主题换深色线，EVA 机体主题换 NERV 蜂窝
+     （取值都在 style.css 的对应主题块里） */
+  background-image: var(--grid-image);
+  background-size: var(--grid-size, 44px 44px);
   mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 75%);
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 45%, #000 30%, transparent 75%);
 }
