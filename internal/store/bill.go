@@ -29,7 +29,7 @@ type Bill struct {
 	UpstreamID   int64     `json:"upstream_id"`
 	UpstreamName string    `json:"upstream_name"`
 	Kind         string    `json:"kind"` // auto | manual
-	AmountMicros int64     `json:"amount_micros"`
+	AmountMicros int64     `json:"amount_micros,string"`
 	Currency     string    `json:"currency"`
 	BilledAt     time.Time `json:"billed_at"`
 	Note         string    `json:"note"`
@@ -244,7 +244,7 @@ var ErrBillWindowTooWide = errors.New("bill window too wide")
 // 加成一个数字，调用方按币种选择或分系列展示。
 type BillCurrencyAmount struct {
 	Currency     string `json:"currency"`
-	AmountMicros int64  `json:"amount_micros"`
+	AmountMicros int64  `json:"amount_micros,string"`
 }
 
 // BillBucketStat 是一个时间桶（日/月/年）的账单聚合。
@@ -357,9 +357,24 @@ func BillWindow(bucket, from, to string) (start, end time.Time, err error) {
 	return start, end, nil
 }
 
+// billQueryer 抽象聚合查询的 *sql.DB / *sql.Tx 执行面；dialect 仍取 *sql.DB，
+// 用于 Rebind 与日期表达式，事务本身不提供方言信息。
+type billQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // BillTrend 聚合窗口 [start, end)（来自 BillWindow）内的账单金额，空桶零填充、
 // 按时间升序，前端图表直接可用；空窗口返回空切片。
 func BillTrend(d *sql.DB, bucket string, upstreamID *int64, start, end time.Time) ([]BillBucketStat, error) {
+	return billTrendOn(d, d, bucket, upstreamID, start, end)
+}
+
+// BillTrendTx 是 BillTrend 的事务版本，供 summary 在同一一致性快照内聚合。
+func BillTrendTx(tx *sql.Tx, dialect *sql.DB, bucket string, upstreamID *int64, start, end time.Time) ([]BillBucketStat, error) {
+	return billTrendOn(tx, dialect, bucket, upstreamID, start, end)
+}
+
+func billTrendOn(queryer billQueryer, dialect *sql.DB, bucket string, upstreamID *int64, start, end time.Time) ([]BillBucketStat, error) {
 	step, layout, _, _, err := billBucketSpec(bucket)
 	if err != nil {
 		return nil, err
@@ -378,12 +393,12 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, start, end time.Time
 	}
 	// DayBucketExpr 恒产 "YYYY-MM-DD" 文本，按桶宽截前缀即得 month/year 桶；
 	// substr 三方言都支持（PG/MySQL 均为标准/同义写法）。
-	dayExpr := db.DayBucketExpr(d, "billed_at")
+	dayExpr := db.DayBucketExpr(dialect, "billed_at")
 	bucketExpr := "substr(" + dayExpr + ", 1, " + strconv.Itoa(len(layout)) + ")"
 	where, args := billWhere(upstreamID, start, end)
 	q := "SELECT " + bucketExpr + ", currency, COALESCE(SUM(amount_micros), 0), COUNT(*) FROM bills" + where +
 		" GROUP BY " + bucketExpr + ", currency ORDER BY " + bucketExpr + ", currency"
-	rows, err := d.Query(db.Rebind(d, q), args...)
+	rows, err := queryer.Query(db.Rebind(dialect, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("bill trend: %w", err)
 	}
@@ -410,17 +425,26 @@ type BillUpstreamTotal struct {
 	UpstreamID   int64  `json:"upstream_id"`
 	UpstreamName string `json:"upstream_name"`
 	Currency     string `json:"currency"`
-	AmountMicros int64  `json:"amount_micros"`
+	AmountMicros int64  `json:"amount_micros,string"`
 	Count        int    `json:"count"`
 }
 
 // BillUpstreamTotals 返回窗口内按上游汇总的账单合计，金额降序。
 func BillUpstreamTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]BillUpstreamTotal, error) {
+	return billUpstreamTotalsOn(d, d, upstreamID, from, to)
+}
+
+// BillUpstreamTotalsTx 是 BillUpstreamTotals 的事务版本。
+func BillUpstreamTotalsTx(tx *sql.Tx, dialect *sql.DB, upstreamID *int64, from, to time.Time) ([]BillUpstreamTotal, error) {
+	return billUpstreamTotalsOn(tx, dialect, upstreamID, from, to)
+}
+
+func billUpstreamTotalsOn(queryer billQueryer, dialect *sql.DB, upstreamID *int64, from, to time.Time) ([]BillUpstreamTotal, error) {
 	where, args := billWhere(upstreamID, from, to)
 	q := `SELECT upstream_id, upstream_name, currency, COALESCE(SUM(amount_micros), 0), COUNT(*)
 		FROM bills` + where + ` GROUP BY upstream_id, upstream_name, currency
 		ORDER BY SUM(amount_micros) DESC, upstream_name`
-	rows, err := d.Query(db.Rebind(d, q), args...)
+	rows, err := queryer.Query(db.Rebind(dialect, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("bill upstream totals: %w", err)
 	}
@@ -442,15 +466,24 @@ type BillKindTotal struct {
 	Kind         string `json:"kind"`
 	Currency     string `json:"currency"`
 	Count        int    `json:"count"`
-	AmountMicros int64  `json:"amount_micros"`
+	AmountMicros int64  `json:"amount_micros,string"`
 }
 
 // BillKindTotals 返回窗口内按 kind × 币种的合计。
 func BillKindTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKindTotal, error) {
+	return billKindTotalsOn(d, d, upstreamID, from, to)
+}
+
+// BillKindTotalsTx 是 BillKindTotals 的事务版本。
+func BillKindTotalsTx(tx *sql.Tx, dialect *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKindTotal, error) {
+	return billKindTotalsOn(tx, dialect, upstreamID, from, to)
+}
+
+func billKindTotalsOn(queryer billQueryer, dialect *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKindTotal, error) {
 	where, args := billWhere(upstreamID, from, to)
 	q := `SELECT kind, currency, COUNT(*), COALESCE(SUM(amount_micros), 0) FROM bills` + where +
 		` GROUP BY kind, currency`
-	rows, err := d.Query(db.Rebind(d, q), args...)
+	rows, err := queryer.Query(db.Rebind(dialect, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("bill kind totals: %w", err)
 	}
@@ -508,11 +541,11 @@ type billBalancePayload struct {
 // 基线，这两次快照之间的消费就永久丢了——所以记账失败时连快照一起回滚，下次
 // 抓取自动重试（对比基线仍是旧快照）。返回入账条数。
 //
-// 必须经由写入方串行上下文调用（db.Writer 的单 goroutine）：「读上一条快照 →
-// 插账单」与并发的另一次快照落库交错才不会重复记账。该保证只在单进程内成立——
-// 多实例共享一个库、或管理端刷新与 poller 并发抓取同一上游时，插入顺序可能与
-// 抓取顺序不一致，极端情况下会按错误基线记账；detail JSON 里留了前后余额与
-// 快照 id，发现错账直接删行。
+// 必须经由写入方串行上下文调用（db.Writer 的单 goroutine），生产刷新路径还必须在
+// 外层持有 upstream.LockBalanceUpstream，且锁要覆盖「抓取余额 → 调用本函数」完整链路：
+// 进程内 mutex 协调本机入口，PG/MySQL 的数据库会话锁协调共享库的多个进程，保证响应
+// 完成顺序就是快照落库顺序。直接调用本函数不会自行取得外层锁；绕过生产刷新入口的
+// 多进程写入仍须自行提供同等串行保证。detail JSON 留了前后余额与快照 id 供审计。
 func RecordBalanceSnapshot(d *sql.DB, snap *BalanceSnapshot) (int, error) {
 	tx, err := d.Begin()
 	if err != nil {

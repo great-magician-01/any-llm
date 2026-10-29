@@ -6,8 +6,8 @@ export interface Bill {
   upstream_id: number
   upstream_name: string
   kind: 'auto' | 'manual'
-  /** 金额，1e-6 币种单位的整数（后端 SUM 是精确整数运算，展示时除回来） */
-  amount_micros: number
+  /** 金额，1e-6 币种单位的十进制整数字符串（避免 JSON number 丢失 int64 精度） */
+  amount_micros: string
   currency: string
   billed_at: string
   note: string
@@ -18,7 +18,7 @@ export interface Bill {
 
 export interface BillCurrencyAmount {
   currency: string
-  amount_micros: number
+  amount_micros: string
 }
 
 /** 一个时间桶（日/月/年）的趋势聚合；金额按币种拆分，不能跨币种相加 */
@@ -33,7 +33,7 @@ export interface BillUpstreamTotal {
   upstream_id: number
   upstream_name: string
   currency: string
-  amount_micros: number
+  amount_micros: string
   count: number
 }
 
@@ -42,7 +42,7 @@ export interface BillKindTotal {
   kind: Bill['kind']
   currency: string
   count: number
-  amount_micros: number
+  amount_micros: string
 }
 
 export interface BillSummary {
@@ -63,6 +63,7 @@ export interface BillInput {
 export type BillBucket = 'day' | 'month' | 'year'
 
 export interface BillListParams {
+  bucket: BillBucket
   upstream_id?: number
   from?: string
   to?: string

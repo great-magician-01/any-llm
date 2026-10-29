@@ -2,24 +2,25 @@
 
 import { formatMoney, localISO } from './format'
 
-const MICROS = 1_000_000
+const MICROS = 1_000_000n
 
 /**
- * micros 整数 → 十进制金额串：至少两位小数，多余尾零去掉但保留精度
- * （12340000 → "12.34"，12345000 → "12.345"，1200000 → "1.20"）。
- * 全程整数运算，不走浮点除法。
+ * micros 十进制整数字符串 → 十进制金额串：至少两位小数，多余尾零去掉但保留精度
+ * （"12340000" → "12.34"，"12345000" → "12.345"，"1200000" → "1.20"）。
+ * 全程 BigInt 运算，超过 JS number 安全整数范围的 int64 也不丢精度。
  */
-export function microsToAmount(micros: number): string {
-  const neg = micros < 0
-  const abs = Math.abs(micros)
-  const int = Math.floor(abs / MICROS)
+export function microsToAmount(micros: string): string {
+  const value = BigInt(micros)
+  const neg = value < 0n
+  const abs = neg ? -value : value
+  const int = abs / MICROS
   const frac = String(abs % MICROS).padStart(6, '0').replace(/0+$/, '')
   const fracPadded = frac.length === 0 ? '00' : frac.length === 1 ? frac + '0' : frac
   return (neg ? '-' : '') + int + '.' + fracPadded
 }
 
 /** micros + 币种 → "¥12.34"（复用余额面板的币种符号规则） */
-export function formatBillMoney(micros: number, currency: string): string {
+export function formatBillMoney(micros: string, currency: string): string {
   return formatMoney(microsToAmount(micros), currency)
 }
 
@@ -55,7 +56,7 @@ export function amountInputError(s: string): string | null {
   const t = s.trim()
   // 数字部分必填：'.5'、'12.'、'+7' 与后端同口径合法，空串/裸符号/字母拒绝
   if (!/^[+-]?(\d+(\.\d{0,6})?|\.\d{1,6})$/.test(t)) return '金额格式不正确'
-  if (Number(t) <= 0) return '金额必须大于 0'
+  if (t.startsWith('-') || !/[1-9]/.test(t)) return '金额必须大于 0'
   return null
 }
 
@@ -76,13 +77,23 @@ export function billDetailText(detail?: string): string {
 
 /** 按币种归并金额行 → "¥31.65"（单币种）或 "¥100.00 + $50.00"（混币种）。
  * 后端按币种拆行正是因为跨币种加总没有意义，展示侧同样不假装能加。 */
-export function perCurrencyLabel(rows: { currency: string; amount_micros: number }[]): string {
-  const byCur = new Map<string, number>()
+export function perCurrencyLabel(rows: { currency: string; amount_micros: string }[]): string {
+  const byCur = new Map<string, bigint>()
   for (const r of rows) {
-    byCur.set(r.currency, (byCur.get(r.currency) ?? 0) + r.amount_micros)
+    byCur.set(r.currency, (byCur.get(r.currency) ?? 0n) + BigInt(r.amount_micros))
   }
   return [...byCur.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([currency, micros]) => formatBillMoney(micros, currency))
+    .sort((a, b) => a[1] === b[1] ? 0 : a[1] < b[1] ? 1 : -1)
+    .map(([currency, micros]) => formatBillMoney(micros.toString(), currency))
     .join(' + ')
+}
+
+/** micros 占比 → 一位小数百分比；BigInt 先放大再取整，避免大 int64 先经 number。 */
+export function formatBillPercent(part: string, total: string): string {
+  const numerator = BigInt(part)
+  const denominator = BigInt(total)
+  if (denominator <= 0n) return '—'
+  // 放大了 1000 倍（100% × 10），加半个分母实现一位小数的四舍五入。
+  const tenths = (numerator * 1000n + denominator / 2n) / denominator
+  return `${tenths / 10n}.${tenths % 10n}%`
 }

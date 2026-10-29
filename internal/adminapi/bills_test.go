@@ -1,12 +1,14 @@
 package adminapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/store"
 )
 
@@ -306,5 +308,178 @@ func TestBillsSummaryCoherentWindow(t *testing.T) {
 	}
 	if bucketSum != 1_650_000 || upstreamSum != 1_650_000 || kindSum != 1_650_000 {
 		t.Fatalf("incoherent window: buckets=%d upstreams=%d kinds=%d", bucketSum, upstreamSum, kindSum)
+	}
+}
+
+func TestBillsListUsesSummaryWindowWhenDateEndpointMissing(t *testing.T) {
+	a, d := setupAPI(t)
+	now := time.Now()
+	seed := []*store.Bill{
+		{UpstreamID: 1, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 1_000_000, Currency: "CNY", BilledAt: now.AddDate(-2, 0, 0)},
+		{UpstreamID: 1, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 2_000_000, Currency: "CNY", BilledAt: now.Add(-time.Hour)},
+		{UpstreamID: 1, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 4_000_000, Currency: "CNY", BilledAt: now.AddDate(0, 0, 5)},
+	}
+	for _, b := range seed {
+		if err := store.InsertBill(d, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from := now.AddDate(0, 0, -10).Format("2006-01-02")
+	cases := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{name: "default day excludes old and future", query: "", want: 1},
+		{name: "from-only ends tomorrow", query: "?from=" + from, want: 1},
+		{name: "bucket year accepted", query: "?bucket=year", want: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/admin/bills"+tc.query, nil)
+			w := httptest.NewRecorder()
+			a.Handler().ServeHTTP(w, req)
+			if w.Code != 200 {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				Total int `json:"total"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp.Total != tc.want {
+				t.Fatalf("total=%d want %d; body=%s", resp.Total, tc.want, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestBillsListToOnlyAndExplicitRange(t *testing.T) {
+	a, d := setupAPI(t)
+	for _, b := range []*store.Bill{
+		{UpstreamID: 1, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 1_000_000, Currency: "CNY", BilledAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local)},
+		{UpstreamID: 1, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 2_000_000, Currency: "CNY", BilledAt: time.Date(2026, 1, 15, 0, 0, 0, 0, time.Local)},
+	} {
+		if err := store.InsertBill(d, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		query string
+		want  int
+	}{
+		// day 的 to-only 默认窗口从 1/2 开始，不能把 1/1 的旧账带进来。
+		{query: "?bucket=day&to=2026-01-31", want: 1},
+		// 两端都给仍按精确日期，不走 to-only 的默认回看起点。
+		{query: "?bucket=day&from=2026-01-01&to=2026-01-31", want: 2},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest("GET", "/api/admin/bills"+tc.query, nil)
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("%s: status=%d body=%s", tc.query, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Total int `json:"total"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Total != tc.want {
+			t.Fatalf("%s: total=%d want %d", tc.query, resp.Total, tc.want)
+		}
+	}
+}
+
+func TestBillsCreateAmountMicrosJSONString(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://api.deepseek.com", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"upstream_id":` + bizItoa(uid) + `,"date":"2026-10-15","amount":"9007199254.740993"}`
+	req := httptest.NewRequest("POST", "/api/admin/bills", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"amount_micros":"9007199254740993"`) {
+		t.Fatalf("amount_micros must preserve int64 as a JSON string: %s", w.Body.String())
+	}
+}
+
+func TestBillsUpdateDeleteRaceCannotReportZeroRowUpdate(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://api.deepseek.com", APIKey: "k", Format: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &store.Bill{UpstreamID: uid, UpstreamName: "ds", Kind: store.BillKindManual, AmountMicros: 1_000_000, Currency: "CNY", BilledAt: time.Now()}
+	if err := store.InsertBill(d, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE bill_update_audit (bill_id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TRIGGER bill_update_audit_trigger AFTER UPDATE ON bills BEGIN
+		INSERT INTO bill_update_audit(bill_id) VALUES (NEW.id); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := db.NewWriter(d, 8)
+	writer.Start()
+	t.Cleanup(writer.Stop)
+	a = NewAPI(d, writer, nil)
+	handler := a.Handler()
+
+	// 先占住 writer，再让 PUT/DELETE 竞争入队；无论谁先，200 的 PUT 都必须
+	// 对应一条真实 UPDATE，不能是 DELETE 后的 0 行更新。
+	blockStarted := make(chan struct{})
+	releaseBlock := make(chan struct{})
+	blockDone := make(chan error, 1)
+	go func() {
+		blockDone <- writer.DoSync(func(_ *sql.DB) error {
+			close(blockStarted)
+			<-releaseBlock
+			return nil
+		})
+	}()
+	<-blockStarted
+	putDone := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest("PUT", "/api/admin/bills/"+bizItoa(b.ID), strings.NewReader(
+			`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-16","amount":"2"}`))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		putDone <- w.Code
+	}()
+	deleteDone := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest("DELETE", "/api/admin/bills/"+bizItoa(b.ID), nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		deleteDone <- w.Code
+	}()
+	time.Sleep(20 * time.Millisecond) // 让两个请求都进入 writer 待写队列
+	close(releaseBlock)
+	if err := <-blockDone; err != nil {
+		t.Fatal(err)
+	}
+	putStatus, deleteStatus := <-putDone, <-deleteDone
+	if deleteStatus != 200 || (putStatus != 200 && putStatus != 404) {
+		t.Fatalf("PUT=%d DELETE=%d", putStatus, deleteStatus)
+	}
+	var updates int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM bill_update_audit WHERE bill_id = ?`, b.ID).Scan(&updates); err != nil {
+		t.Fatal(err)
+	}
+	if putStatus == 200 && updates != 1 {
+		t.Fatalf("PUT returned 200 after a zero-row update; audit rows=%d", updates)
+	}
+	if putStatus == 404 && updates != 0 {
+		t.Fatalf("PUT returned 404 but updated %d rows", updates)
 	}
 }

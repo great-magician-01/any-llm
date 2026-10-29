@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Bills from './Bills.vue'
 import BarChart from '@/components/BarChart.vue'
 import StatCard from '@/components/StatCard.vue'
-import { NDataTable, NSelect } from 'naive-ui'
+import { NDataTable, NDatePicker, NSelect } from 'naive-ui'
 // ?raw 取源码做结构断言（vite/client 已声明 *?raw 模块）
 import SRC from './Bills.vue?raw'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
@@ -32,7 +32,7 @@ const AUTO_BILL = {
   upstream_id: 1,
   upstream_name: 'deepseek',
   kind: 'auto',
-  amount_micros: 1_650_000,
+  amount_micros: '1650000',
   currency: 'CNY',
   billed_at: '2026-10-20T08:30:00+08:00',
   note: '',
@@ -45,7 +45,7 @@ const MANUAL_BILL = {
   upstream_id: 1,
   upstream_name: 'deepseek',
   kind: 'manual',
-  amount_micros: 30_000_000,
+  amount_micros: '30000000',
   currency: 'CNY',
   billed_at: '2026-10-15T00:00:00+08:00',
   note: '订阅费',
@@ -59,7 +59,7 @@ beforeEach(() => {
   resetMessages()
   api = createApiMock().install()
   api.on('get', '/upstreams', { data: { data: [UPSTREAM] } })
-  api.on('get', '/bills/summary', { data: { buckets: [{ bucket: '2026-10-20', amounts: [{ currency: 'CNY', amount_micros: 1_650_000 }], count: 1 }], upstreams: [{ upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: 31_650_000, count: 2 }], kinds: [{ kind: 'auto', currency: 'CNY', count: 1, amount_micros: 1_650_000 }, { kind: 'manual', currency: 'CNY', count: 1, amount_micros: 30_000_000 }] } })
+  api.on('get', '/bills/summary', { data: { buckets: [{ bucket: '2026-10-20', amounts: [{ currency: 'CNY', amount_micros: '1650000' }], count: 1 }], upstreams: [{ upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: '31650000', count: 2 }], kinds: [{ kind: 'auto', currency: 'CNY', count: 1, amount_micros: '1650000' }, { kind: 'manual', currency: 'CNY', count: 1, amount_micros: '30000000' }] } })
   api.on('get', '/bills', { data: { data: [AUTO_BILL, MANUAL_BILL], total: 2 } })
 })
 
@@ -88,6 +88,7 @@ describe('账单页', () => {
     expect(summaryCalls[0].params.bucket).toBe('day')
     expect(summaryCalls[0].params.from).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(callsTo('get', '/bills')[0].params.page).toBe(1)
+    expect(callsTo('get', '/bills')[0].params.bucket).toBe('day')
 
     const text = document.body.textContent ?? ''
     expect(text).toContain('deepseek')
@@ -96,6 +97,35 @@ describe('账单页', () => {
     // 手动账单可编辑；自动账单没有编辑入口
     expect(bodyHas('订阅费')).toBe(true)
     expect((document.body.textContent ?? '').match(/编辑/g)?.length).toBe(1)
+  })
+
+  it('超过 2^53 的金额在展示、合计、占比和编辑回写中保持精确', async () => {
+    const largeBill = { ...MANUAL_BILL, amount_micros: '9007199254740993' }
+    api.on('get', '/bills', { data: { data: [largeBill], total: 1 } })
+    api.on('get', '/bills/summary', { data: {
+      buckets: [{ bucket: '2026-10-15', amounts: [{ currency: 'CNY', amount_micros: largeBill.amount_micros }], count: 1 }],
+      upstreams: [{ upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: largeBill.amount_micros, count: 1 }],
+      kinds: [{ kind: 'manual', currency: 'CNY', count: 1, amount_micros: largeBill.amount_micros }],
+    } })
+    api.on('put', '/bills/12', { data: { data: largeBill } })
+    await open()
+    // beforeEach 的默认响应先消费一次，刷新后取得本用例的大数响应。
+    ;(document.body.querySelector('.page-header-side button') as HTMLElement).click()
+    await flush()
+
+    expect(bodyHas('¥9007199254.740993')).toBe(true)
+    expect(bodyHas('100.0%')).toBe(true)
+    const chart = wrapper!.findComponent(BarChart)
+    const chartValue = (chart.props('series') as { values: number[] }[])[0].values[0]
+    expect((chart.props('formatValue') as (n: number) => string)(chartValue)).toBe('¥9007199254.740993')
+    await clickButton('编辑')
+    expect(inputByLabel('金额').value).toBe('9007199254.740993')
+    await clickButton('保存')
+    await flush()
+
+    const puts = callsTo('put', '/bills/12')
+    expect(puts).toHaveLength(1)
+    expect(puts[0].data.amount).toBe('9007199254.740993')
   })
 
   it('自动账单类型列接了 NTooltip + billDetailText（悬浮展示推导依据）', async () => {
@@ -144,14 +174,14 @@ describe('账单页', () => {
   it('趋势按币种切换且不跨币种求和，涉及上游按 id 去重', async () => {
     api.on('get', '/bills/summary', { data: {
       buckets: [{ bucket: '2026-10-20', amounts: [
-        { currency: 'CNY', amount_micros: 100_000_000 },
-        { currency: 'USD', amount_micros: 50_000_000 },
+        { currency: 'CNY', amount_micros: '100000000' },
+        { currency: 'USD', amount_micros: '50000000' },
       ], count: 2 }],
       upstreams: [
-        { upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: 100_000_000, count: 1 },
-        { upstream_id: 1, upstream_name: 'deepseek', currency: 'USD', amount_micros: 50_000_000, count: 1 },
+        { upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: '100000000', count: 1 },
+        { upstream_id: 1, upstream_name: 'deepseek', currency: 'USD', amount_micros: '50000000', count: 1 },
       ],
-      kinds: [{ kind: 'manual', currency: 'CNY', count: 1, amount_micros: 100_000_000 }, { kind: 'manual', currency: 'USD', count: 1, amount_micros: 50_000_000 }],
+      kinds: [{ kind: 'manual', currency: 'CNY', count: 1, amount_micros: '100000000' }, { kind: 'manual', currency: 'USD', count: 1, amount_micros: '50000000' }],
     } })
     await open()
     // beforeEach 的默认汇总先消费一次，再刷新取得本用例的多币种响应。
@@ -220,7 +250,38 @@ describe('账单页', () => {
     expect(callsTo('get', '/bills').at(-1)?.params.page).toBe(1)
   })
 
-  it('切换趋势档位只重查汇总（按月桶参数下发）', async () => {
+  it('清空日期后切换趋势档位会按新 bucket 同时重查汇总与明细', async () => {
+    await open()
+    const rangePicker = wrapper!.findComponent(NDatePicker)
+    expect(rangePicker.exists()).toBe(true)
+    rangePicker.vm.$emit('update:value', null)
+    await flush()
+
+    let detailCalls = callsTo('get', '/bills')
+    expect(callsTo('get', '/bills/summary')).toHaveLength(2)
+    expect(detailCalls).toHaveLength(2)
+    expect(detailCalls.at(-1)?.params.bucket).toBe('day')
+    expect(detailCalls.at(-1)?.params.from).toBeUndefined()
+    expect(detailCalls.at(-1)?.params.to).toBeUndefined()
+
+    const monthRadio = Array.from(document.body.querySelectorAll('.n-radio-button')).find(
+      (el) => (el.textContent ?? '').trim() === '按月',
+    ) as HTMLElement | undefined
+    expect(monthRadio).toBeDefined()
+    monthRadio!.click()
+    await flush()
+
+    const summaryCalls = callsTo('get', '/bills/summary')
+    detailCalls = callsTo('get', '/bills')
+    expect(summaryCalls).toHaveLength(3)
+    expect(summaryCalls.at(-1)?.params.bucket).toBe('month')
+    expect(detailCalls).toHaveLength(3)
+    expect(detailCalls.at(-1)?.params.bucket).toBe('month')
+    expect(detailCalls.at(-1)?.params.from).toBeUndefined()
+    expect(detailCalls.at(-1)?.params.to).toBeUndefined()
+  })
+
+  it('显式日期范围下切换趋势档位只重查汇总（按月桶参数下发）', async () => {
     await open()
     const before = callsTo('get', '/bills/summary').length
 

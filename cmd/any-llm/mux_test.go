@@ -50,6 +50,7 @@ func TestNewMux_SPACacheAndFallback(t *testing.T) {
 		{"assets 长缓存", "/assets/app.js", 200, "public, max-age=31536000, immutable", "console.log"},
 		{"客户端路由回退", "/upstreams", 200, "no-cache, must-revalidate", "<div id=app>"},
 		{"glass 前缀的客户端路由回退", "/glass/keys", 200, "no-cache, must-revalidate", "<div id=app>"},
+		{"健康检查尾斜杠仍走客户端路由回退", "/health/", 200, "no-cache, must-revalidate", "<div id=app>"},
 		{"缺失的 js 必须 404 而不是回退", "/assets/missing.js", 404, "", ""},
 		{"缺失的 css 必须 404", "/nope.css", 404, "", ""},
 		{"存在的静态文件原样返回", "/favicon.ico", 200, "", "ico"},
@@ -129,4 +130,40 @@ func TestNewMux_Health(t *testing.T) {
 	// DB 关闭后探活必须转 503，而不是把 ping 失败吞成 ok。
 	d.Close()
 	assertHealth("GET", http.StatusServiceUnavailable, "degraded")
+	assertHealth("HEAD", http.StatusServiceUnavailable, "degraded")
+}
+
+// TestNewMux_HealthMethodNotAllowed 钉住方法路由：不支持的精确 /health
+// 请求必须 405，不能落到 SPA；DB 断开时同样不得用 200 HTML 假装健康。
+func TestNewMux_HealthMethodNotAllowed(t *testing.T) {
+	d := testDB(t)
+	mux := newMux(testFrontendFS(), http.NotFoundHandler(), http.NotFoundHandler(), d)
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions}
+
+	assertRejected := func(method, dbState string) {
+		t.Helper()
+		t.Run(dbState+"/"+method, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest(method, "/health", nil))
+			if w.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s /health status=%d want 405 (body=%q)", method, w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("Allow"); got != "GET, HEAD" {
+				t.Errorf("Allow=%q want %q", got, "GET, HEAD")
+			}
+			if strings.Contains(w.Body.String(), "<div id=app>") {
+				t.Errorf("response must not be SPA fallback: %q", w.Body.String())
+			}
+		})
+	}
+
+	for _, method := range methods {
+		assertRejected(method, "DB up")
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range methods {
+		assertRejected(method, "DB down")
+	}
 }

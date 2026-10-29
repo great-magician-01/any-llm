@@ -93,38 +93,53 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 		if !u.Enabled || u.Expired(time.Now()) {
 			continue
 		}
-		unlock := LockBalanceUpstream(u.ID)
-		vendor, payload, err := FetchBalance(ctx, p.client, u)
-		if err != nil {
-			unlock()
-			if BalanceVendor(u) != "" {
-				logger.Warn("balance poller: fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
-			}
-			continue
+		p.pollUpstream(ctx, u)
+	}
+}
+
+// pollUpstream holds both the process-local and database session lock for the
+// whole fetch → record sequence. The deferred release covers vendor failures,
+// writer failures and successful records alike.
+func (p *BalancePoller) pollUpstream(ctx context.Context, u *store.Upstream) {
+	unlock, err := LockBalanceUpstream(ctx, p.d, u.ID)
+	if err != nil {
+		logger.Warn("balance poller: acquire refresh lock failed", "upstream", u.Name, "id", u.ID, "err", err)
+		return
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			logger.Warn("balance poller: release refresh lock failed", "upstream", u.Name, "id", u.ID, "err", err)
 		}
-		// 只捕获标量进闭包：捕获 u 会把整个 upstreams 切片（含各家 API key）
-		// 钉在 writer 的待写队列里
-		name, id := u.Name, u.ID
-		snap := &store.BalanceSnapshot{UpstreamID: id, UpstreamName: name, Vendor: vendor, Payload: payload}
-		// DoSync 而非 DoAsync：快照+记账是账本语义，writer 背压时静默丢弃任务
-		// 会在账本上留下缺口（跨充值缺口的消费被吞掉）；poller 是后台循环，
-		// 阻塞等待没有代价
-		err = p.writer.DoSync(func(d *sql.DB) error {
-			// 快照与账单同一事务落库（见 store.RecordBalanceSnapshot）：记账失败
-			// 连快照一起回滚，下次抓取仍与旧基线对比，不会丢消费
-			n, err := store.RecordBalanceSnapshot(d, snap)
-			switch {
-			case err != nil:
-				logger.Warn("balance poller: record snapshot/bill failed", "upstream", name, "id", id, "err", err)
-			case n > 0:
-				logger.Info("balance poller: bill recorded", "upstream", name, "id", id, "entries", n)
-			}
-			return nil
-		})
-		unlock()
-		if err != nil {
-			// DoSync 只在 writer 停机时回错：本次轮询放弃，下个周期再试
-			logger.Warn("balance poller: writer not accepting writes", "err", err)
+	}()
+
+	vendor, payload, err := FetchBalance(ctx, p.client, u)
+	if err != nil {
+		if BalanceVendor(u) != "" {
+			logger.Warn("balance poller: fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
 		}
+		return
+	}
+	// 只捕获标量进闭包：捕获 u 会把整个 upstreams 切片（含各家 API key）
+	// 钉在 writer 的待写队列里
+	name, id := u.Name, u.ID
+	snap := &store.BalanceSnapshot{UpstreamID: id, UpstreamName: name, Vendor: vendor, Payload: payload}
+	// DoSync 而非 DoAsync：快照+记账是账本语义，writer 背压时静默丢弃任务
+	// 会在账本上留下缺口（跨充值缺口的消费被吞掉）；poller 是后台循环，
+	// 阻塞等待没有代价
+	err = p.writer.DoSync(func(d *sql.DB) error {
+		// 快照与账单同一事务落库（见 store.RecordBalanceSnapshot）：记账失败
+		// 连快照一起回滚，下次抓取仍与旧基线对比，不会丢消费
+		n, err := store.RecordBalanceSnapshot(d, snap)
+		switch {
+		case err != nil:
+			logger.Warn("balance poller: record snapshot/bill failed", "upstream", name, "id", id, "err", err)
+		case n > 0:
+			logger.Info("balance poller: bill recorded", "upstream", name, "id", id, "entries", n)
+		}
+		return nil
+	})
+	if err != nil {
+		// DoSync 只在 writer 停机时回错：本次轮询放弃，下个周期再试
+		logger.Warn("balance poller: writer not accepting writes", "err", err)
 	}
 }
