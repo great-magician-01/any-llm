@@ -3,15 +3,12 @@ package adminapi
 import (
 	"encoding/json"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/store"
 )
-
-func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 
 func TestBillsCRUD(t *testing.T) {
 	a, d := setupAPI(t)
@@ -22,7 +19,7 @@ func TestBillsCRUD(t *testing.T) {
 
 	// 记一笔
 	req := httptest.NewRequest("POST", "/api/admin/bills", strings.NewReader(
-		`{"upstream_id":`+itoa(uid)+`,"date":"2026-10-15","amount":"12.50","note":"订阅费"}`))
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-15","amount":"12.50","note":"订阅费"}`))
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -43,8 +40,8 @@ func TestBillsCRUD(t *testing.T) {
 	}
 
 	// 编辑
-	req = httptest.NewRequest("PUT", "/api/admin/bills/"+itoa(b.ID), strings.NewReader(
-		`{"upstream_id":`+itoa(uid)+`,"date":"2026-10-16","amount":"20.00","note":"改"}`))
+	req = httptest.NewRequest("PUT", "/api/admin/bills/"+bizItoa(b.ID), strings.NewReader(
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-16","amount":"20.00","note":"改"}`))
 	w = httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -97,7 +94,7 @@ func TestBillsCRUD(t *testing.T) {
 	}
 
 	// 删除
-	req = httptest.NewRequest("DELETE", "/api/admin/bills/"+itoa(b.ID), nil)
+	req = httptest.NewRequest("DELETE", "/api/admin/bills/"+bizItoa(b.ID), nil)
 	w = httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -169,15 +166,15 @@ func TestBillsAutoKindImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest("PUT", "/api/admin/bills/"+itoa(auto.ID), strings.NewReader(
-		`{"upstream_id":`+itoa(uid)+`,"date":"2026-10-15","amount":"99"}`))
+	req := httptest.NewRequest("PUT", "/api/admin/bills/"+bizItoa(auto.ID), strings.NewReader(
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-15","amount":"99"}`))
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 400 {
 		t.Fatalf("update auto: status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	req = httptest.NewRequest("DELETE", "/api/admin/bills/"+itoa(auto.ID), nil)
+	req = httptest.NewRequest("DELETE", "/api/admin/bills/"+bizItoa(auto.ID), nil)
 	w = httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -201,29 +198,110 @@ func TestBillsAutoKindImmutable(t *testing.T) {
 	}
 }
 
-// 余额快照落库后的记账联动（经 store 层冒烟；真厂商 fetch 不在测试范围）。
-func TestRefreshBalanceRecordsBill(t *testing.T) {
+// 记账联动（经 store.RecordBalanceSnapshot 冒烟：快照+账单同一事务；真厂商
+// fetch 与 handler 串接由 internal/upstream 的 poller/契约测试覆盖）。
+func TestRecordBalanceSnapshotFlow(t *testing.T) {
 	_, d := setupAPI(t)
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://api.deepseek.com", APIKey: "k", Format: "openai"})
-	insertSnapFor := func(total string) {
+	snapFor := func(total string, at time.Time) *store.BalanceSnapshot {
 		t.Helper()
 		payload := `{"kind":"balance","is_available":true,"balances":[{"currency":"CNY","total":"` + total + `","granted":"0","topped_up":"` + total + `"}]}`
-		if err := store.InsertBalanceSnapshot(d, &store.BalanceSnapshot{UpstreamID: uid, UpstreamName: "ds", Vendor: "deepseek", Payload: json.RawMessage(payload)}); err != nil {
-			t.Fatal(err)
-		}
+		return &store.BalanceSnapshot{UpstreamID: uid, UpstreamName: "ds", Vendor: "deepseek", Payload: json.RawMessage(payload), CreatedAt: at}
 	}
-	insertSnapFor("110.00")
-	// 手工模拟「新快照落库后的记账联动」（fetch 真厂商不在测试范围内）
-	insertSnapFor("108.35")
-	snaps, _, err := store.BalanceSnapshotsList(d, uid, 1, 10)
-	if err != nil {
+	if _, err := store.RecordBalanceSnapshot(d, snapFor("110.00", time.Now().Add(-time.Hour))); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := store.RecordBillFromBalanceDelta(d, &snaps[0]); err != nil || n != 1 {
+	// 第二次：余额下降 → 自动落一笔账单
+	if n, err := store.RecordBalanceSnapshot(d, snapFor("108.35", time.Now())); err != nil || n != 1 {
 		t.Fatalf("record: n=%d err=%v", n, err)
 	}
 	list, total, _ := store.BillsList(d, &uid, time.Time{}, time.Time{}, 1, 10)
 	if total != 1 || list[0].AmountMicros != 1_650_000 || list[0].Kind != "auto" {
 		t.Fatalf("bills=%+v", list)
+	}
+}
+
+// 编辑请求体缺省（表单不发 currency）时不得覆盖原币种：否则非 CNY 手动账单
+// 一被编辑就被静默改成 CNY。
+func TestBillsUpdateKeepsCurrency(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "oai", BaseURL: "https://api.openai.com/v1", APIKey: "k", Format: "openai"})
+
+	req := httptest.NewRequest("POST", "/api/admin/bills", strings.NewReader(
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-15","amount":"10.00","currency":"USD"}`))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("create: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Data store.Bill
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	// 编辑不带 currency 字段（与前端 submitForm 的 body 一致）
+	req = httptest.NewRequest("PUT", "/api/admin/bills/"+bizItoa(created.Data.ID), strings.NewReader(
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-16","amount":"12.00","note":"x"}`))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("update: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var updated struct {
+		Data store.Bill
+	}
+	json.Unmarshal(w.Body.Bytes(), &updated)
+	if updated.Data.Currency != "USD" {
+		t.Fatalf("currency=%q, want USD kept", updated.Data.Currency)
+	}
+	// 显式给出 currency 时才覆盖
+	req = httptest.NewRequest("PUT", "/api/admin/bills/"+bizItoa(created.Data.ID), strings.NewReader(
+		`{"upstream_id":`+bizItoa(uid)+`,"date":"2026-10-16","amount":"12.00","currency":"EUR"}`))
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	json.Unmarshal(w.Body.Bytes(), &updated)
+	if updated.Data.Currency != "EUR" {
+		t.Fatalf("currency=%q, want EUR", updated.Data.Currency)
+	}
+}
+
+// 汇总的图表与统计卡必须统计同一个窗口：清空日期范围（不传 from/to）时两者
+// 都是缺省回看窗口，账单（落在 now 附近）在两侧都能看到且数字一致。
+func TestBillsSummaryCoherentWindow(t *testing.T) {
+	a, d := setupAPI(t)
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://api.deepseek.com", APIKey: "k", Format: "openai"})
+	b := &store.Bill{UpstreamID: uid, UpstreamName: "ds", Kind: store.BillKindAuto, AmountMicros: 1_650_000, Currency: "CNY", BilledAt: time.Now()}
+	if err := store.InsertBill(d, b); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/admin/bills/summary?bucket=day", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("summary: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Buckets   []store.BillBucketStat    `json:"buckets"`
+		Upstreams []store.BillUpstreamTotal `json:"upstreams"`
+		Kinds     []store.BillKindTotal     `json:"kinds"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var bucketSum int64
+	for _, bk := range resp.Buckets {
+		bucketSum += bk.AmountMicros
+	}
+	var upstreamSum int64
+	for _, u := range resp.Upstreams {
+		upstreamSum += u.AmountMicros
+	}
+	var kindSum int64
+	for _, k := range resp.Kinds {
+		kindSum += k.AmountMicros
+	}
+	if bucketSum != 1_650_000 || upstreamSum != 1_650_000 || kindSum != 1_650_000 {
+		t.Fatalf("incoherent window: buckets=%d upstreams=%d kinds=%d", bucketSum, upstreamSum, kindSum)
 	}
 }

@@ -291,8 +291,12 @@ var schemaTables = []Table{
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 		},
 		Idx: []Index{
-			{Name: "idx_bills_billed_at", Columns: []string{"billed_at"}},
-			{Name: "idx_bills_upstream", Columns: []string{"upstream_id", "id DESC"}},
+			// 列表默认 ORDER BY billed_at DESC, id DESC：billed_at 只到秒
+			// （TIMESTAMP(0)），手动记账大量落在整点/零点同秒，第二列 id 打破并列。
+			{Name: "idx_bills_billed_at", Columns: []string{"billed_at", "id DESC"}},
+			// 按上游过滤的列表走同一排序：等值前缀 + (billed_at, id) 排序后缀，
+			// 免掉对该上游全部账单的 filesort。
+			{Name: "idx_bills_upstream", Columns: []string{"upstream_id", "billed_at", "id DESC"}},
 		},
 	},
 	{

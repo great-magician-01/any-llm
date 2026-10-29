@@ -32,9 +32,10 @@ export interface BillUpstreamTotal {
   count: number
 }
 
-/** 窗口内一个记账来源（auto/manual）的合计 */
+/** 窗口内一个记账来源（auto/manual）×币种的合计（跨币种不加总） */
 export interface BillKindTotal {
   kind: Bill['kind']
+  currency: string
   count: number
   amount_micros: number
 }

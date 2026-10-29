@@ -4,11 +4,12 @@ import { NButton, NPopconfirm, NTag, NTooltip, useMessage } from 'naive-ui'
 import type { DataTableColumns, SelectOption } from 'naive-ui'
 import {
   fetchBills, fetchBillSummary, createBill, updateBill, deleteBill,
-  type Bill, type BillSummary, type BillUpstreamTotal, type BillKindTotal, type BillBucket,
+  type Bill, type BillSummary, type BillUpstreamTotal, type BillBucket,
 } from '@/api/bills'
 import { listUpstreams, type Upstream } from '@/api/upstreams'
-import { formatInt, formatPercent, formatTime } from '@/utils/format'
-import { formatBillMoney, microsToAmount, bucketLabel, dateParam, amountInputError, billDetailText } from '@/utils/bill'
+import { formatInt, formatPercent } from '@/utils/format'
+import { formatBillMoney, microsToAmount, bucketLabel, dateParam, amountInputError, billDetailText, perCurrencyLabel } from '@/utils/bill'
+import { currentMonthRange, lastNDays, currentYear } from '@/utils/range'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import BarChart from '@/components/BarChart.vue'
@@ -17,26 +18,11 @@ import { errText } from '@/utils/errText'
 const message = useMessage()
 
 /* ---- 筛选状态：趋势图 / 按上游汇总 / 明细共用同一时间范围与上游过滤 ---- */
-function currentMonthRange(): [number, number] {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return [new Date(today.getFullYear(), today.getMonth(), 1).getTime(), today.getTime()]
-}
-function last30Days(): [number, number] {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return [today.getTime() - 29 * 86400000, today.getTime()]
-}
-function currentYear(): [number, number] {
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return [new Date(today.getFullYear(), 0, 1).getTime(), today.getTime()]
-}
-// 清空范围 = 查看全部账单
+// 清空范围 = 后端的缺省回看窗口（summary 三份聚合共用同一个窗口，口径一致）
 const range = ref<[number, number] | null>(currentMonthRange())
 const rangeShortcuts: Record<string, () => [number, number]> = {
   '本月': currentMonthRange,
-  '近 30 天': last30Days,
+  '近 30 天': () => lastNDays(30),
   '今年': currentYear,
 }
 const upstreamFilter = ref<number | null>(null)
@@ -57,25 +43,34 @@ function filterParams() {
   return { upstream_id: upstreamFilter.value ?? undefined, from, to }
 }
 
-/* ---- 汇总（趋势桶 + 按上游 + 按来源） ---- */
+/* ---- 汇总（趋势桶 + 按上游 + 按来源，后端保证同一窗口） ---- */
 const summary = ref<BillSummary>({ buckets: [], upstreams: [], kinds: [] })
 
+// 请求序号守卫（useUpstreamList 同款）：快速改筛选时迟到的旧响应不得覆盖新数据
+let summarySeq = 0
 async function loadSummary() {
+  const seq = ++summarySeq
   try {
-    summary.value = await fetchBillSummary({ bucket: bucket.value, ...filterParams() })
+    const s = await fetchBillSummary({ bucket: bucket.value, ...filterParams() })
+    if (seq === summarySeq) summary.value = s
   } catch (e) {
-    message.error('加载账单汇总失败：' + errText(e))
+    if (seq === summarySeq) message.error('加载账单汇总失败：' + errText(e))
   }
 }
 
 const upstreamTotals = computed(() => summary.value.upstreams)
-// 支出合计按行直接相加；混币种的上游本来就拆成了多行，逐行加总是账本语义
-const grandTotalMicros = computed(() => upstreamTotals.value.reduce((a, u) => a + u.amount_micros, 0))
 const totalCount = computed(() => upstreamTotals.value.reduce((a, u) => a + u.count, 0))
-// 展示币种取最大行（金额降序的第一行）的币种；全部上游同币种时即真实币种
-const displayCurrency = computed(() => upstreamTotals.value[0]?.currency ?? 'CNY')
-function kindOf(kind: Bill['kind']): BillKindTotal | undefined {
-  return summary.value.kinds.find((k) => k.kind === kind)
+// 合计按币种各自归并（后端拆行正是因为跨币种加总没有意义）
+const grandTotalLabel = computed(() => perCurrencyLabel(upstreamTotals.value))
+// 每币种小计，占比在其币种内部计算
+const totalsByCurrency = computed(() => {
+  const m = new Map<string, number>()
+  for (const u of upstreamTotals.value) m.set(u.currency, (m.get(u.currency) ?? 0) + u.amount_micros)
+  return m
+})
+function kindLabel(kind: Bill['kind']): { count: number; label: string } {
+  const rows = summary.value.kinds.filter((k) => k.kind === kind)
+  return { count: rows.reduce((a, k) => a + k.count, 0), label: perCurrencyLabel(rows) }
 }
 
 /* ---- 趋势图 ---- */
@@ -85,7 +80,7 @@ const trendSeries = computed(() => [
 ])
 // 图表数值按 1e6 还原成金额串（micros → 元，仅用于展示）
 function chartMoney(n: number): string {
-  return formatBillMoney(Math.round(n * 1_000_000), displayCurrency.value)
+  return formatBillMoney(Math.round(n * 1_000_000), upstreamTotals.value[0]?.currency ?? 'CNY')
 }
 
 /* ---- 明细 ---- */
@@ -94,21 +89,23 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 
+let billsSeq = 0
 async function loadBills() {
+  const seq = ++billsSeq
   try {
     const r = await fetchBills({ page: page.value, size: pageSize, ...filterParams() })
+    if (seq !== billsSeq) return
     bills.value = r.data
     total.value = r.total
   } catch (e) {
-    message.error('加载账单明细失败：' + errText(e))
+    if (seq === billsSeq) message.error('加载账单明细失败：' + errText(e))
   }
 }
 
-// 改筛选（范围/上游）回第 1 页再查；只影响明细，汇总保持自己的查询时机
+// 改筛选（范围/上游/档位）回第 1 页，汇总与明细一起重查
 function onFilterChange() {
   page.value = 1
-  loadSummary()
-  loadBills()
+  loadAll()
 }
 
 function loadAll() {
@@ -117,10 +114,13 @@ function loadAll() {
 }
 
 /* ---- 表格列 ---- */
-// 手动记账只到日；自动记账来自快照，展示到分钟帮助对账
+// billed_at 的 JSON 串自带服务端本地日期前缀（手动记账是当日零点）：直接取
+// 字符串前缀而不是 new Date() 换算——后者按浏览器时区解释，跨时区的浏览器会
+// 把日期看偏一天（而且与后端按服务端本地日分桶的口径对不上）。
+// 手动记账只到日；自动记账来自快照，展示到分钟帮助对账。
 function billDateLabel(b: Bill): string {
-  const full = formatTime(b.billed_at)
-  return b.kind === 'auto' ? full.slice(0, 16) : full.slice(0, 10)
+  const s = b.billed_at ?? ''
+  return b.kind === 'auto' && s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s.slice(0, 10)
 }
 
 const billColumns: DataTableColumns<Bill> = [
@@ -173,7 +173,8 @@ const upstreamColumns: DataTableColumns<BillUpstreamTotal> = [
   { title: '币种', key: 'currency', width: 80, render: (row) => h('span', { class: 'mono' }, row.currency) },
   { title: '消费金额', key: 'amount_micros', width: 140, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600; color: var(--brand-hover)' }, formatBillMoney(row.amount_micros, row.currency)) },
   { title: '笔数', key: 'count', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.count)) },
-  { title: '占比', key: 'share', width: 90, render: (row) => h('span', { class: 'mono' }, formatPercent(row.amount_micros, grandTotalMicros.value)) },
+  // 占比在该行币种内部计算：跨币种的分母没有意义
+  { title: '占比', key: 'share', width: 90, render: (row) => h('span', { class: 'mono' }, formatPercent(row.amount_micros, totalsByCurrency.value.get(row.currency) ?? 0)) },
 ]
 
 /* ---- 记账表单 ---- */
@@ -198,7 +199,12 @@ function openCreate() {
 function openEdit(b: Bill) {
   editing.value = b
   form.upstream_id = b.upstream_id
-  form.date = new Date(b.billed_at).getTime()
+  // 日期从 billed_at 的服务端本地日期前缀取（不用 new Date() 换算成浏览器
+  // 时区——那会让跨时区浏览器的「保存不改日期」把账单挪一天）；无时区部分的
+  // "YYYY-MM-DDT00:00:00" 按本地时区解析，dateParam 能原样还原。
+  const day = (b.billed_at ?? '').slice(0, 10)
+  const parsed = new Date(`${day}T00:00:00`)
+  form.date = isNaN(parsed.getTime()) ? null : parsed.getTime()
   form.amount = microsToAmount(b.amount_micros)
   form.note = b.note
   showForm.value = true
@@ -279,9 +285,9 @@ onMounted(() => {
     </header>
 
     <div class="stat-grid">
-      <StatCard label="支出合计" :value="formatBillMoney(grandTotalMicros, displayCurrency)" :sub="`共 ${formatInt(totalCount)} 笔 · 按当前范围统计`" icon="wallet" accent="blue" />
-      <StatCard label="自动记账" :value="formatInt(kindOf('auto')?.count ?? 0)" :sub="kindOf('auto') ? formatBillMoney(kindOf('auto')!.amount_micros, displayCurrency) : '来自余额快照联动'" icon="pulse" accent="cyan" />
-      <StatCard label="手动记账" :value="formatInt(kindOf('manual')?.count ?? 0)" :sub="kindOf('manual') ? formatBillMoney(kindOf('manual')!.amount_micros, displayCurrency) : '手动记一笔的账单'" icon="doc" accent="violet" />
+      <StatCard label="支出合计" :value="grandTotalLabel || '—'" :sub="`共 ${formatInt(totalCount)} 笔 · 按当前范围统计`" icon="wallet" accent="blue" />
+      <StatCard label="自动记账" :value="formatInt(kindLabel('auto').count)" :sub="kindLabel('auto').label || '来自余额快照联动'" icon="pulse" accent="cyan" />
+      <StatCard label="手动记账" :value="formatInt(kindLabel('manual').count)" :sub="kindLabel('manual').label || '手动记一笔的账单'" icon="doc" accent="violet" />
       <StatCard label="涉及上游" :value="formatInt(upstreamTotals.length)" sub="按当前范围与过滤条件" icon="layers" accent="green" />
     </div>
 
@@ -289,7 +295,7 @@ onMounted(() => {
       <template #header>
         <div class="chart-head">
           <span>消费趋势</span>
-          <div class="trend-total mono">{{ formatBillMoney(grandTotalMicros, displayCurrency) }}</div>
+          <div class="trend-total mono">{{ grandTotalLabel }}</div>
         </div>
       </template>
       <template #header-extra>

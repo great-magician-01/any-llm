@@ -76,7 +76,10 @@ func (a *API) listBills(w http.ResponseWriter, r *http.Request) {
 }
 
 // billSummary serves GET /api/admin/bills/summary?bucket=day|month|year&from=&to=
-// &upstream_id=：趋势桶聚合 + 按上游合计，一次往返喂饱账单页的图表与汇总表。
+// &upstream_id=：趋势桶聚合 + 按上游/按来源合计，一次往返喂饱账单页的图表与
+// 汇总表。三份聚合共用 store.BillWindow 解析出的同一个窗口——响应里的所有数字
+// 统计同一段时间的账，清空日期范围时也是同一缺省回看窗口，不会出现「图表近
+// 30 天、统计卡全部历史」的混搭。
 func (a *API) billSummary(w http.ResponseWriter, r *http.Request) {
 	bucket := r.URL.Query().Get("bucket")
 	if bucket == "" {
@@ -87,36 +90,25 @@ func (a *API) billSummary(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
-	// 日期参数先在本层校验出 400（store.BillTrend 也解析一遍，双保险只走展示）
-	for _, pair := range [][2]string{{"from", r.URL.Query().Get("from")}, {"to", r.URL.Query().Get("to")}} {
-		if pair[1] == "" {
-			continue
-		}
-		if _, err := time.ParseInLocation("2006-01-02", pair[1], time.Local); err != nil {
-			writeJSON(w, 400, map[string]any{"error": "invalid " + pair[0] + ": want YYYY-MM-DD"})
-			return
-		}
-	}
-	buckets, err := store.BillTrend(a.db, bucket, upstreamID, r.URL.Query().Get("from"), r.URL.Query().Get("to"))
+	// bucket 非法与日期格式错都是调用方输入问题 → 400（BillWindow 统一校验）
+	start, end, err := store.BillWindow(bucket, r.URL.Query().Get("from"), r.URL.Query().Get("to"))
 	if err != nil {
-		if errors.Is(err, store.ErrInvalidBucket) {
-			writeJSON(w, 400, map[string]any{"error": err.Error()})
-			return
-		}
+		writeJSON(w, 400, map[string]any{"error": err.Error()})
+		return
+	}
+	buckets, err := store.BillTrend(a.db, bucket, upstreamID, start, end)
+	if err != nil {
 		logger.Error("admin: bill trend failed", "bucket", bucket, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	// 按上游合计不受桶数截断影响：直接用日期换算的半开窗口查全量。
-	trendFrom, _ := billDayParam(r.URL.Query().Get("from"), false)
-	trendTo, _ := billDayParam(r.URL.Query().Get("to"), true)
-	totals, err := store.BillUpstreamTotals(a.db, upstreamID, trendFrom, trendTo)
+	totals, err := store.BillUpstreamTotals(a.db, upstreamID, start, end)
 	if err != nil {
 		logger.Error("admin: bill upstream totals failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	kinds, err := store.BillKindTotals(a.db, upstreamID, trendFrom, trendTo)
+	kinds, err := store.BillKindTotals(a.db, upstreamID, start, end)
 	if err != nil {
 		logger.Error("admin: bill kind totals failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
@@ -135,22 +127,26 @@ type billInput struct {
 	Note       string `json:"note"`
 }
 
-// validate 校验输入并把金额解析成 micros。错误文案直接面向管理端用户。
-func (in *billInput) validate() (int64, error) {
+// validate 校验输入，返回解析好的金额（micros）与账单归属时刻（所选日期的
+// 本地零点）。错误文案直接面向管理端用户；日期只在这里解析一次，调用方直接
+// 用返回值——重复解析+丢错误会让非法日期静默变成零值（InsertBill 回退为 now，
+// 记错账）。
+func (in *billInput) validate() (amount int64, billed time.Time, err error) {
 	if in.UpstreamID <= 0 {
-		return 0, errors.New("upstream_id 必填")
+		return 0, time.Time{}, errors.New("upstream_id 必填")
 	}
-	if _, err := time.ParseInLocation("2006-01-02", in.Date, time.Local); err != nil {
-		return 0, errors.New("date 格式应为 YYYY-MM-DD")
-	}
-	amount, err := store.ParseAmountMicros(in.Amount)
+	billed, err = time.ParseInLocation("2006-01-02", in.Date, time.Local)
 	if err != nil {
-		return 0, errors.New("金额格式不正确")
+		return 0, time.Time{}, errors.New("date 格式应为 YYYY-MM-DD")
+	}
+	amount, err = store.ParseAmountMicros(in.Amount)
+	if err != nil {
+		return 0, time.Time{}, errors.New("金额格式不正确")
 	}
 	if amount <= 0 {
-		return 0, errors.New("金额必须大于 0")
+		return 0, time.Time{}, errors.New("金额必须大于 0")
 	}
-	return amount, nil
+	return amount, billed, nil
 }
 
 // createBill serves POST /api/admin/bills：记一笔手动账单。
@@ -160,7 +156,7 @@ func (a *API) createBill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	amount, err := in.validate()
+	amount, billed, err := in.validate()
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
@@ -175,7 +171,6 @@ func (a *API) createBill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	billed, _ := time.ParseInLocation("2006-01-02", in.Date, time.Local)
 	b := &store.Bill{
 		UpstreamID:   u.ID,
 		UpstreamName: u.Name,
@@ -210,7 +205,7 @@ func (a *API) updateBill(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	amount, err := in.validate()
+	amount, billed, err := in.validate()
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
@@ -239,11 +234,14 @@ func (a *API) updateBill(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	billed, _ := time.ParseInLocation("2006-01-02", in.Date, time.Local)
 	b.UpstreamID = u.ID
 	b.UpstreamName = u.Name
 	b.AmountMicros = amount
-	b.Currency = billCurrencyOrDefault(in.Currency)
+	// 币种只在显式给出时才改：编辑表单不发 currency，缺省覆盖会把非 CNY 账单
+	// 静默改币（¥/$ 错位、币种合计全乱）
+	if in.Currency != "" {
+		b.Currency = billCurrencyOrDefault(in.Currency)
+	}
 	b.BilledAt = billed
 	b.Note = strings.TrimSpace(in.Note)
 	if err := a.writeSync(func(d *sql.DB) error { return store.UpdateBill(d, b) }); err != nil {
@@ -255,20 +253,19 @@ func (a *API) updateBill(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 // deleteBill serves DELETE /api/admin/bills/{id}：删除任意来源的账单（自动记账
-// 算错时的人工出口）。
+// 算错时的人工出口）。存在性由 DELETE 的受影响行数判定，省一次预查询。
 func (a *API) deleteBill(w http.ResponseWriter, r *http.Request, id int64) {
-	if _, err := store.GetBill(a.db, id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, 404, map[string]any{"error": "not found"})
-			return
-		}
-		logger.Error("admin: delete bill get failed", "id", id, "err", err)
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := a.writeSync(func(d *sql.DB) error { return store.DeleteBill(d, id) }); err != nil {
+	var deleted int64
+	if err := a.writeSync(func(d *sql.DB) (err error) {
+		deleted, err = store.DeleteBill(d, id)
+		return err
+	}); err != nil {
 		logger.Error("admin: delete bill failed", "id", id, "err", err)
 		writeSyncErr(w, 500, err)
+		return
+	}
+	if deleted == 0 {
+		writeJSON(w, 404, map[string]any{"error": "not found"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})

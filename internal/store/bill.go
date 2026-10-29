@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/db"
+	"github.com/great-magician-01/any-llm/internal/logger"
 )
 
 // 账单：上游消费的货币流水。两个来源——
-//   - kind=auto：厂商余额快照联动。每次新快照与上一条的余额差额 > 0 时自动入账
-//     （见 RecordBillFromBalanceDelta）；quota 类快照（kimi 的百分比窗口）没有
+//   - kind=auto：厂商余额快照联动。每笔新快照经 RecordBalanceSnapshot 与上一条
+//     对比，余额差额 > 0 的币种自动入账；quota 类快照（kimi 的百分比窗口）没有
 //     金额语义，不产生账单。
 //   - kind=manual：管理端手动记一笔（选上游、日期、金额）。
 //
@@ -32,7 +33,8 @@ type Bill struct {
 	Currency     string    `json:"currency"`
 	BilledAt     time.Time `json:"billed_at"`
 	Note         string    `json:"note"`
-	// Detail 仅 auto 记账填充：推导依据的 JSON 文本（prev/new 余额、关联快照 id）
+	// Detail 仅 auto 记账填充：推导依据的 JSON 文本（prev/new 余额、vendor、
+	// 关联快照 id）
 	Detail    string    `json:"detail,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -85,12 +87,17 @@ func microsFromDecimal(s string) (int64, error) {
 		if c < '0' || c > '9' {
 			return 0, fmt.Errorf("not a number: %q", s)
 		}
-		if v > math.MaxInt64/10 {
+		// 逐位防溢出：v*10+d 必须 ≤ MaxInt64。写成 (Max-d)/10 而不是
+		// v > Max/10——后者在 v == Max/10 且 d ≥ 8 时放行，乘出来就回绕成负数了。
+		if v > (math.MaxInt64-int64(c-'0'))/10 {
 			return 0, fmt.Errorf("amount out of range: %q", s)
 		}
 		v = v*10 + int64(c-'0')
 	}
 	if round {
+		if v == math.MaxInt64 {
+			return 0, fmt.Errorf("amount out of range: %q", s)
+		}
 		v++
 	}
 	if neg {
@@ -99,9 +106,9 @@ func microsFromDecimal(s string) (int64, error) {
 	return v, nil
 }
 
-// InsertBill 写入一条账单，BilledAt/CreatedAt 未设置时按服务端本地 now 补齐
-// （项目时间戳约定：Go time.Now()，不用 SQL 默认值）。成功后 b.ID 回填新行 id。
-func InsertBill(d *sql.DB, b *Bill) error {
+// insertBillOn 把一条账单写入 e（*sql.DB 或事务），dialect 只用于方言判定与
+// 占位符转写。公共入口 InsertBill 走 d == e 的直连路径。
+func insertBillOn(e billExec, dialect *sql.DB, b *Bill) error {
 	billed := b.BilledAt
 	if billed.IsZero() {
 		billed = time.Now()
@@ -110,7 +117,7 @@ func InsertBill(d *sql.DB, b *Bill) error {
 	if created.IsZero() {
 		created = time.Now()
 	}
-	id, err := db.InsertReturningID(d, `INSERT INTO bills
+	id, err := db.InsertReturningIDOn(e, dialect, `INSERT INTO bills
 		(upstream_id, upstream_name, kind, amount_micros, currency, billed_at, note, detail, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
 		b.UpstreamID, b.UpstreamName, b.Kind, b.AmountMicros, b.Currency, billed, b.Note, b.Detail, created)
@@ -120,6 +127,15 @@ func InsertBill(d *sql.DB, b *Bill) error {
 	b.ID = id
 	b.BilledAt = billed
 	b.CreatedAt = created
+	return nil
+}
+
+// InsertBill 写入一条账单，BilledAt/CreatedAt 未设置时按服务端本地 now 补齐
+// （项目时间戳约定：Go time.Now()，不用 SQL 默认值）。成功后 b.ID 回填新行 id。
+func InsertBill(d *sql.DB, b *Bill) error {
+	if err := insertBillOn(d, d, b); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -148,14 +164,19 @@ func UpdateBill(d *sql.DB, b *Bill) error {
 	return nil
 }
 
-// DeleteBill 删除一条账单。自动记账算错时也走这里人工清掉：余额快照是追加式
-// 历史，删账单不会触发重算，下一条快照仍以快照序列为基线。
-func DeleteBill(d *sql.DB, id int64) error {
-	_, err := d.Exec(db.Rebind(d, `DELETE FROM bills WHERE id = ?`), id)
+// DeleteBill 删除一条账单，返回删除的行数（0 = 不存在，调用方据此回 404）。
+// 自动记账算错时也走这里人工清掉：余额快照是追加式历史，删账单不会触发重算，
+// 下一条快照仍以快照序列为基线。
+func DeleteBill(d *sql.DB, id int64) (int64, error) {
+	res, err := d.Exec(db.Rebind(d, `DELETE FROM bills WHERE id = ?`), id)
 	if err != nil {
-		return fmt.Errorf("delete bill %d: %w", id, err)
+		return 0, fmt.Errorf("delete bill %d: %w", id, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete bill %d: rows affected: %w", id, err)
+	}
+	return n, nil
 }
 
 // BillsList 分页列出账单（billed_at 倒序），支持可选的 upstream 与时间窗口过滤，
@@ -258,20 +279,35 @@ func billBucketStart(bucket string, t time.Time) time.Time {
 	}
 }
 
-// BillTrend 按 bucket（day|month|year）聚合账单金额。from/to 是 "YYYY-MM-DD"
-// 日期（闭区间语义，服务端换算成排他的下一桶起点）；缺省时 day 回看 30 天、
-// month 12 个月、year 5 年。空桶零填充、按时间升序，前端图表直接可用。
-// 窗口超上限时从起点截断。
-func BillTrend(d *sql.DB, bucket string, upstreamID *int64, from, to string) ([]BillBucketStat, error) {
-	step, layout, capBuckets, defaultSpan, err := billBucketSpec(bucket)
+// BillWindow 返回 bucket 档位的账单窗口 [start, end)（本地时区）。from/to 是
+// "YYYY-MM-DD"（可空；日期闭区间语义，内部换算成排他的下一桶起点）：
+//   - 两端都给：[from 所在桶起点, to 所在桶的下一桶起点)；
+//   - 只给 from：终点 = now 所在桶的下一桶（「从 from 到今天」）；
+//   - 只给 to：起点 = to 所在桶回退 defaultSpan 个桶（「截止 to 的近 N 桶」），
+//     避免出现起点晚于终点的退化窗口；
+//   - 都不给：now 所在桶回退 defaultSpan 到 now 所在桶（day 近 30 天 / month
+//     近 12 个月 / year 近 5 年）。
+//
+// 桶数超上限时从起点截断；from 晚于 to 返回空窗口（调用方得到空结果而不是
+// 报错或伪造的桶）。账单 summary 的图表与两类合计共用这一个窗口——同一个
+// 响应里的所有数字统计的是同一段时间的账（趋势桶天然对齐桶边界，合计随之
+// 用同一口径）；明细列表是独立接口，用自己的日期闭区间口径。
+func BillWindow(bucket, from, to string) (start, end time.Time, err error) {
+	step, _, capBuckets, defaultSpan, err := billBucketSpec(bucket)
 	if err != nil {
-		return nil, err
+		return time.Time{}, time.Time{}, err
 	}
-	now := time.Now()
-	// 缺省窗口：从 now 所在桶回退 defaultSpan 个桶。step 只对桶起点定义（无月末
-	// 溢出），回退用反向 AddDate——桶起点上同样安全。终点 = now 所在桶的下一桶
-	// （当前桶计入窗口）。
-	start := billBucketStart(bucket, now)
+	// 锚点：to 给了锚在 to 的桶起点，否则锚在 now 的桶起点。回退跨度与终点都
+	// 相对锚点，四种 from/to 组合下 start ≤ end 恒成立（显式 from 晚于 to 除外）。
+	anchor := billBucketStart(bucket, time.Now())
+	if to != "" {
+		tt, err := parseTimeParam(to)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("bill window: invalid to: %w", err)
+		}
+		anchor = billBucketStart(bucket, tt)
+	}
+	start = anchor
 	switch bucket {
 	case "month":
 		start = start.AddDate(0, -defaultSpan, 0)
@@ -280,26 +316,15 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, from, to string) ([]
 	default:
 		start = start.AddDate(0, 0, -defaultSpan)
 	}
-	end := step(billBucketStart(bucket, now))
-	if from != "" || to != "" {
-		if from != "" {
-			ft, err := parseTimeParam(from)
-			if err != nil {
-				return nil, fmt.Errorf("bill trend: invalid from: %w", err)
-			}
-			start = billBucketStart(bucket, ft)
+	if from != "" {
+		ft, err := parseTimeParam(from)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("bill window: invalid from: %w", err)
 		}
-		anchor := now
-		if to != "" {
-			tt, err := parseTimeParam(to)
-			if err != nil {
-				return nil, fmt.Errorf("bill trend: invalid to: %w", err)
-			}
-			anchor = tt
-		}
-		end = step(billBucketStart(bucket, anchor))
+		start = billBucketStart(bucket, ft)
 	}
-	// 桶数截断（含 from/to 都给的宽窗口）。
+	end = step(anchor)
+	// 桶数上限截断（from/to 给出的宽窗口）。
 	n := 0
 	for t := start; t.Before(end); t = step(t) {
 		n++
@@ -308,23 +333,33 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, from, to string) ([]
 		}
 	}
 	if n > capBuckets {
-		n = capBuckets
 		end = start
 		for i := 0; i < capBuckets; i++ {
 			end = step(end)
 		}
 	}
-	if n < 1 { // from 晚于 to 等退化输入：至少返回一个桶，不 500
-		n = 1
-		end = step(start)
+	if !end.After(start) { // from 晚于 to 等退化输入：空窗口，调用方得空结果
+		return start, start, nil
 	}
-	// 零填充所有桶。
-	out := make([]BillBucketStat, 0, n)
-	byKey := make(map[string]*BillBucketStat, n)
+	return start, end, nil
+}
+
+// BillTrend 聚合窗口 [start, end)（来自 BillWindow）内的账单金额，空桶零填充、
+// 按时间升序，前端图表直接可用；空窗口返回空切片。
+func BillTrend(d *sql.DB, bucket string, upstreamID *int64, start, end time.Time) ([]BillBucketStat, error) {
+	step, layout, _, _, err := billBucketSpec(bucket)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BillBucketStat, 0, 32)
+	idx := make(map[string]int, 32)
 	for t := start; t.Before(end); t = step(t) {
 		key := t.Format(layout)
+		idx[key] = len(out)
 		out = append(out, BillBucketStat{Bucket: key})
-		byKey[key] = &out[len(out)-1]
+	}
+	if len(out) == 0 {
+		return out, nil
 	}
 	// DayBucketExpr 恒产 "YYYY-MM-DD" 文本，按桶宽截前缀即得 month/year 桶；
 	// substr 三方言都支持（PG/MySQL 均为标准/同义写法）。
@@ -345,16 +380,17 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, from, to string) ([]
 		if err := rows.Scan(&key, &micros, &count); err != nil {
 			return nil, fmt.Errorf("bill trend: %w", err)
 		}
-		if stat, ok := byKey[key]; ok {
-			stat.AmountMicros = micros
-			stat.Count = count
+		if i, ok := idx[key]; ok {
+			out[i].AmountMicros = micros
+			out[i].Count = count
 		}
 	}
 	return out, rows.Err()
 }
 
 // BillUpstreamTotal 是时间窗口内一个上游的账单合计（按上游 + 币种分组：同名
-// 上游改名前后是两行历史名称，混币种的假设上游拆开显示，不假装能加总）。
+// 上游改名前后是两行历史名称；混币种拆行显示，不假装能加总——前端按币种各自
+// 出合计）。
 type BillUpstreamTotal struct {
 	UpstreamID   int64  `json:"upstream_id"`
 	UpstreamName string `json:"upstream_name"`
@@ -385,18 +421,20 @@ func BillUpstreamTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]Bil
 	return out, rows.Err()
 }
 
-// BillKindTotal 是窗口内一个记账来源（auto/manual）的笔数与金额合计，
-// 供账单页的统计卡。
+// BillKindTotal 是窗口内一个记账来源（auto/manual）×币种的笔数与金额合计，
+// 供账单页的统计卡。按币种拆分：跨币种加总没有意义（CNY+USD ≠ 任何真实金额）。
 type BillKindTotal struct {
 	Kind         string `json:"kind"`
+	Currency     string `json:"currency"`
 	Count        int    `json:"count"`
 	AmountMicros int64  `json:"amount_micros"`
 }
 
-// BillKindTotals 返回窗口内按 kind 的合计。
+// BillKindTotals 返回窗口内按 kind × 币种的合计。
 func BillKindTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKindTotal, error) {
 	where, args := billWhere(upstreamID, from, to)
-	q := `SELECT kind, COUNT(*), COALESCE(SUM(amount_micros), 0) FROM bills` + where + ` GROUP BY kind`
+	q := `SELECT kind, currency, COUNT(*), COALESCE(SUM(amount_micros), 0) FROM bills` + where +
+		` GROUP BY kind, currency`
 	rows, err := d.Query(db.Rebind(d, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("bill kind totals: %w", err)
@@ -405,7 +443,7 @@ func BillKindTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKin
 	out := make([]BillKindTotal, 0, 2)
 	for rows.Next() {
 		var t BillKindTotal
-		if err := rows.Scan(&t.Kind, &t.Count, &t.AmountMicros); err != nil {
+		if err := rows.Scan(&t.Kind, &t.Currency, &t.Count, &t.AmountMicros); err != nil {
 			return nil, fmt.Errorf("bill kind totals: %w", err)
 		}
 		out = append(out, t)
@@ -413,9 +451,35 @@ func BillKindTotals(d *sql.DB, upstreamID *int64, from, to time.Time) ([]BillKin
 	return out, rows.Err()
 }
 
+// billExec 抽象 *sql.DB 与 *sql.Tx 共有的执行面：快照归档与记账推导在事务内外
+// 共用同一套代码。
+type billExec interface {
+	QueryRow(query string, args ...any) *sql.Row
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// insertBalanceSnapshotOn 是 InsertBalanceSnapshot 的执行面抽象版（事务内复用）。
+func insertBalanceSnapshotOn(e billExec, dialect *sql.DB, s *BalanceSnapshot) error {
+	ts := s.CreatedAt
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	id, err := db.InsertReturningIDOn(e, dialect, `INSERT INTO balance_snapshots
+		(upstream_id, upstream_name, vendor, payload, created_at)
+		VALUES (?,?,?,?,?) RETURNING id`,
+		s.UpstreamID, s.UpstreamName, s.Vendor, string(s.Payload), ts)
+	if err != nil {
+		return fmt.Errorf("insert balance snapshot: %w", err)
+	}
+	s.ID = id
+	s.CreatedAt = ts
+	return nil
+}
+
 // billBalancePayload 是余额类快照 payload 的最小解析结构。生产方是
 // upstream.FetchBalance 的归一化（kind=balance|quota）；这里只关心 kind=balance
-// 的余额条目，金额保持厂商返回的原串。
+// 的余额条目，金额保持厂商返回的原串。两边字段名/kind 字面量的契约由
+// internal/upstream 的契约测试钉住（TestBalancePayloadContractWithStoreBilling）。
 type billBalancePayload struct {
 	Kind     string `json:"kind"`
 	Balances []struct {
@@ -424,20 +488,52 @@ type billBalancePayload struct {
 	} `json:"balances"`
 }
 
-// RecordBillFromBalanceDelta 在新余额快照落库后调用：与该上游上一条快照逐币种
-// 对比，余额下降的部分记一条 auto 账单（归属时刻 = 新快照时刻）。返回入账条数。
+// RecordBalanceSnapshot 归档一条余额快照并在**同一事务**内推导自动账单：要么
+// 快照与账单一起落库，要么都不落。若只提交快照，新快照会成为下一条的对比
+// 基线，这两次快照之间的消费就永久丢了——所以记账失败时连快照一起回滚，下次
+// 抓取自动重试（对比基线仍是旧快照）。返回入账条数。
+//
+// 必须经由写入方串行上下文调用（db.Writer 的单 goroutine）：「读上一条快照 →
+// 插账单」与并发的另一次快照落库交错才不会重复记账。该保证只在单进程内成立——
+// 多实例共享一个库、或管理端刷新与 poller 并发抓取同一上游时，插入顺序可能与
+// 抓取顺序不一致，极端情况下会按错误基线记账；detail JSON 里留了前后余额与
+// 快照 id，发现错账直接删行。
+func RecordBalanceSnapshot(d *sql.DB, snap *BalanceSnapshot) (int, error) {
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("record balance snapshot: begin: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertBalanceSnapshotOn(tx, d, snap); err != nil {
+		return 0, err
+	}
+	n, err := recordBillFromBalanceDelta(tx, d, snap)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("record balance snapshot: commit: %w", err)
+	}
+	return n, nil
+}
+
+// recordBillFromBalanceDelta 在新余额快照落库后（同一事务/同一串行上下文）调用：
+// 与该上游上一条快照逐币种对比，余额下降的部分记一条 auto 账单（归属时刻 =
+// 新快照时刻）。返回入账条数。
 //
 // 规则与边界：
 //   - 只认 kind=balance 的 payload；quota 快照（kimi 百分比窗口）没有金额语义，
 //     静默跳过；
-//   - 上一条快照缺失（首次拉取）或其 payload 不是 balance 类（厂商中途换过
-//     查询通道）时跳过——没有同口径基线就无法推导消费；
+//   - 上一条快照缺失（首次拉取）时跳过——没有基线就无法推导消费；
+//   - 上一条快照的 vendor 与本次不同时跳过：换厂商=换计费账户/口径（如
+//     deepseek 换指向 stepfun，两边都是 balance 类但根本不是一个钱包），差额
+//     是幻觉。同厂商换 API key（换账户）vendor 挡不住，detail 留痕人工核对；
 //   - 余额上升（充值、赠送入账）不记负账单：账单语义是「支出」。厂商赠送额度
 //     到期清零会被误记为支出，detail 里留了前后余额与快照 id 供人工核对，
 //     算错的行可直接删除；
-//   - 必须在写入方串行上下文里调用（db.Writer 的单 goroutine）：「读上一条 →
-//     插账单」才不会与另一次快照落库交错重复记账。
-func RecordBillFromBalanceDelta(d *sql.DB, snap *BalanceSnapshot) (int, error) {
+//   - 单币种金额串解析失败只跳过该币种并 Warn（厂商数字格式变更时账本会无声
+//     停摆，必须有信号），不拖垮其他条目。
+func recordBillFromBalanceDelta(e billExec, dialect *sql.DB, snap *BalanceSnapshot) (int, error) {
 	if snap.ID == 0 || snap.CreatedAt.IsZero() {
 		return 0, nil
 	}
@@ -445,10 +541,11 @@ func RecordBillFromBalanceDelta(d *sql.DB, snap *BalanceSnapshot) (int, error) {
 	if err := json.Unmarshal(snap.Payload, &cur); err != nil || cur.Kind != "balance" {
 		return 0, nil
 	}
-	var prevPayload string
+	var prevPayload, prevVendor string
 	var prevID int64
-	err := d.QueryRow(db.Rebind(d, `SELECT id, payload FROM balance_snapshots
-		WHERE upstream_id = ? AND id < ? ORDER BY id DESC LIMIT 1`), snap.UpstreamID, snap.ID).Scan(&prevID, &prevPayload)
+	err := e.QueryRow(db.Rebind(dialect, `SELECT id, vendor, payload FROM balance_snapshots
+		WHERE upstream_id = ? AND id < ? ORDER BY id DESC LIMIT 1`), snap.UpstreamID, snap.ID).
+		Scan(&prevID, &prevVendor, &prevPayload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -457,29 +554,43 @@ func RecordBillFromBalanceDelta(d *sql.DB, snap *BalanceSnapshot) (int, error) {
 	}
 	var prev billBalancePayload
 	if err := json.Unmarshal([]byte(prevPayload), &prev); err != nil || prev.Kind != "balance" {
+		// 上一条不是 balance 类（quota 通道或 payload 损坏）：没有同口径基线
+		logger.Debug("bill from balance delta: previous snapshot has no balance payload, skip",
+			"upstream_id", snap.UpstreamID, "prev_snapshot_id", prevID)
+		return 0, nil
+	}
+	if prevVendor != snap.Vendor {
+		// 厂商变了：换指向后的第一次抓取不与旧厂商钱包对比
+		logger.Info("bill from balance delta: vendor changed between snapshots, skip",
+			"upstream_id", snap.UpstreamID, "prev_vendor", prevVendor, "vendor", snap.Vendor)
 		return 0, nil
 	}
 	prevTotal := make(map[string]string, len(prev.Balances))
-	for _, e := range prev.Balances {
-		prevTotal[e.Currency] = e.Total
+	for _, entry := range prev.Balances {
+		prevTotal[entry.Currency] = entry.Total
 	}
 	recorded := 0
-	for _, e := range cur.Balances {
-		before, ok := prevTotal[e.Currency]
+	for _, entry := range cur.Balances {
+		before, ok := prevTotal[entry.Currency]
 		if !ok {
 			continue // 新出现的币种没有基线，跳过
 		}
 		beforeMicros, err1 := microsFromDecimal(before)
-		afterMicros, err2 := microsFromDecimal(e.Total)
+		afterMicros, err2 := microsFromDecimal(entry.Total)
 		if err1 != nil || err2 != nil {
-			continue // 单币种金额解析失败只跳过该币种，不拖垮其他条目
+			// 厂商数字格式变了（如千分位/科学计数法）：跳过并留下信号，
+			// 否则自动记账会无声停摆
+			logger.Warn("bill from balance delta: unparsable balance amount, skip currency",
+				"upstream_id", snap.UpstreamID, "currency", entry.Currency,
+				"prev_total", before, "new_total", entry.Total, "err", errors.Join(err1, err2))
+			continue
 		}
 		spend := beforeMicros - afterMicros
 		if spend <= 0 {
 			continue
 		}
 		detail, _ := json.Marshal(map[string]any{
-			"prev_total": before, "new_total": e.Total,
+			"prev_total": before, "new_total": entry.Total, "vendor": snap.Vendor,
 			"prev_snapshot_id": prevID, "new_snapshot_id": snap.ID,
 		})
 		b := &Bill{
@@ -487,11 +598,11 @@ func RecordBillFromBalanceDelta(d *sql.DB, snap *BalanceSnapshot) (int, error) {
 			UpstreamName: snap.UpstreamName,
 			Kind:         BillKindAuto,
 			AmountMicros: spend,
-			Currency:     e.Currency,
+			Currency:     entry.Currency,
 			BilledAt:     snap.CreatedAt,
 			Detail:       string(detail),
 		}
-		if err := InsertBill(d, b); err != nil {
+		if err := insertBillOn(e, dialect, b); err != nil {
 			return recorded, err
 		}
 		recorded++
