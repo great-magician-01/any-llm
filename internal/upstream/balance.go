@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/great-magician-01/any-llm/internal/db"
 	"github.com/great-magician-01/any-llm/internal/logger"
 	"github.com/great-magician-01/any-llm/internal/store"
 )
@@ -89,13 +91,31 @@ var VendorClient = &http.Client{Timeout: 15 * time.Second}
 // 基线，充值等场景会因此推导出错误支出。不同上游仍可并发抓取。
 var balanceUpstreamLocks sync.Map // map[int64]*sync.Mutex
 
-// LockBalanceUpstream 获取一个上游的余额刷新锁，返回解锁函数。锁必须覆盖
-// FetchBalance 与 RecordBalanceSnapshot 两步，不能只保护数据库事务。
-func LockBalanceUpstream(upstreamID int64) func() {
+// LockBalanceUpstream 串行化同一上游的「抓取余额 → 快照与账单落库」完整链路。
+// 进程内 mutex 保留用于本机各刷新入口；PG/MySQL 再通过专用连接上的会话锁
+// 串行化共享数据库的多个进程，SQLite 则只使用本地锁。数据库锁绝不能用
+// upstreams 行锁：那会要求事务横跨厂商抓取，并与后续单 writer 落库形成死锁。
+//
+// 返回的释放函数幂等；即使数据库解锁报错也必定释放本地 mutex。获取数据库
+// 锁失败时同样先释放本地 mutex，避免一次 DB 故障永久卡住该上游。
+func LockBalanceUpstream(ctx context.Context, d *sql.DB, upstreamID int64) (func() error, error) {
 	lock, _ := balanceUpstreamLocks.LoadOrStore(upstreamID, &sync.Mutex{})
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
-	return mu.Unlock
+	dbUnlock, err := db.AcquireBalanceLock(ctx, d, upstreamID)
+	if err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("lock balance refresh for upstream %d: %w", upstreamID, err)
+	}
+	var once sync.Once
+	var unlockErr error
+	return func() error {
+		once.Do(func() {
+			defer mu.Unlock()
+			unlockErr = dbUnlock()
+		})
+		return unlockErr
+	}, nil
 }
 
 // FetchBalance calls the vendor's balance/quota endpoint and returns the

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -546,5 +547,79 @@ func TestRecordBalanceSnapshot_BillsFromDelta(t *testing.T) {
 	list, _, _ = BillsList(d, &uid3, time.Time{}, time.Time{}, 1, 10)
 	if list[0].Currency != "USD" {
 		t.Fatalf("expected only USD bill, got %+v", list)
+	}
+}
+
+func TestBillAmountMicrosJSONStrings(t *testing.T) {
+	const amount = int64(9_007_199_254_740_993) // 2^53+1：JSON number 会在 JS 中丢精度
+	values := []any{
+		Bill{AmountMicros: amount},
+		BillCurrencyAmount{AmountMicros: amount},
+		BillUpstreamTotal{AmountMicros: amount},
+		BillKindTotal{AmountMicros: amount},
+	}
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"amount_micros":"9007199254740993"`) {
+			t.Errorf("%T emitted non-string/lossy amount_micros: %s", value, raw)
+		}
+	}
+}
+
+func TestBillSummaryTxKeepsSerializableSnapshot(t *testing.T) {
+	d := testDB(t)
+	start := billDay("2026-03-10")
+	end := start.AddDate(0, 0, 1)
+	first := &Bill{UpstreamID: 1, UpstreamName: "ds", Kind: BillKindAuto, AmountMicros: 1_000_000, Currency: "CNY", BilledAt: start}
+	if err := InsertBill(d, first); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := d.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	buckets, err := BillTrendTx(tx, d, "day", nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 1 || billBucketAmount(t, buckets[0], "CNY") != 1_000_000 {
+		t.Fatalf("initial trend=%+v", buckets)
+	}
+
+	// WAL 允许另一连接在只读事务保持快照时提交；后续两个聚合绝不能看到这笔新账。
+	second := &Bill{UpstreamID: 1, UpstreamName: "ds", Kind: BillKindManual, AmountMicros: 2_000_000, Currency: "CNY", BilledAt: start}
+	if err := InsertBill(d, second); err != nil {
+		t.Fatal(err)
+	}
+	totals, err := BillUpstreamTotalsTx(tx, d, nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(totals) != 1 || totals[0].AmountMicros != 1_000_000 || totals[0].Count != 1 {
+		t.Fatalf("totals escaped transaction snapshot: %+v", totals)
+	}
+	kinds, err := BillKindTotalsTx(tx, d, nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kinds) != 1 || kinds[0].Kind != BillKindAuto || kinds[0].AmountMicros != 1_000_000 || kinds[0].Count != 1 {
+		t.Fatalf("kind totals escaped transaction snapshot: %+v", kinds)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 提交后新查询必须看到两笔，证明中途写入确实已落库而非测试没有触发竞争。
+	totals, err = BillUpstreamTotals(d, nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(totals) != 1 || totals[0].AmountMicros != 3_000_000 || totals[0].Count != 2 {
+		t.Fatalf("post-commit totals=%+v", totals)
 	}
 }

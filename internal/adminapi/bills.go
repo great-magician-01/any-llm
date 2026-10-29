@@ -47,23 +47,38 @@ func billUpstreamFilter(r *http.Request) (*int64, error) {
 	return &id, nil
 }
 
-// listBills serves GET /api/admin/bills?upstream_id=&from=&to=&page=&size=
-// （from/to 为 "YYYY-MM-DD"，按账单归属日期的闭区间过滤）。
+// listBills serves GET /api/admin/bills?upstream_id=&from=&to=&bucket=&page=&size=
+// （from/to 为 "YYYY-MM-DD"，按账单归属日期的闭区间过滤）。任一端缺省时与
+// summary 一样通过 BillWindow 补全默认窗口；两端都给时保持精确日期且不受桶上限影响。
 func (a *API) listBills(w http.ResponseWriter, r *http.Request) {
 	upstreamID, err := billUpstreamFilter(r)
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
-	from, err := billDayParam(r.URL.Query().Get("from"), false)
-	if err != nil {
-		writeJSON(w, 400, map[string]any{"error": "invalid from: want YYYY-MM-DD"})
-		return
-	}
-	to, err := billDayParam(r.URL.Query().Get("to"), true)
-	if err != nil {
-		writeJSON(w, 400, map[string]any{"error": "invalid to: want YYYY-MM-DD"})
-		return
+	fromParam, toParam := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	var from, to time.Time
+	if fromParam != "" && toParam != "" {
+		from, err = billDayParam(fromParam, false)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"error": "invalid from: want YYYY-MM-DD"})
+			return
+		}
+		to, err = billDayParam(toParam, true)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"error": "invalid to: want YYYY-MM-DD"})
+			return
+		}
+	} else {
+		bucket := r.URL.Query().Get("bucket")
+		if bucket == "" {
+			bucket = "day"
+		}
+		from, to, err = store.BillWindow(bucket, fromParam, toParam)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	page, size := pageParams(r)
 	bills, total, err := store.BillsList(a.db, upstreamID, from, to, page, size)
@@ -96,21 +111,35 @@ func (a *API) billSummary(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
-	buckets, err := store.BillTrend(a.db, bucket, upstreamID, start, end)
+	// 三份聚合不仅要同窗口，还要同数据快照。显式 Serializable + ReadOnly
+	// 避免 PG 默认 ReadCommitted 在三条 SELECT 之间看到新提交。
+	tx, err := a.db.BeginTx(r.Context(), &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	if err != nil {
+		logger.Error("admin: begin bill summary transaction failed", "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+	buckets, err := store.BillTrendTx(tx, a.db, bucket, upstreamID, start, end)
 	if err != nil {
 		logger.Error("admin: bill trend failed", "bucket", bucket, "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	totals, err := store.BillUpstreamTotals(a.db, upstreamID, start, end)
+	totals, err := store.BillUpstreamTotalsTx(tx, a.db, upstreamID, start, end)
 	if err != nil {
 		logger.Error("admin: bill upstream totals failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
-	kinds, err := store.BillKindTotals(a.db, upstreamID, start, end)
+	kinds, err := store.BillKindTotalsTx(tx, a.db, upstreamID, start, end)
 	if err != nil {
 		logger.Error("admin: bill kind totals failed", "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		logger.Error("admin: commit bill summary transaction failed", "err", err)
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
@@ -197,6 +226,12 @@ func billCurrencyOrDefault(s string) string {
 	return s
 }
 
+var (
+	errBillNotFound         = errors.New("bill not found")
+	errBillNotManual        = errors.New("自动记账不可编辑，如需修正请删除后手动补记")
+	errBillUpstreamNotFound = errors.New("上游不存在")
+)
+
 // updateBill serves PUT /api/admin/bills/{id}：编辑手动记账。自动记账是余额
 // 推导的客观记录，不允许改（改了就和快照对不上）；要修正请删除后手动补记。
 func (a *API) updateBill(w http.ResponseWriter, r *http.Request, id int64) {
@@ -210,43 +245,57 @@ func (a *API) updateBill(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": err.Error()})
 		return
 	}
-	b, err := store.GetBill(a.db, id)
-	if err != nil {
+	var b *store.Bill
+	internalErr := false
+	// GetBill、kind 校验与 UPDATE 必须和 DELETE 共用同一 writer 串行区：
+	// 否则 DELETE 可插在预查询和更新之间，0 行更新仍被误报为 200。
+	err = a.writeSync(func(d *sql.DB) error {
+		var err error
+		b, err = store.GetBill(d, id)
 		if errors.Is(err, sql.ErrNoRows) {
+			return errBillNotFound
+		}
+		if err != nil {
+			internalErr = true
+			return err
+		}
+		if b.Kind != store.BillKindManual {
+			return errBillNotManual
+		}
+		u, err := store.GetUpstreamByID(d, in.UpstreamID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errBillUpstreamNotFound
+		}
+		if err != nil {
+			internalErr = true
+			return err
+		}
+		b.UpstreamID = u.ID
+		b.UpstreamName = u.Name
+		b.AmountMicros = amount
+		// 币种只在显式给出时才改：编辑表单不发 currency，缺省覆盖会把非 CNY 账单
+		// 静默改币（¥/$ 错位、币种合计全乱）
+		if in.Currency != "" {
+			b.Currency = billCurrencyOrDefault(in.Currency)
+		}
+		b.BilledAt = billed
+		b.Note = strings.TrimSpace(in.Note)
+		return store.UpdateBill(d, b)
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errBillNotFound):
 			writeJSON(w, 404, map[string]any{"error": "not found"})
-			return
+		case errors.Is(err, errBillNotManual), errors.Is(err, errBillUpstreamNotFound):
+			writeJSON(w, 400, map[string]any{"error": err.Error()})
+		default:
+			logger.Error("admin: update bill failed", "id", id, "err", err)
+			if internalErr {
+				writeJSON(w, 500, map[string]any{"error": err.Error()})
+			} else {
+				writeSyncErr(w, 400, err)
+			}
 		}
-		logger.Error("admin: update bill get failed", "id", id, "err", err)
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
-		return
-	}
-	if b.Kind != store.BillKindManual {
-		writeJSON(w, 400, map[string]any{"error": "自动记账不可编辑，如需修正请删除后手动补记"})
-		return
-	}
-	u, err := store.GetUpstreamByID(a.db, in.UpstreamID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, 400, map[string]any{"error": "上游不存在"})
-			return
-		}
-		logger.Error("admin: update bill get upstream failed", "err", err)
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
-		return
-	}
-	b.UpstreamID = u.ID
-	b.UpstreamName = u.Name
-	b.AmountMicros = amount
-	// 币种只在显式给出时才改：编辑表单不发 currency，缺省覆盖会把非 CNY 账单
-	// 静默改币（¥/$ 错位、币种合计全乱）
-	if in.Currency != "" {
-		b.Currency = billCurrencyOrDefault(in.Currency)
-	}
-	b.BilledAt = billed
-	b.Note = strings.TrimSpace(in.Note)
-	if err := a.writeSync(func(d *sql.DB) error { return store.UpdateBill(d, b) }); err != nil {
-		logger.Error("admin: update bill failed", "id", id, "err", err)
-		writeSyncErr(w, 400, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"data": b})

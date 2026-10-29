@@ -34,8 +34,16 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer wg.Done()
 			// 同一上游的抓取与落库必须整体串行，防止较早的响应较晚入账。
-			unlock := upstream.LockBalanceUpstream(u.ID)
-			defer unlock()
+			unlock, err := upstream.LockBalanceUpstream(r.Context(), a.db, u.ID)
+			if err != nil {
+				logger.Warn("admin: refresh all balances acquire lock failed", "upstream", u.Name, "id", u.ID, "err", err)
+				return
+			}
+			defer func() {
+				if err := unlock(); err != nil {
+					logger.Warn("admin: refresh all balances release lock failed", "upstream", u.Name, "id", u.ID, "err", err)
+				}
+			}()
 			vendor, payload, err := upstream.FetchBalance(r.Context(), upstream.VendorClient, u)
 			if err != nil {
 				logger.Warn("admin: refresh all balances fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
@@ -129,8 +137,17 @@ func (a *API) refreshBalance(w http.ResponseWriter, r *http.Request, id int64) {
 	}
 	// 与 poller / 全量刷新共用同一把上游锁：网络抓取和快照事务不能分离，
 	// 否则响应完成顺序可能不同于实际钱包变化顺序。
-	unlock := upstream.LockBalanceUpstream(u.ID)
-	defer unlock()
+	unlock, err := upstream.LockBalanceUpstream(r.Context(), a.db, u.ID)
+	if err != nil {
+		logger.Error("admin: refresh balance acquire lock failed", "upstream", u.Name, "id", id, "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			logger.Warn("admin: refresh balance release lock failed", "upstream", u.Name, "id", id, "err", err)
+		}
+	}()
 	vendor, payload, err := upstream.FetchBalance(r.Context(), upstream.VendorClient, u)
 	if err != nil {
 		logger.Error("admin: refresh balance failed", "upstream", u.Name, "id", id, "err", err)

@@ -7,8 +7,8 @@ import {
   type Bill, type BillSummary, type BillUpstreamTotal, type BillBucket,
 } from '@/api/bills'
 import { listUpstreams, type Upstream } from '@/api/upstreams'
-import { formatInt, formatPercent } from '@/utils/format'
-import { formatBillMoney, microsToAmount, bucketLabel, dateParam, amountInputError, billDetailText, perCurrencyLabel } from '@/utils/bill'
+import { formatInt } from '@/utils/format'
+import { formatBillMoney, formatBillPercent, microsToAmount, bucketLabel, dateParam, amountInputError, billDetailText, perCurrencyLabel } from '@/utils/bill'
 import { currentMonthRange, lastNDays, currentYear } from '@/utils/range'
 import StatCard from '@/components/StatCard.vue'
 import AppIcon from '@/components/AppIcon.vue'
@@ -77,8 +77,8 @@ const totalCount = computed(() => upstreamTotals.value.reduce((a, u) => a + u.co
 const grandTotalLabel = computed(() => perCurrencyLabel(upstreamTotals.value))
 // 每币种小计，占比在其币种内部计算
 const totalsByCurrency = computed(() => {
-  const m = new Map<string, number>()
-  for (const u of upstreamTotals.value) m.set(u.currency, (m.get(u.currency) ?? 0) + u.amount_micros)
+  const m = new Map<string, bigint>()
+  for (const u of upstreamTotals.value) m.set(u.currency, (m.get(u.currency) ?? 0n) + BigInt(u.amount_micros))
   return m
 })
 function kindLabel(kind: Bill['kind']): { count: number; label: string } {
@@ -88,18 +88,26 @@ function kindLabel(kind: Bill['kind']): { count: number; label: string } {
 
 /* ---- 趋势图 ---- */
 const trendLabels = computed(() => summary.value.buckets.map((b) => bucketLabel(b.bucket)))
+const trendAmountMicros = computed(() => summary.value.buckets.map((b) =>
+  b.amounts.find((a) => a.currency === trendCurrency.value)?.amount_micros ?? '0',
+))
 const trendSeries = computed(() => [
   {
     name: `消费金额（${trendCurrency.value}）`,
     color: 'var(--brand)',
-    values: summary.value.buckets.map((b) =>
-      (b.amounts.find((a) => a.currency === trendCurrency.value)?.amount_micros ?? 0) / 1_000_000,
-    ),
+    // 只有绘图坐标可以转成 number；卡片、表格、占比和编辑始终走 BigInt。
+    values: trendAmountMicros.value.map((micros) => Number(micros) / 1_000_000),
   },
 ])
 // 图表只画当前币种，tooltip 与坐标轴也使用同一币种格式化。
 function chartMoney(n: number): string {
-  return formatBillMoney(Math.round(n * 1_000_000), trendCurrency.value || 'CNY')
+  // tooltip 的值来自某个桶：找回原始字符串，避免大 int64 经绘图 number 往返后失真。
+  // 非桶值（例如 Y 轴刻度）没有原始金额，才使用近似的 micros 回退。
+  const index = trendSeries.value[0].values.indexOf(n)
+  const micros = index >= 0
+    ? trendAmountMicros.value[index]
+    : BigInt(Math.round(n * 1_000_000)).toString()
+  return formatBillMoney(micros, trendCurrency.value || 'CNY')
 }
 
 /* ---- 明细 ---- */
@@ -112,7 +120,7 @@ let billsSeq = 0
 async function loadBills() {
   const seq = ++billsSeq
   try {
-    const r = await fetchBills({ page: page.value, size: pageSize, ...filterParams() })
+    const r = await fetchBills({ bucket: bucket.value, page: page.value, size: pageSize, ...filterParams() })
     if (seq !== billsSeq) return
     bills.value = r.data
     total.value = r.total
@@ -130,6 +138,13 @@ function onFilterChange() {
 function loadAll() {
   loadSummary()
   loadBills()
+}
+
+// 显式日期范围与 bucket 无关，只重查汇总；清空范围后明细也采用 bucket 的
+// 缺省回看窗口，因此必须一起重查，否则图表与明细会停留在不同窗口。
+function onBucketChange() {
+  if (range.value) loadSummary()
+  else onFilterChange()
 }
 
 /* ---- 表格列 ---- */
@@ -193,7 +208,7 @@ const upstreamColumns: DataTableColumns<BillUpstreamTotal> = [
   { title: '消费金额', key: 'amount_micros', width: 140, render: (row) => h('span', { class: 'mono', style: 'font-weight: 600; color: var(--brand-hover)' }, formatBillMoney(row.amount_micros, row.currency)) },
   { title: '笔数', key: 'count', width: 80, render: (row) => h('span', { class: 'mono' }, formatInt(row.count)) },
   // 占比在该行币种内部计算：跨币种的分母没有意义
-  { title: '占比', key: 'share', width: 90, render: (row) => h('span', { class: 'mono' }, formatPercent(row.amount_micros, totalsByCurrency.value.get(row.currency) ?? 0)) },
+  { title: '占比', key: 'share', width: 90, render: (row) => h('span', { class: 'mono' }, formatBillPercent(row.amount_micros, (totalsByCurrency.value.get(row.currency) ?? 0n).toString())) },
 ]
 
 /* ---- 记账表单 ---- */
@@ -338,7 +353,7 @@ onMounted(() => {
             :options="trendCurrencyOptions"
             style="width: 96px"
           />
-          <n-radio-group v-model:value="bucket" size="small" @update:value="loadSummary">
+          <n-radio-group v-model:value="bucket" size="small" @update:value="onBucketChange">
             <n-radio-button value="day">按日</n-radio-button>
             <n-radio-button value="month">按月</n-radio-button>
             <n-radio-button value="year">按年</n-radio-button>

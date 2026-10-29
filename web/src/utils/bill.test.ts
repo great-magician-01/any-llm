@@ -1,39 +1,53 @@
 import { describe, expect, it } from 'vitest'
-import { microsToAmount, formatBillMoney, bucketLabel, dateParam, amountInputError, billDetailText, perCurrencyLabel } from './bill'
+import {
+  microsToAmount,
+  formatBillMoney,
+  formatBillPercent,
+  bucketLabel,
+  dateParam,
+  amountInputError,
+  billDetailText,
+  perCurrencyLabel,
+} from './bill'
 
-describe('microsToAmount：1e-6 整数金额 → 十进制串', () => {
+describe('microsToAmount：1e-6 整数字符串金额 → 十进制串', () => {
   it('两位小数（最常见：厂商余额差额）', () => {
-    expect(microsToAmount(12_340_000)).toBe('12.34')
-    expect(microsToAmount(110_000_000)).toBe('110.00')
-    expect(microsToAmount(0)).toBe('0.00')
+    expect(microsToAmount('12340000')).toBe('12.34')
+    expect(microsToAmount('110000000')).toBe('110.00')
+    expect(microsToAmount('0')).toBe('0.00')
   })
 
   it('整数金额补齐两位小数，不为展示丢精度', () => {
-    expect(microsToAmount(1_200_000)).toBe('1.20')
-    expect(microsToAmount(7_000_000)).toBe('7.00')
+    expect(microsToAmount('1200000')).toBe('1.20')
+    expect(microsToAmount('7000000')).toBe('7.00')
   })
 
   it('保留 micros 粒度（差额有 1e-6 位时原样显示）', () => {
-    expect(microsToAmount(12_345_000)).toBe('12.345')
-    expect(microsToAmount(5_000)).toBe('0.005')
-    expect(microsToAmount(1)).toBe('0.000001')
+    expect(microsToAmount('12345000')).toBe('12.345')
+    expect(microsToAmount('5000')).toBe('0.005')
+    expect(microsToAmount('1')).toBe('0.000001')
   })
 
   it('负数（防御：后端不产负账单，但函数要稳）', () => {
-    expect(microsToAmount(-5_000)).toBe('-0.005')
-    expect(microsToAmount(-12_340_000)).toBe('-12.34')
+    expect(microsToAmount('-5000')).toBe('-0.005')
+    expect(microsToAmount('-12340000')).toBe('-12.34')
+  })
+
+  it('超过 2^53 的 micros 仍逐位精确', () => {
+    // 2^53 + 1 若先转 JS number 会丢成 2^53。
+    expect(microsToAmount('9007199254740993')).toBe('9007199254.740993')
   })
 })
 
 describe('formatBillMoney：复用余额面板的币种符号规则', () => {
   it('CNY → ¥ 前缀', () => {
-    expect(formatBillMoney(12_340_000, 'CNY')).toBe('¥12.34')
+    expect(formatBillMoney('12340000', 'CNY')).toBe('¥12.34')
   })
   it('USD → $ 前缀', () => {
-    expect(formatBillMoney(500_000, 'USD')).toBe('$0.50')
+    expect(formatBillMoney('500000', 'USD')).toBe('$0.50')
   })
   it('其他币种前缀币种代码', () => {
-    expect(formatBillMoney(100_000, 'EUR')).toBe('EUR 0.10')
+    expect(formatBillMoney('100000', 'EUR')).toBe('EUR 0.10')
   })
 })
 
@@ -53,24 +67,42 @@ describe('bucketLabel：趋势图横轴短标签', () => {
 
 describe('perCurrencyLabel：按币种各自归并，不跨币种加总', () => {
   it('单币种', () => {
-    expect(perCurrencyLabel([{ currency: 'CNY', amount_micros: 12_340_000 }])).toBe('¥12.34')
+    expect(perCurrencyLabel([{ currency: 'CNY', amount_micros: '12340000' }])).toBe('¥12.34')
     expect(
       perCurrencyLabel([
-        { currency: 'CNY', amount_micros: 10_000_000 },
-        { currency: 'CNY', amount_micros: 2_340_000 },
+        { currency: 'CNY', amount_micros: '10000000' },
+        { currency: 'CNY', amount_micros: '2340000' },
       ]),
     ).toBe('¥12.34')
   })
   it('混币种：各自成项、金额降序', () => {
     expect(
       perCurrencyLabel([
-        { currency: 'USD', amount_micros: 50_000_000 },
-        { currency: 'CNY', amount_micros: 100_000_000 },
+        { currency: 'USD', amount_micros: '50000000' },
+        { currency: 'CNY', amount_micros: '100000000' },
       ]),
     ).toBe('¥100.00 + $50.00')
   })
+  it('大整数合计不经过 number，2^53 + 1 不丢精度', () => {
+    expect(perCurrencyLabel([
+      { currency: 'CNY', amount_micros: '9007199254740992' },
+      { currency: 'CNY', amount_micros: '1' },
+    ])).toBe('¥9007199254.740993')
+  })
   it('空行回空串（调用方显示占位）', () => {
     expect(perCurrencyLabel([])).toBe('')
+  })
+})
+
+describe('formatBillPercent：BigInt 计算一位小数占比', () => {
+  it('常规占比与四舍五入', () => {
+    expect(formatBillPercent('1', '3')).toBe('33.3%')
+    expect(formatBillPercent('2', '3')).toBe('66.7%')
+    expect(formatBillPercent('0', '5')).toBe('0.0%')
+    expect(formatBillPercent('5', '0')).toBe('—')
+  })
+  it('超过 2^53 的分子分母仍精确计算', () => {
+    expect(formatBillPercent('9007199254740993', '18014398509481986')).toBe('50.0%')
   })
 })
 
@@ -89,6 +121,7 @@ describe('amountInputError：记账表单金额校验', () => {
     expect(amountInputError(' 7 ')).toBeNull()
     expect(amountInputError('.5')).toBeNull()
     expect(amountInputError('12.')).toBeNull()
+    expect(amountInputError('9007199254740993.000001')).toBeNull()
   })
   it('格式错误', () => {
     expect(amountInputError('')).toContain('金额格式')
@@ -100,6 +133,7 @@ describe('amountInputError：记账表单金额校验', () => {
     expect(amountInputError('0')).toContain('大于 0')
     expect(amountInputError('0.00')).toContain('大于 0')
     expect(amountInputError('-5')).toContain('大于 0')
+    expect(amountInputError('-9007199254740993')).toContain('大于 0')
   })
 })
 

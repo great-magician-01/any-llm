@@ -4,7 +4,7 @@ import { THEME_IDS, themeById, type ThemeId, type ThemeMode } from '@/utils/them
 /**
  * 全局主题：单一维度（theme），一个主题同时决定明暗、品牌色和整套表面色。
  *
- * 解析顺序：localStorage 里已选的主题 > 旧版配色记录（迁移）> 系统 prefers-color-scheme
+ * 解析顺序：旧版 EVA 配色记录（迁移时优先于旧明暗）> localStorage 里已选的主题 > 系统 prefers-color-scheme
  * > 深色。选中的主题以 `<html data-theme="…">` 暴露给 CSS（见 style.css / glass.css），
  * 同时被 App.vue / glass/GlassShell.vue 用来切换 naive-ui 的 darkTheme / lightTheme。
  *

@@ -28,6 +28,12 @@ func newMux(frontendFS fs.FS, gatewayHandler, adminHandler http.Handler, d *sql.
 	mux.Handle("/api/admin/", gateway.LoggingMiddleware(adminHandler, "admin"))
 	// /health 刻意不包日志中间件：探活高频轮询，逐条进日志只是噪音。
 	mux.Handle("GET /health", newHealthHandler(d))
+	// 非 GET/HEAD 也必须留在健康端点的语义内；否则会被下面的 SPA
+	// catch-all 接管，在 DB 已断开时仍返回 200 index.html，造成假健康。
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	})
 	// Go 1.22+: "/" only matches the exact root path; use /{$} for
 	// that and /{pathname...} as the catch-all.
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {

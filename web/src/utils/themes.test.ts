@@ -14,6 +14,7 @@
 // 上面仅为本文件引入 node 类型（读盘做 CSS 同步断言用）；app 侧 tsconfig 不全局带 node types
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { rgba, THEMES, THEME_IDS, themeById, themeNaiveOverrides, type ThemeId } from './themes'
 
@@ -29,6 +30,19 @@ const EVA_THEME_IDS: ThemeId[] = ['eva-01', 'eva-02', 'eva-00']
 /** 去掉全部空白再比对：CSS 里值可以随意换行，语义由非空白序列决定 */
 function squash(s: string): string {
   return s.replace(/\s+/g, '')
+}
+
+/** 真正执行 index.html 的首帧脚本，避免只检查存储键字符串而漏掉解析顺序漂移。 */
+function runInlineTheme(storage: Record<string, string>, prefersLight = false): string {
+  const script = indexSrc.match(/<script>([\s\S]*?)<\/script>/)
+  if (!script) throw new Error('index.html 缺少首帧内联脚本')
+  const documentElement: { dataset: { theme?: string } } = { dataset: {} }
+  runInNewContext(script[1], {
+    localStorage: { getItem: (key: string) => storage[key] ?? null },
+    window: { matchMedia: () => ({ matches: prefersLight }) },
+    document: { documentElement },
+  })
+  return documentElement.dataset.theme ?? ''
 }
 
 function luminance(hex: string): number {
@@ -171,6 +185,20 @@ describe('主题与 CSS 变量块同步', () => {
     expect(src).toContain('any-llm-accent')
     for (const id of THEME_IDS) expect(src).toContain(`'${id}'`)
   })
+
+  it('index.html 首帧脚本与 initTheme 一样优先迁移旧 EVA 配色', () => {
+    // 两个存储键同时存在是旧版升级的自然状态；首帧不能先画旧明暗再跳到 EVA。
+    expect(
+      runInlineTheme({ 'any-llm-theme': 'light', 'any-llm-accent': 'eva-02' }),
+    ).toBe('eva-02')
+    expect(runInlineTheme({ 'any-llm-theme': 'dark', 'any-llm-accent': 'eva-01' })).toBe(
+      'eva-01',
+    )
+    // 非 EVA 的旧 default 不占主题维度，仍使用已保存的明暗。
+    expect(runInlineTheme({ 'any-llm-theme': 'light', 'any-llm-accent': 'default' })).toBe(
+      'light',
+    )
+  })
 })
 
 describe('调色板对比度底线', () => {
@@ -183,5 +211,12 @@ describe('调色板对比度底线', () => {
     expect(contrast(t.primary?.color ?? '#5b8cff', '#ffffff')).toBeGreaterThanOrEqual(3)
     expect(contrast(t.menu, base)).toBeGreaterThanOrEqual(4.5)
     expect(contrast(onWhite ? t.css.hoverDeep! : t.css.hover, base)).toBeGreaterThanOrEqual(3)
+  })
+
+  it.each(EVA_THEME_IDS)('%s：faint 文字在实际 input / popover 表面满足 WCAG AA', (id) => {
+    const s = themeById(id).surface!
+    // placeholderColor 与 --text-4 共用 faint；两者都是普通字号文字，需达到 4.5:1。
+    expect(contrast(s.text.faint, s.input)).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(s.text.faint, s.popover)).toBeGreaterThanOrEqual(4.5)
   })
 })
