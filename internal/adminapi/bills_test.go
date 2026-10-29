@@ -10,6 +10,16 @@ import (
 	"github.com/great-magician-01/any-llm/internal/store"
 )
 
+func billBucketSum(buckets []store.BillBucketStat) int64 {
+	var sum int64
+	for _, bucket := range buckets {
+		for _, amount := range bucket.Amounts {
+			sum += amount.AmountMicros
+		}
+	}
+	return sum
+}
+
 func TestBillsCRUD(t *testing.T) {
 	a, d := setupAPI(t)
 	uid, err := store.CreateUpstream(d, &store.Upstream{Name: "ds", BaseURL: "https://api.deepseek.com", APIKey: "k", Format: "openai"})
@@ -84,11 +94,7 @@ func TestBillsCRUD(t *testing.T) {
 		if len(sumResp.Upstreams) != 1 || sumResp.Upstreams[0].AmountMicros != 20_000_000 {
 			t.Fatalf("summary %s: upstreams=%+v", q, sumResp.Upstreams)
 		}
-		var sum int64
-		for _, bk := range sumResp.Buckets {
-			sum += bk.AmountMicros
-		}
-		if sum != 20_000_000 {
+		if sum := billBucketSum(sumResp.Buckets); sum != 20_000_000 {
 			t.Fatalf("summary %s: buckets sum=%d", q, sum)
 		}
 	}
@@ -289,10 +295,7 @@ func TestBillsSummaryCoherentWindow(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	var bucketSum int64
-	for _, bk := range resp.Buckets {
-		bucketSum += bk.AmountMicros
-	}
+	bucketSum := billBucketSum(resp.Buckets)
 	var upstreamSum int64
 	for _, u := range resp.Upstreams {
 		upstreamSum += u.AmountMicros

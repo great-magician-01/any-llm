@@ -236,12 +236,23 @@ func billWhere(upstreamID *int64, from, to time.Time) (string, []any) {
 // 回 400 而不是 500（调用方的问题，不是服务端故障）。
 var ErrInvalidBucket = errors.New("invalid bucket")
 
+// ErrBillWindowTooWide 拒绝会产生过多零填充桶的窗口。静默截断会让汇总
+// 与明细口径不同，因此超宽输入必须显式报错。
+var ErrBillWindowTooWide = errors.New("bill window too wide")
+
+// BillCurrencyAmount 是一个时间桶内单一币种的金额。趋势不能把不同币种
+// 加成一个数字，调用方按币种选择或分系列展示。
+type BillCurrencyAmount struct {
+	Currency     string `json:"currency"`
+	AmountMicros int64  `json:"amount_micros"`
+}
+
 // BillBucketStat 是一个时间桶（日/月/年）的账单聚合。
 type BillBucketStat struct {
 	// Bucket 归一化桶标识："YYYY-MM-DD" / "YYYY-MM" / "YYYY"（本地时区）
-	Bucket       string `json:"bucket"`
-	AmountMicros int64  `json:"amount_micros"`
-	Count        int    `json:"count"`
+	Bucket  string               `json:"bucket"`
+	Amounts []BillCurrencyAmount `json:"amounts"`
+	Count   int                  `json:"count"`
 }
 
 // 桶数上限：day 与用量页 90 天窗口同量级再放宽一档（预留全年趋势图），month/year
@@ -279,19 +290,16 @@ func billBucketStart(bucket string, t time.Time) time.Time {
 	}
 }
 
-// BillWindow 返回 bucket 档位的账单窗口 [start, end)（本地时区）。from/to 是
-// "YYYY-MM-DD"（可空；日期闭区间语义，内部换算成排他的下一桶起点）：
-//   - 两端都给：[from 所在桶起点, to 所在桶的下一桶起点)；
-//   - 只给 from：终点 = now 所在桶的下一桶（「从 from 到今天」）；
-//   - 只给 to：起点 = to 所在桶回退 defaultSpan 个桶（「截止 to 的近 N 桶」），
-//     避免出现起点晚于终点的退化窗口；
+// BillWindow 返回账单窗口 [start, end)（本地时区）。from/to 是
+// "YYYY-MM-DD"（可空；日期闭区间语义，内部换算成排他的次日零点）：
+//   - 显式 from/to 始终按精确日期过滤，不因 month/year 图表档位扩展到整桶；
+//   - 只给 from：终点 = 明天零点（「从 from 到今天」）；
+//   - 只给 to：起点 = to 所在桶回退 defaultSpan 个桶（「截止 to 的近 N 桶」）；
 //   - 都不给：now 所在桶回退 defaultSpan 到 now 所在桶（day 近 30 天 / month
 //     近 12 个月 / year 近 5 年）。
 //
-// 桶数超上限时从起点截断；from 晚于 to 返回空窗口（调用方得到空结果而不是
-// 报错或伪造的桶）。账单 summary 的图表与两类合计共用这一个窗口——同一个
-// 响应里的所有数字统计的是同一段时间的账（趋势桶天然对齐桶边界，合计随之
-// 用同一口径）；明细列表是独立接口，用自己的日期闭区间口径。
+// 桶数超上限时返回 ErrBillWindowTooWide，不静默截断；from 晚于 to 返回空窗口。
+// 账单 summary 的图表与两类合计共用这一个窗口，和明细的显式日期范围一致。
 func BillWindow(bucket, from, to string) (start, end time.Time, err error) {
 	step, _, capBuckets, defaultSpan, err := billBucketSpec(bucket)
 	if err != nil {
@@ -299,7 +307,8 @@ func BillWindow(bucket, from, to string) (start, end time.Time, err error) {
 	}
 	// 锚点：to 给了锚在 to 的桶起点，否则锚在 now 的桶起点。回退跨度与终点都
 	// 相对锚点，四种 from/to 组合下 start ≤ end 恒成立（显式 from 晚于 to 除外）。
-	anchor := billBucketStart(bucket, time.Now())
+	now := time.Now()
+	anchor := billBucketStart(bucket, now)
 	if to != "" {
 		tt, err := parseTimeParam(to)
 		if err != nil {
@@ -316,26 +325,30 @@ func BillWindow(bucket, from, to string) (start, end time.Time, err error) {
 	default:
 		start = start.AddDate(0, 0, -defaultSpan)
 	}
+	// 显式日期是精确闭区间，不能随月/年桶扩成整月/整年，否则汇总与明细
+	// 在切换图表档位时统计不同窗口。没有显式端点时仍按桶提供缺省回看窗口。
 	if from != "" {
 		ft, err := parseTimeParam(from)
 		if err != nil {
 			return time.Time{}, time.Time{}, fmt.Errorf("bill window: invalid from: %w", err)
 		}
-		start = billBucketStart(bucket, ft)
+		start = ft
 	}
 	end = step(anchor)
-	// 桶数上限截断（from/to 给出的宽窗口）。
+	if to != "" {
+		tt, _ := parseTimeParam(to) // 上面已解析并校验
+		end = tt.AddDate(0, 0, 1)
+	} else if from != "" {
+		end = billBucketStart("day", now).AddDate(0, 0, 1)
+	}
+	// 只给 to 时起点是 to 所在桶回退 defaultSpan，保持既有缺省跨度语义。
+	// 超宽窗口显式失败，不再从末端静默截断：调用方可以看到错误并缩小范围，
+	// 不会把被截断的汇总误当成整个筛选区间。
 	n := 0
-	for t := start; t.Before(end); t = step(t) {
+	for t := billBucketStart(bucket, start); t.Before(end); t = step(t) {
 		n++
 		if n > capBuckets {
-			break
-		}
-	}
-	if n > capBuckets {
-		end = start
-		for i := 0; i < capBuckets; i++ {
-			end = step(end)
+			return time.Time{}, time.Time{}, fmt.Errorf("%w: %s allows at most %d buckets", ErrBillWindowTooWide, bucket, capBuckets)
 		}
 	}
 	if !end.After(start) { // from 晚于 to 等退化输入：空窗口，调用方得空结果
@@ -353,10 +366,12 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, start, end time.Time
 	}
 	out := make([]BillBucketStat, 0, 32)
 	idx := make(map[string]int, 32)
-	for t := start; t.Before(end); t = step(t) {
+	// 起止时刻是精确查询窗口，但空桶要覆盖与窗口相交的完整桶序列。
+	// 例如 month + 1/15~1/20 只显示一个 2026-01 桶，桶内只统计这六天。
+	for t := billBucketStart(bucket, start); t.Before(end); t = step(t) {
 		key := t.Format(layout)
 		idx[key] = len(out)
-		out = append(out, BillBucketStat{Bucket: key})
+		out = append(out, BillBucketStat{Bucket: key, Amounts: make([]BillCurrencyAmount, 0, 1)})
 	}
 	if len(out) == 0 {
 		return out, nil
@@ -366,23 +381,23 @@ func BillTrend(d *sql.DB, bucket string, upstreamID *int64, start, end time.Time
 	dayExpr := db.DayBucketExpr(d, "billed_at")
 	bucketExpr := "substr(" + dayExpr + ", 1, " + strconv.Itoa(len(layout)) + ")"
 	where, args := billWhere(upstreamID, start, end)
-	q := "SELECT " + bucketExpr + ", COALESCE(SUM(amount_micros), 0), COUNT(*) FROM bills" + where +
-		" GROUP BY " + bucketExpr
+	q := "SELECT " + bucketExpr + ", currency, COALESCE(SUM(amount_micros), 0), COUNT(*) FROM bills" + where +
+		" GROUP BY " + bucketExpr + ", currency ORDER BY " + bucketExpr + ", currency"
 	rows, err := d.Query(db.Rebind(d, q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("bill trend: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var key string
+		var key, currency string
 		var micros int64
 		var count int
-		if err := rows.Scan(&key, &micros, &count); err != nil {
+		if err := rows.Scan(&key, &currency, &micros, &count); err != nil {
 			return nil, fmt.Errorf("bill trend: %w", err)
 		}
 		if i, ok := idx[key]; ok {
-			out[i].AmountMicros = micros
-			out[i].Count = count
+			out[i].Amounts = append(out[i].Amounts, BillCurrencyAmount{Currency: currency, AmountMicros: micros})
+			out[i].Count += count
 		}
 	}
 	return out, rows.Err()

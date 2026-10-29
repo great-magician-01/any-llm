@@ -93,8 +93,10 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 		if !u.Enabled || u.Expired(time.Now()) {
 			continue
 		}
+		unlock := LockBalanceUpstream(u.ID)
 		vendor, payload, err := FetchBalance(ctx, p.client, u)
 		if err != nil {
+			unlock()
 			if BalanceVendor(u) != "" {
 				logger.Warn("balance poller: fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
 			}
@@ -119,6 +121,7 @@ func (p *BalancePoller) PollOnce(ctx context.Context) {
 			}
 			return nil
 		})
+		unlock()
 		if err != nil {
 			// DoSync 只在 writer 停机时回错：本次轮询放弃，下个周期再试
 			logger.Warn("balance poller: writer not accepting writes", "err", err)

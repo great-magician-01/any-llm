@@ -10,6 +10,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Bills from './Bills.vue'
+import BarChart from '@/components/BarChart.vue'
+import StatCard from '@/components/StatCard.vue'
+import { NDataTable, NSelect } from 'naive-ui'
 // ?raw 取源码做结构断言（vite/client 已声明 *?raw 模块）
 import SRC from './Bills.vue?raw'
 import { createApiMock, type ApiMock } from '@/test/apiMock'
@@ -56,7 +59,7 @@ beforeEach(() => {
   resetMessages()
   api = createApiMock().install()
   api.on('get', '/upstreams', { data: { data: [UPSTREAM] } })
-  api.on('get', '/bills/summary', { data: { buckets: [{ bucket: '2026-10-20', amount_micros: 1_650_000, count: 1 }], upstreams: [{ upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: 31_650_000, count: 2 }], kinds: [{ kind: 'auto', count: 1, amount_micros: 1_650_000 }, { kind: 'manual', count: 1, amount_micros: 30_000_000 }] } })
+  api.on('get', '/bills/summary', { data: { buckets: [{ bucket: '2026-10-20', amounts: [{ currency: 'CNY', amount_micros: 1_650_000 }], count: 1 }], upstreams: [{ upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: 31_650_000, count: 2 }], kinds: [{ kind: 'auto', currency: 'CNY', count: 1, amount_micros: 1_650_000 }, { kind: 'manual', currency: 'CNY', count: 1, amount_micros: 30_000_000 }] } })
   api.on('get', '/bills', { data: { data: [AUTO_BILL, MANUAL_BILL], total: 2 } })
 })
 
@@ -116,11 +119,58 @@ describe('账单页', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0].data.upstream_id).toBe(1)
     expect(posts[0].data.amount).toBe('12.50')
+    expect(posts[0].data.currency).toBe('CNY')
     expect(posts[0].data.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(messagesOf('success')).toContain('已记一笔')
     // 保存后重查汇总与明细
     expect(callsTo('get', '/bills/summary').length).toBeGreaterThanOrEqual(2)
     expect(callsTo('get', '/bills').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('手动记账提交表单选择的非默认币种', async () => {
+    await open()
+    api.on('post', '/bills', { data: { data: { ...MANUAL_BILL, currency: 'USD' } } })
+    await clickButton('记一笔')
+    await fillInput(inputByLabel('金额'), '50')
+    await fillInput(inputByLabel('币种'), 'usd')
+    await clickButton('保存')
+    await flush()
+
+    const posts = callsTo('post', '/bills')
+    expect(posts).toHaveLength(1)
+    expect(posts[0].data.currency).toBe('USD')
+  })
+
+  it('趋势按币种切换且不跨币种求和，涉及上游按 id 去重', async () => {
+    api.on('get', '/bills/summary', { data: {
+      buckets: [{ bucket: '2026-10-20', amounts: [
+        { currency: 'CNY', amount_micros: 100_000_000 },
+        { currency: 'USD', amount_micros: 50_000_000 },
+      ], count: 2 }],
+      upstreams: [
+        { upstream_id: 1, upstream_name: 'deepseek', currency: 'CNY', amount_micros: 100_000_000, count: 1 },
+        { upstream_id: 1, upstream_name: 'deepseek', currency: 'USD', amount_micros: 50_000_000, count: 1 },
+      ],
+      kinds: [{ kind: 'manual', currency: 'CNY', count: 1, amount_micros: 100_000_000 }, { kind: 'manual', currency: 'USD', count: 1, amount_micros: 50_000_000 }],
+    } })
+    await open()
+    // beforeEach 的默认汇总先消费一次，再刷新取得本用例的多币种响应。
+    ;(document.body.querySelector('.page-header-side button') as HTMLElement).click()
+    await flush()
+
+    const chart = wrapper!.findComponent(BarChart)
+    let series = chart.props('series') as { values: number[] }[]
+    expect(series[0].values).toEqual([100])
+    expect((chart.props('formatValue') as (n: number) => string)(100)).toBe('¥100.00')
+    expect(wrapper!.findAllComponents(StatCard)[3].props('value')).toBe('1')
+
+    const currencySelect = wrapper!.findAllComponents(NSelect).find((c) => c.attributes('aria-label') === '趋势币种')
+    expect(currencySelect).toBeDefined()
+    currencySelect!.vm.$emit('update:value', 'USD')
+    await flush()
+    series = chart.props('series') as { values: number[] }[]
+    expect(series[0].values).toEqual([50])
+    expect((chart.props('formatValue') as (n: number) => string)(50)).toBe('$50.00')
   })
 
   it('记一笔：金额非法时阻止提交', async () => {
@@ -145,6 +195,29 @@ describe('账单页', () => {
     expect(callsTo('delete', '/bills/11')).toHaveLength(1)
     expect(messagesOf('success')).toContain('已删除')
     expect(callsTo('get', '/bills').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('删除末页唯一一条后回退到上一页', async () => {
+    let remaining = 21
+    const firstPage = Array.from({ length: 20 }, (_, i) => ({ ...MANUAL_BILL, id: 100 + i }))
+    api.on('get', '/bills', (call) => ({ data: {
+      data: call.params.page === 2 && remaining === 21 ? [{ ...MANUAL_BILL, id: 12 }] : call.params.page === 1 ? firstPage : [],
+      total: remaining,
+    } }))
+    await open()
+    const table = wrapper!.findAllComponents(NDataTable).find((t) => t.props('pagination'))
+    expect(table).toBeDefined()
+    ;(table!.props('pagination') as { onChange: (page: number) => void }).onChange(2)
+    await flush()
+    expect(callsTo('get', '/bills').at(-1)?.params.page).toBe(2)
+
+    api.on('delete', '/bills/12', { data: { ok: true } })
+    remaining = 20
+    await clickButton('删除')
+    await clickButton('确认')
+    await flush()
+
+    expect(callsTo('get', '/bills').at(-1)?.params.page).toBe(1)
   })
 
   it('切换趋势档位只重查汇总（按月桶参数下发）', async () => {

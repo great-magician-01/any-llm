@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/great-magician-01/any-llm/internal/logger"
@@ -82,6 +83,20 @@ func balanceURL(u *store.Upstream, vendor string) (string, error) {
 // 的共享 HTTP 客户端：自带 15s 超时——网关自己的客户端（Client.HTTP()）故意
 // 不设超时，它要承载长连接的 SSE 流。超时口径集中在这一处，别各包再造一份。
 var VendorClient = &http.Client{Timeout: 15 * time.Second}
+
+// balanceUpstreamLocks 按上游串行化「抓取余额 → 快照与账单落库」的完整链路。
+// 只串行化 DB 写入不够：较早抓取的响应若较晚落库，会把后到的钱包状态当成
+// 基线，充值等场景会因此推导出错误支出。不同上游仍可并发抓取。
+var balanceUpstreamLocks sync.Map // map[int64]*sync.Mutex
+
+// LockBalanceUpstream 获取一个上游的余额刷新锁，返回解锁函数。锁必须覆盖
+// FetchBalance 与 RecordBalanceSnapshot 两步，不能只保护数据库事务。
+func LockBalanceUpstream(upstreamID int64) func() {
+	lock, _ := balanceUpstreamLocks.LoadOrStore(upstreamID, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 // FetchBalance calls the vendor's balance/quota endpoint and returns the
 // vendor id plus a normalized JSON payload (kind=balance|quota). The vendor
