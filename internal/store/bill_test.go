@@ -17,6 +17,17 @@ func billDay(t string) time.Time {
 	return ts
 }
 
+func billBucketAmount(t *testing.T, b BillBucketStat, currency string) int64 {
+	t.Helper()
+	for _, a := range b.Amounts {
+		if a.Currency == currency {
+			return a.AmountMicros
+		}
+	}
+	t.Fatalf("bucket %s has no %s amount: %+v", b.Bucket, currency, b.Amounts)
+	return 0
+}
+
 func TestParseAmountMicros(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -178,9 +189,9 @@ func TestBillWindow(t *testing.T) {
 	if !s.Equal(billDay("2026-01-09")) || !e.Equal(billDay("2026-01-12")) {
 		t.Fatalf("day window=%v..%v", s, e)
 	}
-	// 月桶外扩到月边界
+	// 月桶只改变图表分桶，不把显式日期窗口扩到月边界。
 	s, e, _ = BillWindow("month", "2026-01-15", "2026-02-20")
-	if !s.Equal(billDay("2026-01-01")) || !e.Equal(billDay("2026-03-01")) {
+	if !s.Equal(billDay("2026-01-15")) || !e.Equal(billDay("2026-02-21")) {
 		t.Fatalf("month window=%v..%v", s, e)
 	}
 
@@ -208,10 +219,10 @@ func TestBillWindow(t *testing.T) {
 	if _, _, err := BillWindow("day", "2026/01/01", ""); err == nil {
 		t.Fatal("invalid from accepted")
 	}
-	// 超宽窗口截断到上限
-	s, e, _ = BillWindow("day", "2024-01-01", "2026-01-01")
-	if n := int(e.Sub(s).Hours() / 24); n != maxBillDayBuckets {
-		t.Fatalf("capped span=%d days, want %d", n, maxBillDayBuckets)
+	// 超宽窗口响亮失败，不能静默截断后与明细列表使用不同口径。
+	_, _, err = BillWindow("day", "2024-01-01", "2026-01-01")
+	if !errors.Is(err, ErrBillWindowTooWide) {
+		t.Fatalf("capped window err=%v, want ErrBillWindowTooWide", err)
 	}
 	// from 晚于 to：空窗口（调用方得空结果，不伪造桶）
 	s, e, _ = BillWindow("day", "2026-05-01", "2026-01-01")
@@ -252,13 +263,13 @@ func TestBillTrend(t *testing.T) {
 	if len(out) != 3 {
 		t.Fatalf("day buckets=%d", len(out))
 	}
-	if out[0].Bucket != "2026-01-09" || out[0].AmountMicros != 0 || out[0].Count != 0 {
+	if out[0].Bucket != "2026-01-09" || len(out[0].Amounts) != 0 || out[0].Count != 0 {
 		t.Fatalf("zero bucket=%+v", out[0])
 	}
-	if out[1].AmountMicros != 1_500_000 || out[1].Count != 2 {
+	if got := billBucketAmount(t, out[1], "CNY"); got != 1_500_000 || out[1].Count != 2 {
 		t.Fatalf("10th bucket=%+v", out[1])
 	}
-	if out[2].Bucket != "2026-01-11" || out[2].AmountMicros != 0 {
+	if out[2].Bucket != "2026-01-11" || len(out[2].Amounts) != 0 {
 		t.Fatalf("11th bucket=%+v", out[2])
 	}
 
@@ -271,10 +282,10 @@ func TestBillTrend(t *testing.T) {
 	if len(out) != 2 || out[0].Bucket != "2026-01" || out[1].Bucket != "2026-02" {
 		t.Fatalf("month buckets=%+v", out)
 	}
-	if out[0].AmountMicros != 21_500_000 || out[0].Count != 3 {
+	if got := billBucketAmount(t, out[0], "CNY"); got != 21_500_000 || out[0].Count != 3 {
 		t.Fatalf("jan=%+v", out[0])
 	}
-	if out[1].AmountMicros != 2_000_000 || out[1].Count != 1 {
+	if got := billBucketAmount(t, out[1], "CNY"); got != 2_000_000 || out[1].Count != 1 {
 		t.Fatalf("feb=%+v", out[1])
 	}
 
@@ -287,7 +298,7 @@ func TestBillTrend(t *testing.T) {
 	if len(out) != 2 || out[0].Bucket != "2025" || out[1].Bucket != "2026" {
 		t.Fatalf("year buckets=%+v", out)
 	}
-	if out[0].AmountMicros != 50_000_000 || out[1].AmountMicros != 23_500_000 {
+	if got0, got1 := billBucketAmount(t, out[0], "CNY"), billBucketAmount(t, out[1], "CNY"); got0 != 50_000_000 || got1 != 23_500_000 {
 		t.Fatalf("year sums=%+v", out)
 	}
 
@@ -298,7 +309,7 @@ func TestBillTrend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 1 || out[0].AmountMicros != 20_000_000 {
+	if len(out) != 1 || billBucketAmount(t, out[0], "CNY") != 20_000_000 {
 		t.Fatalf("upstream filter=%+v", out)
 	}
 
@@ -315,6 +326,48 @@ func TestBillTrend(t *testing.T) {
 	// 非法 bucket 响亮失败
 	if _, err := BillTrend(d, "week", nil, billDay("2026-01-01"), billDay("2026-01-02")); !errors.Is(err, ErrInvalidBucket) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestBillTrendSplitsCurrenciesWithinExactWindow(t *testing.T) {
+	d := testDB(t)
+	seed := []*Bill{
+		{UpstreamID: 1, UpstreamName: "a", Kind: BillKindManual, AmountMicros: 100_000_000, Currency: "CNY", BilledAt: billDay("2026-01-10")},
+		{UpstreamID: 1, UpstreamName: "a", Kind: BillKindManual, AmountMicros: 1_000_000, Currency: "CNY", BilledAt: billDay("2026-01-16")},
+		{UpstreamID: 1, UpstreamName: "a", Kind: BillKindManual, AmountMicros: 50_000_000, Currency: "USD", BilledAt: billDay("2026-01-16")},
+	}
+	for _, b := range seed {
+		if err := InsertBill(d, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 按月只影响桶标签，不得把范围外的 1/10 账单扩进来。
+	start, end, err := BillWindow("month", "2026-01-15", "2026-01-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := BillTrend(d, "month", nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Bucket != "2026-01" || out[0].Count != 2 {
+		t.Fatalf("trend=%+v", out)
+	}
+	if len(out[0].Amounts) != 2 || billBucketAmount(t, out[0], "CNY") != 1_000_000 || billBucketAmount(t, out[0], "USD") != 50_000_000 {
+		t.Fatalf("mixed-currency trend=%+v", out[0])
+	}
+	// 汇总与趋势使用同一精确窗口；币种之间没有 51 或 101 这种伪合计。
+	totals, err := BillUpstreamTotals(d, nil, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(totals) != 2 {
+		t.Fatalf("upstream totals=%+v", totals)
+	}
+	for _, total := range totals {
+		if total.Currency == "CNY" && total.AmountMicros != 1_000_000 {
+			t.Fatalf("CNY total includes out-of-range bill: %+v", total)
+		}
 	}
 }
 

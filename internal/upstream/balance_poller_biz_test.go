@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -185,6 +186,78 @@ func TestBalancePollerBiz_PollOnceRecordsBills(t *testing.T) {
 	}
 	if total != 1 || bills[0].AmountMicros != 1_650_000 || bills[0].Kind != store.BillKindAuto {
 		t.Fatalf("bills=%+v (total=%d), want one auto bill of 1.65", bills, total)
+	}
+}
+
+// 同一上游的并发 PollOnce 必须把抓取与入账作为一个临界区：旧响应不能在新响应
+// 之后落库，否则充值后的旧余额会被推导成额外支出。
+func TestBalancePollerBiz_ConcurrentPollsSerializeFetchAndRecord(t *testing.T) {
+	d := bizOpenDB(t)
+	w := bizStartWriter(t, d)
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch atomic.AddInt32(&calls, 1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"90.00"}]}`)
+		default:
+			close(secondStarted)
+			io.WriteString(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00"}]}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	registerTestHost(t, srv.URL, VendorDeepSeek)
+	u := bizCreateUpstream(t, d, "ds", srv.URL)
+	baseline := &store.BalanceSnapshot{
+		UpstreamID: u.ID, UpstreamName: u.Name, Vendor: VendorDeepSeek,
+		Payload: json.RawMessage(`{"kind":"balance","balances":[{"currency":"CNY","total":"100.00"}]}`),
+	}
+	if err := store.InsertBalanceSnapshot(d, baseline); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewBalancePoller(d, w, time.Hour)
+	t.Cleanup(p.Stop)
+	done := make(chan struct{}, 2)
+	go func() { p.PollOnce(context.Background()); done <- struct{}{} }()
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		close(releaseFirst)
+		t.Fatal("first poll did not reach vendor")
+	}
+	go func() { p.PollOnce(context.Background()); done <- struct{}{} }()
+
+	overlapped := false
+	select {
+	case <-secondStarted:
+		// 旧响应还没落库时第二个请求就抓取，正是会产生错账的交错。
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent polls did not finish")
+		}
+	}
+	if overlapped {
+		t.Fatal("same-upstream fetch started before the earlier fetch was recorded")
+	}
+	// 实际变化是 100 → 90（支出 10）→ 110（充值 20），只能记 10。
+	// 若 110 抢先落库，再写 90，就会错误地记成 20。
+	bills, total, err := store.BillsList(d, nil, time.Time{}, time.Time{}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || bills[0].AmountMicros != 10_000_000 {
+		t.Fatalf("bills=%+v total=%d, want one 10.00 bill", bills, total)
 	}
 }
 

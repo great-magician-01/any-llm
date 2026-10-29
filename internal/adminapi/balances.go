@@ -33,34 +33,36 @@ func (a *API) refreshAllBalances(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// 同一上游的抓取与落库必须整体串行，防止较早的响应较晚入账。
+			unlock := upstream.LockBalanceUpstream(u.ID)
+			defer unlock()
 			vendor, payload, err := upstream.FetchBalance(r.Context(), upstream.VendorClient, u)
 			if err != nil {
 				logger.Warn("admin: refresh all balances fetch failed", "upstream", u.Name, "id", u.ID, "err", err)
 				return
 			}
-			snaps[i] = &store.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
+			snap := &store.BalanceSnapshot{UpstreamID: u.ID, UpstreamName: u.Name, Vendor: vendor, Payload: payload}
+			var billed int
+			if err := a.writeSync(func(d *sql.DB) error {
+				n, err := store.RecordBalanceSnapshot(d, snap)
+				billed = n
+				return err
+			}); err != nil {
+				logger.Error("admin: record balance snapshot failed", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "err", err)
+				return
+			}
+			if billed > 0 {
+				logger.Info("admin: bill recorded from balance refresh", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "entries", billed)
+			}
+			snaps[i] = snap
 		}()
 	}
 	wg.Wait()
 	out := make([]*store.BalanceSnapshot, 0, len(snaps))
 	for _, snap := range snaps {
-		if snap == nil {
-			continue
+		if snap != nil {
+			out = append(out, snap)
 		}
-		var billed int
-		if err := a.writeSync(func(d *sql.DB) error {
-			// 快照与账单同一事务落库（见 store.RecordBalanceSnapshot）
-			n, err := store.RecordBalanceSnapshot(d, snap)
-			billed = n
-			return err
-		}); err != nil {
-			logger.Error("admin: record balance snapshot failed", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "err", err)
-			continue
-		}
-		if billed > 0 {
-			logger.Info("admin: bill recorded from balance refresh", "upstream", snap.UpstreamName, "id", snap.UpstreamID, "entries", billed)
-		}
-		out = append(out, snap)
 	}
 	writeJSON(w, 200, map[string]any{"data": out})
 }
@@ -125,6 +127,10 @@ func (a *API) refreshBalance(w http.ResponseWriter, r *http.Request, id int64) {
 		writeJSON(w, 400, map[string]any{"error": "balance refresh not supported for this upstream"})
 		return
 	}
+	// 与 poller / 全量刷新共用同一把上游锁：网络抓取和快照事务不能分离，
+	// 否则响应完成顺序可能不同于实际钱包变化顺序。
+	unlock := upstream.LockBalanceUpstream(u.ID)
+	defer unlock()
 	vendor, payload, err := upstream.FetchBalance(r.Context(), upstream.VendorClient, u)
 	if err != nil {
 		logger.Error("admin: refresh balance failed", "upstream", u.Name, "id", id, "err", err)

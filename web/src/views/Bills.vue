@@ -28,6 +28,8 @@ const rangeShortcuts: Record<string, () => [number, number]> = {
 const upstreamFilter = ref<number | null>(null)
 // 趋势桶档位；日期范围与上游过滤对三块数据都生效
 const bucket = ref<BillBucket>('day')
+// 趋势一次只展示一种币种；不同币种不能堆叠或共用 Y 轴合计。
+const trendCurrency = ref('CNY')
 
 const upstreams = ref<Upstream[]>([])
 const upstreamOptions = computed<SelectOption[]>(() =>
@@ -45,6 +47,8 @@ function filterParams() {
 
 /* ---- 汇总（趋势桶 + 按上游 + 按来源，后端保证同一窗口） ---- */
 const summary = ref<BillSummary>({ buckets: [], upstreams: [], kinds: [] })
+const trendCurrencies = computed(() => [...new Set(summary.value.upstreams.map((u) => u.currency))].sort())
+const trendCurrencyOptions = computed<SelectOption[]>(() => trendCurrencies.value.map((currency) => ({ label: currency, value: currency })))
 
 // 请求序号守卫（useUpstreamList 同款）：快速改筛选时迟到的旧响应不得覆盖新数据
 let summarySeq = 0
@@ -52,13 +56,22 @@ async function loadSummary() {
   const seq = ++summarySeq
   try {
     const s = await fetchBillSummary({ bucket: bucket.value, ...filterParams() })
-    if (seq === summarySeq) summary.value = s
+    if (seq === summarySeq) {
+      summary.value = s
+      if (!trendCurrencies.value.includes(trendCurrency.value)) {
+        trendCurrency.value = trendCurrencies.value[0] ?? ''
+      }
+    }
   } catch (e) {
-    if (seq === summarySeq) message.error('加载账单汇总失败：' + errText(e))
+    if (seq === summarySeq) {
+      summary.value = { buckets: [], upstreams: [], kinds: [] }
+      message.error('加载账单汇总失败：' + errText(e))
+    }
   }
 }
 
 const upstreamTotals = computed(() => summary.value.upstreams)
+const upstreamCount = computed(() => new Set(upstreamTotals.value.map((u) => u.upstream_id)).size)
 const totalCount = computed(() => upstreamTotals.value.reduce((a, u) => a + u.count, 0))
 // 合计按币种各自归并（后端拆行正是因为跨币种加总没有意义）
 const grandTotalLabel = computed(() => perCurrencyLabel(upstreamTotals.value))
@@ -76,11 +89,17 @@ function kindLabel(kind: Bill['kind']): { count: number; label: string } {
 /* ---- 趋势图 ---- */
 const trendLabels = computed(() => summary.value.buckets.map((b) => bucketLabel(b.bucket)))
 const trendSeries = computed(() => [
-  { name: '消费金额', color: 'var(--brand)', values: summary.value.buckets.map((b) => b.amount_micros / 1_000_000) },
+  {
+    name: `消费金额（${trendCurrency.value}）`,
+    color: 'var(--brand)',
+    values: summary.value.buckets.map((b) =>
+      (b.amounts.find((a) => a.currency === trendCurrency.value)?.amount_micros ?? 0) / 1_000_000,
+    ),
+  },
 ])
-// 图表数值按 1e6 还原成金额串（micros → 元，仅用于展示）
+// 图表只画当前币种，tooltip 与坐标轴也使用同一币种格式化。
 function chartMoney(n: number): string {
-  return formatBillMoney(Math.round(n * 1_000_000), upstreamTotals.value[0]?.currency ?? 'CNY')
+  return formatBillMoney(Math.round(n * 1_000_000), trendCurrency.value || 'CNY')
 }
 
 /* ---- 明细 ---- */
@@ -184,6 +203,7 @@ const form = reactive({
   upstream_id: null as number | null,
   date: null as number | null,
   amount: '',
+  currency: 'CNY',
   note: '',
 })
 
@@ -192,6 +212,7 @@ function openCreate() {
   form.upstream_id = upstreamFilter.value ?? (upstreams.value[0]?.id ?? null)
   form.date = Date.now()
   form.amount = ''
+  form.currency = 'CNY'
   form.note = ''
   showForm.value = true
 }
@@ -206,6 +227,7 @@ function openEdit(b: Bill) {
   const parsed = new Date(`${day}T00:00:00`)
   form.date = isNaN(parsed.getTime()) ? null : parsed.getTime()
   form.amount = microsToAmount(b.amount_micros)
+  form.currency = b.currency
   form.note = b.note
   showForm.value = true
 }
@@ -224,10 +246,16 @@ async function submitForm() {
     message.warning('请选择账单日期')
     return
   }
+  const currency = form.currency.trim().toUpperCase()
+  if (!currency) {
+    message.warning('请填写币种')
+    return
+  }
   const input = {
     upstream_id: form.upstream_id,
     date: dateParam(form.date),
     amount: form.amount.trim(),
+    currency,
     note: form.note.trim() || undefined,
   }
   try {
@@ -249,6 +277,8 @@ async function removeBill(b: Bill) {
   try {
     await deleteBill(b.id)
     message.success('已删除')
+    // 删除末页唯一一行后回退一页，避免 controlled pagination 停留在空页。
+    if (bills.value.length === 1 && page.value > 1) page.value--
     loadAll()
   } catch (e) {
     message.error('删除失败：' + errText(e))
@@ -288,7 +318,7 @@ onMounted(() => {
       <StatCard label="支出合计" :value="grandTotalLabel || '—'" :sub="`共 ${formatInt(totalCount)} 笔 · 按当前范围统计`" icon="wallet" accent="blue" />
       <StatCard label="自动记账" :value="formatInt(kindLabel('auto').count)" :sub="kindLabel('auto').label || '来自余额快照联动'" icon="pulse" accent="cyan" />
       <StatCard label="手动记账" :value="formatInt(kindLabel('manual').count)" :sub="kindLabel('manual').label || '手动记一笔的账单'" icon="doc" accent="violet" />
-      <StatCard label="涉及上游" :value="formatInt(upstreamTotals.length)" sub="按当前范围与过滤条件" icon="layers" accent="green" />
+      <StatCard label="涉及上游" :value="formatInt(upstreamCount)" sub="按当前范围与过滤条件" icon="layers" accent="green" />
     </div>
 
     <n-card class="panel">
@@ -299,11 +329,21 @@ onMounted(() => {
         </div>
       </template>
       <template #header-extra>
-        <n-radio-group v-model:value="bucket" size="small" @update:value="loadSummary">
-          <n-radio-button value="day">按日</n-radio-button>
-          <n-radio-button value="month">按月</n-radio-button>
-          <n-radio-button value="year">按年</n-radio-button>
-        </n-radio-group>
+        <div class="trend-controls">
+          <n-select
+            v-if="trendCurrencies.length"
+            v-model:value="trendCurrency"
+            size="small"
+            aria-label="趋势币种"
+            :options="trendCurrencyOptions"
+            style="width: 96px"
+          />
+          <n-radio-group v-model:value="bucket" size="small" @update:value="loadSummary">
+            <n-radio-button value="day">按日</n-radio-button>
+            <n-radio-button value="month">按月</n-radio-button>
+            <n-radio-button value="year">按年</n-radio-button>
+          </n-radio-group>
+        </div>
       </template>
       <BarChart v-if="trendLabels.length" :labels="trendLabels" :series="trendSeries" mode="stacked" :format-value="chartMoney" />
       <div v-else class="empty-hint">当前范围暂无账单</div>
@@ -372,6 +412,9 @@ onMounted(() => {
           <n-form-item label="金额">
             <n-input v-model:value="form.amount" placeholder="如 12.50" @keydown.enter="submitForm" />
           </n-form-item>
+          <n-form-item label="币种">
+            <n-input v-model:value="form.currency" placeholder="如 CNY / USD" maxlength="16" @keydown.enter="submitForm" />
+          </n-form-item>
           <n-form-item label="备注（可选）">
             <n-input v-model:value="form.note" placeholder="如：订阅费、充值赠送扣除等" />
           </n-form-item>
@@ -400,6 +443,11 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: var(--brand-hover);
+}
+.trend-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .records-toolbar {
   display: flex;

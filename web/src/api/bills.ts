@@ -16,10 +16,15 @@ export interface Bill {
   created_at: string
 }
 
-/** 一个时间桶（日/月/年）的趋势聚合 */
+export interface BillCurrencyAmount {
+  currency: string
+  amount_micros: number
+}
+
+/** 一个时间桶（日/月/年）的趋势聚合；金额按币种拆分，不能跨币种相加 */
 export interface BillBucketStat {
   bucket: string
-  amount_micros: number
+  amounts: BillCurrencyAmount[]
   count: number
 }
 
