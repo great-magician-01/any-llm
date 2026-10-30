@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -46,8 +47,16 @@ func newFailureCache() *failureCache {
 // （超时/DNS/连接拒绝等非 UpstreamError）、5xx、以及 401/402/403/429（密钥
 // 失效、欠费、封禁、上游限流）都是「该候选对后续请求同样不可用」的信号；
 // 其余 4xx（400/404/422…）是请求级错误，换一条请求可能成功，不缓存，
-// 否则一条畸形请求会把候选链整体关掉一个 TTL。
+// 否则一条畸形请求会把候选链整体关掉一个 TTL。客户端主动终止也不在此列：
+// 它随请求上下文取消冒出来（context.Canceled），是调用方原因而非候选故障，
+// 不排除的话一次非流式断开会把整条候选链打进冷却（上下文已取消，后续候选
+// 的调用只会立即失败、逐个被 mark）。
 func failureCacheable(err error) bool {
+	// 只有本侧取消才产生 context.Canceled（上游回不了它；网关自身的上游
+	// 超时是 DeadlineExceeded，仍按传输层错误进冷却），故可精确识别断开。
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
 	var ue *upstream.UpstreamError
 	if !errors.As(err, &ue) {
 		return true

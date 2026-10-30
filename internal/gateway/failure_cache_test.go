@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,6 +55,8 @@ func TestFailureCacheable(t *testing.T) {
 		want bool
 	}{
 		{"transport error", errors.New("call upstream: connection refused"), true},
+		{"client canceled", fmt.Errorf("call upstream: %w", context.Canceled), false},
+		{"deadline exceeded", fmt.Errorf("call upstream: %w", context.DeadlineExceeded), true},
 		{"500", &upstream.UpstreamError{StatusCode: 500}, true},
 		{"503", &upstream.UpstreamError{StatusCode: 503}, true},
 		{"429", &upstream.UpstreamError{StatusCode: 429}, true},
@@ -232,5 +237,77 @@ func TestFailureCacheAllDownStream503(t *testing.T) {
 	}
 	if badHits.Load() != 1 {
 		t.Fatalf("cooling upstream was hit again: hits=%d want 1", badHits.Load())
+	}
+}
+
+// 非流式客户端主动终止：随断开冒出的 context.Canceled 不把候选打进冷却，
+// 也不再对余下候选做无效转移（上下文已取消，调用只会立即失败、逐个记档）。
+// 与流式 clientGone（callWithKeepalive）口径一致；修的是一次断开会把整条
+// 候选链关进 60s 冷却的回归。
+func TestNonStreamClientGoneNoCooldown(t *testing.T) {
+	upstreamHit := make(chan struct{})
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 先读完请求体：net/http 只在读完 body 后才开始后台读连接，
+		// 否则客户端断开时服务端的 r.Context() 不会被取消（测试自身的坑）。
+		io.Copy(io.Discard, r.Body)
+		if hits.Add(1) == 1 {
+			close(upstreamHit)
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"c1","model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "slow", BaseURL: srv.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "other", BaseURL: srv.URL, APIKey: "sk", Format: "openai"})
+	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
+		{UpstreamID: uid1, ModelName: "m1"},
+		{UpstreamID: uid2, ModelName: "m2"},
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+k.Key)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		g.ServeHTTP(w, req)
+		close(done)
+	}()
+	select {
+	case <-upstreamHit:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("upstream was never called")
+	}
+	cancel() // 客户端主动终止
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeHTTP did not return after the client disconnected")
+	}
+
+	// 回归点：冷却缓存必须为空——断开不是候选故障
+	if len(g.fail.until) != 0 {
+		t.Fatalf("failure cache should be empty after client abort, got %d entries", len(g.fail.until))
+	}
+	// 只记了实际尝试的那条档案；第二候选未被转移（上下文已取消，调用只会立即失败）
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
+	if total != 1 || records[0].Status != "error" || records[0].Model != "m1" || records[0].Stream {
+		t.Fatalf("usage records=%+v want exactly 1 non-stream error row for m1", records)
+	}
+	// 后续请求照常先试首选候选并成功——冷却没有把链路关掉
+	w2 := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w2.Code != 200 || !strings.Contains(w2.Body.String(), "recovered") {
+		t.Fatalf("follow-up request status=%d body=%s (first candidate wrongly cooling?)", w2.Code, w2.Body.String())
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("upstream hits=%d want 2", hits.Load())
 	}
 }
