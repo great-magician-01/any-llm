@@ -132,12 +132,21 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		release()
 		callDur := time.Since(callStart)
 		if err != nil {
+			// mark 内部 failureCacheable 已排除随客户端断开冒出的
+			// context.Canceled，调用方主动终止不会把候选打进冷却。
 			g.fail.mark(t, err, time.Now())
+			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
+			rec.finish("error", translate.Usage{}, nil)
+			// 客户端已断开：结果无人消费，后续候选的调用也只会立即失败——
+			// 终止转移（与流式 clientGone 同口径），错误帧也不必写。
+			if r.Context().Err() != nil {
+				logger.Info("client gone before upstream call returned, aborting failover",
+					"alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName)
+				return
+			}
 			if len(targets) > 1 {
 				logger.Warn("candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
-			rec.finish("error", translate.Usage{}, nil)
 			lastErr = err
 			continue
 		}
