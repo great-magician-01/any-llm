@@ -319,6 +319,16 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	if err := got.QueryRow(`SELECT remark FROM ext_keys WHERE key='all-sk-old'`).Scan(&remark); err != nil || remark != "" {
 		t.Fatalf("ext key remark backfill: v=%q err=%v", remark, err)
 	}
+	// 失败详情是后加列：老记录迁移后必须得到 0 / 空串，且两列要活过
+	// usage_records 的去外键重建，供请求明细按“暂无失败详情”兼容展示。
+	var errorCode int
+	var errorBody string
+	if err := got.QueryRow(`SELECT error_code, error_body FROM usage_records WHERE upstream_name='u1'`).Scan(&errorCode, &errorBody); err != nil {
+		t.Fatalf("usage error details backfill: %v", err)
+	}
+	if errorCode != 0 || errorBody != "" {
+		t.Fatalf("legacy usage error details=(%d, %q), want 0/empty", errorCode, errorBody)
+	}
 	// enabled 列经 extraCols 回填后随重建保留，老行默认启用
 	var enabled int
 	if err := got.QueryRow(`SELECT enabled FROM upstreams WHERE name='u1'`).Scan(&enabled); err != nil || enabled != 1 {

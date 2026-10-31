@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
-import { NTag, useMessage } from 'naive-ui'
+import { NTag, NTooltip, useMessage } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { fetchSummary, fetchRecords, fetchDaily, fetchUsageModels, type UsageSummary, type UsageRecord, type UsageDayStat } from '@/api/usage'
 import { formatCompact, formatInt, formatPercent, formatSpeed, formatTime, localISO } from '@/utils/format'
@@ -221,6 +221,23 @@ const summaryColumns = computed<DataTableColumns<UsageSummary>>(() => [
   },
 ])
 
+function renderFailureDetails(row: UsageRecord) {
+  // 旧记录没有这两个字段；0 / 空串分别表示无 HTTP 状态码、无报文。
+  const errorCode = row.error_code ?? 0
+  const errorBody = row.error_body ?? ''
+  const hasCode = errorCode > 0
+  const hasBody = errorBody.trim().length > 0
+  return h('div', {
+    class: 'usage-error-details',
+    // 浮层 teleport 到 body，样式直接挂在内容上，避免 scoped 样式失效。
+    style: 'max-width: min(520px, calc(100vw - 32px)); max-height: min(360px, calc(100vh - 32px)); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; color: var(--text-2); line-height: 1.6',
+  }, [
+    hasCode ? h('div', { class: 'usage-error-code', style: 'margin-bottom: 6px; font-weight: 600; color: var(--text)' }, `状态码：${errorCode}`) : null,
+    hasBody ? h('div', { class: 'usage-error-body', style: 'white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word' }, errorBody) : null,
+    !hasCode && !hasBody ? h('span', { style: 'color: var(--text-3)' }, '暂无失败详情') : null,
+  ])
+}
+
 const recordColumns: DataTableColumns<UsageRecord> = [
   { title: '时间', key: 'created_at', width: 165, render: (row) => h('span', { class: 'mono', style: 'font-size: 12.5px' }, formatTime(row.created_at)) },
   { title: '上游', key: 'upstream_name', width: 130, ellipsis: { tooltip: true } },
@@ -238,11 +255,14 @@ const recordColumns: DataTableColumns<UsageRecord> = [
     title: '状态',
     key: 'status',
     width: 110,
-    render: (row) =>
-      h('div', { style: 'display: flex; gap: 4px; align-items: center' }, [
-        h(NTag, { size: 'small', bordered: false, type: row.status === 'ok' ? 'success' : 'error' }, { default: () => (row.status === 'ok' ? '成功' : '失败') }),
+    render: (row) => {
+      const ok = row.status === 'ok'
+      const tag = h(NTag, { size: 'small', bordered: false, type: ok ? 'success' : 'error' }, { default: () => (ok ? '成功' : '失败') })
+      return h('div', { style: 'display: flex; gap: 4px; align-items: center' }, [
+        ok ? tag : h(NTooltip, { trigger: 'hover' }, { trigger: () => tag, default: () => renderFailureDetails(row) }),
         row.stream ? h(NTag, { size: 'tiny', bordered: false, quaternary: true, type: 'info' }, { default: () => '流式' }) : null,
-      ]),
+      ])
+    },
   },
 ]
 

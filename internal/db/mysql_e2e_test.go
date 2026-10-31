@@ -121,6 +121,7 @@ func TestMySQL_E2E_ColumnTypes(t *testing.T) {
 		"response_sessions.id":       "varchar",
 		"response_sessions.messages": "longtext",
 		"usage_records.status":       "varchar",
+		"usage_records.error_body":   "longtext",
 		"upstreams.created_at":       "datetime",
 		"upstreams.expires_at":       "datetime",
 		// remark 与 ext_keys 的同名列一致：不建索引 → 保持 TEXT（不是 VARCHAR），

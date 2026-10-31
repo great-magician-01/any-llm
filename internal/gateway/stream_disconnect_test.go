@@ -116,6 +116,9 @@ func TestStreamClientDisconnectCancelsUpstreamAndReleasesSlot(t *testing.T) {
 	if rec.TotalTokens != 0 {
 		t.Fatalf("record total_tokens=%d want 0 (call never completed)", rec.TotalTokens)
 	}
+	if rec.ErrorCode != 0 || !strings.Contains(rec.ErrorBody, "client disconnected") {
+		t.Fatalf("client disconnect details=(%d, %q), want code 0 and readable reason", rec.ErrorCode, rec.ErrorBody)
+	}
 
 	// (b) 并发槽已释放：上限 1 的同一上游立刻还能再服务一个请求
 	w2 := aliasRequest(t, g, k.Key, `{"model":"oai/m","messages":[{"role":"user","content":"hi"}],"stream":true}`)

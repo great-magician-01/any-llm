@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -52,7 +53,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	irReq, err := decodeInbound(body, inFormat)
 	if err != nil {
 		WriteError(w, 400, inFormat, "failed to decode request: "+err.Error(), "invalid_request_error")
-		g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
+		g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error", usageFailure{code: 400, body: "failed to decode request: " + err.Error()})
 		return
 	}
 	irReq.Model = first.ModelName
@@ -70,13 +71,13 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			hist, ok, err := g.sessions.Get(pid)
 			if err != nil {
 				WriteError(w, 500, inFormat, "session lookup failed: "+err.Error(), "internal_error")
-				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error", usageFailure{code: 500, body: "session lookup failed: " + err.Error()})
 				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body, convInfo{}).finish("error", translate.Usage{}, nil)
 				return
 			}
 			if !ok {
 				WriteError(w, 400, inFormat, "unknown previous_response_id: "+pid, "invalid_previous_response_id")
-				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error")
+				g.recordUsage(key, first.Upstream, first.ModelName, inFormat, translate.Usage{}, false, 0, "error", usageFailure{code: 400, body: "unknown previous_response_id: " + pid})
 				g.newConvCtx(r, key, first.Upstream, first.ModelName, inFormat, reqIRJSON, irReq.Stream, body, convInfo{}).finish("error", translate.Usage{}, nil)
 				return
 			}
@@ -135,7 +136,11 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 			// mark 内部 failureCacheable 已排除随客户端断开冒出的
 			// context.Canceled，调用方主动终止不会把候选打进冷却。
 			g.fail.mark(t, err, time.Now())
-			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error")
+			failure := usageFailureFromError(err)
+			if r.Context().Err() != nil {
+				failure.body = "client disconnected before upstream call returned: " + failure.body
+			}
+			g.recordUsage(key, eu, t.ModelName, inFormat, translate.Usage{}, false, callDur, "error", failure)
 			rec.finish("error", translate.Usage{}, nil)
 			// 客户端已断开：结果无人消费，后续候选的调用也只会立即失败——
 			// 终止转移（与流式 clientGone 同口径），错误帧也不必写。
@@ -197,7 +202,7 @@ func (g *Gateway) handleNonStream(w http.ResponseWriter, inFormat string, result
 	if err != nil {
 		WriteError(w, 500, inFormat, "failed to encode response", "internal_error")
 		logger.Error("non-stream encode failed", "in_format", inFormat, "err", err)
-		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, callDur, "error")
+		g.recordUsage(key, u, realModel, inFormat, result.Response.Usage, false, callDur, "error", usageFailure{code: 500, body: "failed to encode response: " + err.Error()})
 		rec.finish("error", result.Response.Usage, result.Response)
 		return
 	}
@@ -315,7 +320,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	if !ok {
 		WriteError(w, 500, inFormat, "streaming not supported", "internal_error")
 		t := targets[0]
-		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, 0, "error")
+		g.recordUsage(key, t.Upstream, t.ModelName, inFormat, translate.Usage{}, true, 0, "error", usageFailure{code: 500, body: "streaming not supported"})
 		g.newConvCtx(r, key, t.Upstream, t.ModelName, inFormat, reqIRJSON, true, body, conv).finish("error", translate.Usage{}, nil)
 		return
 	}
@@ -454,7 +459,7 @@ func (run *streamRun) firstPhase() {
 		if clientGone {
 			run.release()
 			run.clientGone = true
-			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error")
+			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error", usageFailure{body: "client disconnected before upstream call returned"})
 			run.rec.finish("error", translate.Usage{}, nil)
 			logger.Info("completion done",
 				"upstream", t.Upstream.Name, "model", t.ModelName, "stream", true,
@@ -469,7 +474,7 @@ func (run *streamRun) firstPhase() {
 			if len(run.targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}
-			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error")
+			run.g.recordUsage(run.key, eu, t.ModelName, run.inFormat, translate.Usage{}, true, callDur, "error", usageFailureFromError(err))
 			run.rec.finish("error", translate.Usage{}, nil)
 			continue
 		}
@@ -570,6 +575,9 @@ func (run *streamRun) pump() {
 	// event: error / Responses 的 response.failed）：已经给客户端写过带内错误帧，
 	// 此后不能再补结束帧，usage 必须记 error。
 	upstreamSignalledErr := false
+	// failure 在流内错误、客户端断开或 StreamErr 三条失败路径上填充；
+	// 成功时零值传给 recordUsage，详情列仍保持 0 / 空串。
+	failure := usageFailure{}
 	for {
 		select {
 		case ev, ok := <-result.Stream:
@@ -595,6 +603,7 @@ func (run *streamRun) pump() {
 				if msg == "" {
 					msg = "upstream stream error"
 				}
+				failure = streamUsageFailure(ev.ErrType, msg)
 				errType := "upstream_error"
 				if ev.ErrType != "" && u.Format == run.inFormat {
 					errType = ev.ErrType
@@ -679,14 +688,18 @@ done:
 
 	usage := result.Usage()
 	status := "ok"
-	if clientGonePost || upstreamSignalledErr {
+	if clientGonePost {
+		status = "error"
+		failure = usageFailure{body: "client disconnected during stream"}
+	} else if upstreamSignalledErr {
 		status = "error"
 	} else if err := result.StreamErr(); err != nil {
 		status = "error"
+		failure = usageFailureFromError(err)
 		logger.Warn("stream ended with error", "upstream", u.Name, "model", realModel, "err", err)
 	}
 	callDur := time.Since(run.winStart)
-	run.g.recordUsage(run.key, u, realModel, run.inFormat, usage, true, callDur, status)
+	run.g.recordUsage(run.key, u, realModel, run.inFormat, usage, true, callDur, status, failure)
 	// 对话归档：用流累积器还原完整响应（含思维链真签名、工具调用），
 	// clientGonePost / StreamErr 时部分对话以 error 状态如实记录。
 	if run.rec != nil {
@@ -770,7 +783,37 @@ func effectiveUpstream(u *store.Upstream, inFormat string) *store.Upstream {
 	return u
 }
 
-func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string) {
+// usageFailure 是 usage_records 的失败诊断快照。code 只填真实的 HTTP 状态码；
+// 主动停止、传输错误与流内错误没有响应状态码，保持 0 而只保存原因。
+type usageFailure struct {
+	code int
+	body string
+}
+
+// usageFailureFromError 保留上游原始错误报文，而不是只存 Error() 里为日志
+// 截断/加工过的文本。errors.As 同时覆盖上游错误被调用链包装的情况。
+func usageFailureFromError(err error) usageFailure {
+	if err == nil {
+		return usageFailure{}
+	}
+	var ue *upstream.UpstreamError
+	if errors.As(err, &ue) {
+		return usageFailure{code: ue.StatusCode, body: string(ue.Body)}
+	}
+	return usageFailure{body: err.Error()}
+}
+
+// streamUsageFailure 将 IR 已解析出的流内错误重新组成 JSON 诊断报文。
+// 此时上游 HTTP 状态早已是 200，不能伪造一个 error_code。
+func streamUsageFailure(errType, message string) usageFailure {
+	body, _ := json.Marshal(struct {
+		Type    string `json:"type,omitempty"`
+		Message string `json:"message"`
+	}{Type: errType, Message: message})
+	return usageFailure{body: string(body)}
+}
+
+func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, inFormat string, usage translate.Usage, stream bool, dur time.Duration, status string, failure ...usageFailure) {
 	total := usage.InputTokens + usage.OutputTokens
 	rec := &store.UsageRecord{
 		UpstreamName:        u.Name,
@@ -786,6 +829,10 @@ func (g *Gateway) recordUsage(key *store.ExtKey, u *store.Upstream, realModel, i
 		DurationMs:          dur.Milliseconds(),
 		Stream:              stream,
 		Status:              status,
+	}
+	if len(failure) > 0 {
+		rec.ErrorCode = failure[0].code
+		rec.ErrorBody = failure[0].body
 	}
 	// key 与 u 的所有调用点都保证非 nil（鉴权失败早已返回），这里直接取值；
 	// 用局部变量而非 &key.ID，避免异步写入期间与调用方共享同一个结构体字段。

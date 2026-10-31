@@ -81,6 +81,38 @@ func TestInsertUsageAndSummary(t *testing.T) {
 	}
 }
 
+func TestUsageErrorDetailsRoundTrip(t *testing.T) {
+	d := testDB(t)
+	const body = `{"error":{"message":"quota exceeded","type":"insufficient_quota"}}`
+	if err := InsertUsage(d, &UsageRecord{
+		UpstreamName: "u", Model: "m", InFormat: "openai", UpFormat: "openai",
+		Status: "error", ErrorCode: 429, ErrorBody: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertUsage(d, &UsageRecord{
+		UpstreamName: "u", Model: "m", InFormat: "openai", UpFormat: "openai", Status: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	records, _, err := UsageRecordsList(d, 1, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records=%d want 2", len(records))
+	}
+	// id DESC：成功记录在前，失败记录在后。
+	if records[0].ErrorCode != 0 || records[0].ErrorBody != "" {
+		t.Fatalf("success record leaked error details: %+v", records[0])
+	}
+	if records[1].ErrorCode != 429 || records[1].ErrorBody != body {
+		t.Fatalf("error details round trip = (%d, %q), want (429, %q)",
+			records[1].ErrorCode, records[1].ErrorBody, body)
+	}
+}
+
 func TestUsageSummaryTimeWindow(t *testing.T) {
 	d := testDB(t)
 	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
