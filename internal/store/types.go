@@ -170,5 +170,7 @@ type UsageRecord struct {
 	DurationMs          int64     `json:"duration_ms"`
 	Stream              bool      `json:"stream"`
 	Status              string    `json:"status"`
+	ErrorCode           int       `json:"error_code"`
+	ErrorBody           string    `json:"error_body"`
 	CreatedAt           time.Time `json:"created_at"`
 }

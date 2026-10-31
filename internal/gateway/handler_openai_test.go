@@ -49,6 +49,9 @@ func TestCompletion_NonStreamOpenAI(t *testing.T) {
 	if records[0].TotalTokens != 15 {
 		t.Fatalf("recorded tokens=%d", records[0].TotalTokens)
 	}
+	if records[0].ErrorCode != 0 || records[0].ErrorBody != "" {
+		t.Fatalf("success record must not carry error details: %+v", records[0])
+	}
 	// 上游 mock 固定 sleep 50ms，调用耗时应被记录（留 10ms 余量防计时粒度误差）
 	if records[0].DurationMs < 40 {
 		t.Fatalf("recorded duration_ms=%d, want >= 40", records[0].DurationMs)

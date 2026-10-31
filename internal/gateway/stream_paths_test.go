@@ -611,6 +611,10 @@ func TestStreamMidStreamUpstreamErrorIsNotSwallowed(t *testing.T) {
 			if records[0].Status != "error" || !records[0].Stream {
 				t.Fatalf("record=%+v want status=error stream=true (mid-stream upstream error must not be recorded as ok)", records[0])
 			}
+			if records[0].ErrorCode != 0 || !strings.Contains(records[0].ErrorBody, "upstream overloaded") ||
+				!strings.Contains(records[0].ErrorBody, "server_error") {
+				t.Fatalf("mid-stream failure details=(%d, %q), want parsed error payload", records[0].ErrorCode, records[0].ErrorBody)
+			}
 		})
 	}
 }

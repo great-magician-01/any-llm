@@ -53,6 +53,33 @@ func TestUsageRecords(t *testing.T) {
 	}
 }
 
+func TestUsageRecordsIncludesErrorDetails(t *testing.T) {
+	a, d := setupAPI(t)
+	const body = `{"error":{"message":"quota exceeded","type":"insufficient_quota"}}`
+	if err := store.InsertUsage(d, &store.UsageRecord{
+		UpstreamName: "u", Model: "m", InFormat: "openai", UpFormat: "openai",
+		Status: "error", ErrorCode: 429, ErrorBody: body,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/admin/usage/records", nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []store.UsageRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ErrorCode != 429 || resp.Data[0].ErrorBody != body {
+		t.Fatalf("error details missing from admin response: %+v", resp.Data)
+	}
+}
+
 // 业务规则：请求明细按模型筛选——total 必须是筛选后的行数（前端分页靠它翻
 // 页），且返回行只含该模型；/usage/models 给出去重后的可选模型清单。
 func TestUsageRecordsModelFilterAndModels(t *testing.T) {

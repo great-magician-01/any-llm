@@ -14,6 +14,7 @@ export interface UsageRecord {
   prompt_tokens: number; completion_tokens: number; total_tokens: number
   cache_read_tokens: number; cache_creation_tokens: number; reasoning_tokens: number
   duration_ms: number; stream: boolean; status: string; created_at: string
+  error_code: number; error_body: string
 }
 
 export interface UsageDayStat {

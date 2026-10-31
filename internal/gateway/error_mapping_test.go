@@ -161,4 +161,9 @@ func TestCompletion_Upstream5xxMapsToServerError(t *testing.T) {
 	if len(records) != 1 || records[0].Status != "error" {
 		t.Fatalf("records=%+v want one with status=error", records)
 	}
+	const wantBody = `{"error":{"message":"upstream down","type":"server_error"}}`
+	if records[0].ErrorCode != 503 || records[0].ErrorBody != wantBody {
+		t.Fatalf("recorded failure=(%d, %q), want (503, %q)",
+			records[0].ErrorCode, records[0].ErrorBody, wantBody)
+	}
 }

@@ -196,6 +196,11 @@ var schemaTables = []Table{
 			{Name: "duration_ms", Type: TypeInt, Default: "0", LateAdd: true},
 			{Name: "stream", Type: TypeInt, Default: "0"},
 			{Name: "status", Type: TypeText, Len: 32, Default: "'ok'"},
+			// 失败详情仅用于请求明细诊断：HTTP 失败存上游状态码与原始报文；
+			// 网络错误、客户端主动停止和流内错误没有 HTTP 状态码，error_code 为 0，
+			// error_body 仍保存可读原因。成功记录保持 0 / 空串。
+			{Name: "error_code", Type: TypeInt, Default: "0", LateAdd: true},
+			{Name: "error_body", Type: TypeLongText, Default: "''", LateAdd: true},
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 		},
 		Idx: []Index{

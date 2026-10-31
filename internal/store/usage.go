@@ -178,12 +178,12 @@ func InsertUsage(d *sql.DB, r *UsageRecord) error {
 		(ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		 prompt_tokens, completion_tokens, total_tokens,
 		 cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-		 duration_ms, stream, status, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		 duration_ms, stream, status, error_code, error_body, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		r.ExtKeyID, r.UpstreamID, r.UpstreamName, r.Model, r.InFormat, r.UpFormat,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens,
 		r.CacheReadTokens, r.CacheCreationTokens, r.ReasoningTokens,
-		r.DurationMs, b2i(r.Stream), r.Status, ts)
+		r.DurationMs, b2i(r.Stream), r.Status, r.ErrorCode, r.ErrorBody, ts)
 	if err != nil {
 		return fmt.Errorf("insert usage: %w", err)
 	}
@@ -324,7 +324,7 @@ func UsageRecordsList(d *sql.DB, page, size int, model string) ([]UsageRecord, i
 	listQ := `SELECT id, ext_key_id, upstream_id, upstream_name, model, in_format, up_format,
 		prompt_tokens, completion_tokens, total_tokens,
 		cache_read_tokens, cache_creation_tokens, reasoning_tokens,
-		duration_ms, stream, status, created_at
+		duration_ms, stream, status, error_code, error_body, created_at
 		FROM usage_records`
 	var args []any
 	if model != "" {
@@ -355,7 +355,7 @@ func UsageRecordsList(d *sql.DB, page, size int, model string) ([]UsageRecord, i
 		if err := rows.Scan(&r.ID, &extKeyID, &upstreamID, &r.UpstreamName, &r.Model,
 			&r.InFormat, &r.UpFormat, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens,
 			&r.CacheReadTokens, &r.CacheCreationTokens, &r.ReasoningTokens,
-			&r.DurationMs, &stream, &r.Status, &r.CreatedAt); err != nil {
+			&r.DurationMs, &stream, &r.Status, &r.ErrorCode, &r.ErrorBody, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		if extKeyID.Valid {
