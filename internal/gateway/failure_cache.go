@@ -13,12 +13,9 @@ import (
 
 // failureCacheTTL 是故障候选的冷却时长：候选（上游+模型）发生一次可缓存的
 // 失败后在这段时间内被跳过，请求直接故障转移到下一候选，避免故障上游在每个
-// 请求上都被重打一遍。
+// 请求上都被重打一遍。调用方只在后面仍有其他候选时查询冷却；最后一个候选
+// 始终实际调用，确保直连与别名链末尾都透传真实上游异常。
 const failureCacheTTL = 60 * time.Second
-
-// allCandidatesDownMessage 是全部候选都处于故障冷却期时的 503 文案（与并发
-// 上限的 429 文案同款口径：提示稍后重试，SDK 会自动重试）。
-const allCandidatesDownMessage = "all upstream candidates recently failed and are in failure cooldown, please retry later"
 
 // failKey 标识一个可故障转移的候选。粒度是「上游+模型」而不是整个上游：
 // 同一上游的不同模型互不影响（单个模型下线/限流不代表上游整体不可用）。
@@ -33,7 +30,7 @@ type failKey struct {
 //
 // 条目惰性过期：冷却结束后的下一个请求照常尝试该候选——成功即 clear 恢复
 // 全量流量，失败则重新冷却一个 TTL。因此上游持续故障时每个 TTL 只被真实
-// 命中一次；全部候选都在冷却中时直接回 503，不穿透到上游。
+// 命中一次。冷却是故障转移优化，不会替代最后一次真实调用生成客户端错误。
 type failureCache struct {
 	mu    sync.Mutex
 	until map[failKey]time.Time

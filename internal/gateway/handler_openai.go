@@ -31,8 +31,10 @@ func logConcurrencySkip(msg string, i int, t *store.AliasTarget) {
 // 多个候选，调用失败（网络错误 / 上游错误状态）自动故障转移到下一个候选。
 // 每个候选的成败都各自记一条 usage（PG 下各归档一条对话记录）。
 //
-// 故障冷却：候选发生可缓存失败（failureCacheable）后进入 60 秒冷却，期间
-// 被直接跳过（见 failure_cache.go），冷却期后首个请求充当探测。
+// 故障冷却：别名链中的非末尾候选发生可缓存失败（failureCacheable）后进入
+// 60 秒冷却，期间被直接跳过（见 failure_cache.go），冷却期后首个请求充当探测。
+// 最后一个候选始终实际调用：直连路由因此不受冷却影响，别名链末尾失败也返回
+// 本次真实上游异常，而不是合成的冷却错误。
 //
 // 多格式上游：每个候选先经 effectiveUpstream 按入站端点格式解析实际使用的
 // 端点——命中附加端点则原生直通（零转译），否则用主格式走 IR 转译（与单格式
@@ -103,15 +105,16 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	}
 
 	// 非流式：按序尝试，任一候选成功即返回；全部失败回最后一个错误。
-	// 处于故障冷却期的候选直接跳过（不发上游调用、不记 usage），避免故障
-	// 上游在每个请求上都被重打一遍。
+	// 只有后面仍有候选可转移时才应用故障冷却；最后一个候选始终实际调用，
+	// 使单候选直连和别名链末尾都能拿到真实上游错误。冷却跳过不发上游调用、
+	// 不记 usage，避免故障上游在每个请求上都被重打一遍。
 	var lastErr error
 	busy := 0
 	down := 0
 	now := time.Now()
 	for i := range targets {
 		t := &targets[i]
-		if g.fail.down(t, now) {
+		if i < len(targets)-1 && g.fail.down(t, now) {
 			down++
 			logFailureSkip("candidate skipped: upstream in failure cooldown", i, t)
 			continue
@@ -163,13 +166,9 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		return
 	}
 	if busy+down == len(targets) {
-		// 全部候选都被跳过（未发起任何上游调用）：全在故障冷却期回 503，
-		// 至少一个是并发占满回 429（占满者很快会释放，重试语义更合适）。
-		if down == len(targets) {
-			WriteError(w, 503, inFormat, allCandidatesDownMessage, mapErrorType(inFormat, 503, ""))
-			return
-		}
-		// 所有候选都因并发上限被跳过：没有真实上游错误可回，回 429 让客户端重试。
+		// 最后一个候选从不因冷却跳过，因此这里必然至少有一个候选并发占满
+		// （否则最后一个候选会被实际调用并产生 lastErr）。没有真实上游错误
+		// 可回，回 429 让客户端重试。
 		WriteError(w, 429, inFormat, concurrencyLimitMessage, "rate_limit_error")
 		return
 	}
@@ -331,14 +330,10 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 	}
 	defer run.release()
 
-	acquired, downSkipped := run.acquireCandidate()
+	acquired := run.acquireCandidate()
 	if !acquired {
-		// 全部候选都在故障冷却期：头部未 flush，回干净的 503（SDK 会重试）；
+		// 最后一个候选不会只因冷却被跳过，所以预占失败必然包含并发占满；
 		// 至少一个是并发占满则维持 429（占满者很快释放，重试语义更合适）。
-		if downSkipped == len(run.targets) {
-			WriteError(w, 503, inFormat, allCandidatesDownMessage, mapErrorType(inFormat, 503, ""))
-			return
-		}
 		WriteError(w, 429, inFormat, concurrencyLimitMessage, "rate_limit_error")
 		return
 	}
@@ -363,25 +358,24 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request, inFormat 
 
 // acquireCandidate 在 flush 200 头部之前为候选预占并发槽——所有候选都满还能回
 // 干净的 429（SDK 会自动重试）；一旦头部流出就只能写带内错误帧了。命中的槽位
-// 供 firstPhase 的候选循环直接使用。处于故障冷却期的候选在占槽前跳过；返回值
-// downSkipped 供调用方区分「全部冷却」（503）与「并发占满」（429）。
-func (run *streamRun) acquireCandidate() (acquired bool, downSkipped int) {
+// 供 firstPhase 的候选循环直接使用。只有非末尾候选会因故障冷却在占槽前跳过；
+// 最后一个候选始终实际调用，以保留真实上游错误。
+func (run *streamRun) acquireCandidate() bool {
 	now := time.Now()
 	for i := range run.targets {
 		t := &run.targets[i]
-		if run.g.fail.down(t, now) {
-			downSkipped++
+		if i < len(run.targets)-1 && run.g.fail.down(t, now) {
 			logFailureSkip("stream candidate skipped: upstream in failure cooldown", i, t)
 			continue
 		}
 		if rel, ok := run.g.conc.tryAcquire(t.Upstream); ok {
 			run.heldIdx = i
 			run.winRelease = rel
-			return true, downSkipped
+			return true
 		}
 		logConcurrencySkip("stream candidate skipped: upstream concurrency limit reached", i, t)
 	}
-	return false, downSkipped
+	return false
 }
 
 // flushHeaders 安装归档 tee、写 200 头并 flush。此后一切错误只能走带内错误帧。
@@ -424,10 +418,11 @@ func (run *streamRun) newPingWriter() func() {
 
 // firstPhase 从预占成功的候选开始按序尝试，直到某次调用成功建立。期间客户端
 // 只看到 keep-alive 延续；某候选调用失败后转移到下一个候选对客户端透明。一旦
-// 进入事件转发阶段（有内容帧流出）就不再转移。并发已满与处于故障冷却期的候选
-// 直接跳过（heldIdx 在预占时已过滤一遍，循环内再查是为了覆盖故障转移到的候选，
-// 期间它可能已被并发请求打进冷却）。客户端断开时置 clientGone 并返回（上游
-// 调用已随请求上下文取消，不计入故障缓存——断开不是上游的错）。
+// 进入事件转发阶段（有内容帧流出）就不再转移。并发已满与处于故障冷却期的
+// 非末尾候选直接跳过（heldIdx 在预占时已过滤一遍，循环内再查是为了覆盖故障
+// 转移到的候选，期间它可能已被并发请求打进冷却）；最后一个候选始终实际调用。
+// 客户端断开时置 clientGone 并返回（上游调用已随请求上下文取消，不计入故障
+// 缓存——断开不是上游的错）。
 func (run *streamRun) firstPhase() {
 	for i := run.heldIdx; i < len(run.targets); i++ {
 		t := &run.targets[i]
@@ -435,7 +430,7 @@ func (run *streamRun) firstPhase() {
 		if i == run.heldIdx {
 			release = run.winRelease
 		} else {
-			if run.g.fail.down(t, time.Now()) {
+			if i < len(run.targets)-1 && run.g.fail.down(t, time.Now()) {
 				logFailureSkip("stream candidate skipped: upstream in failure cooldown", i, t)
 				continue
 			}

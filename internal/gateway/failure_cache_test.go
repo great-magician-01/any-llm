@@ -139,24 +139,24 @@ func TestFailureCacheSkipsFailedCandidateNonStream(t *testing.T) {
 	}
 }
 
-// 单候选（直连路由）：首个请求拿到真实上游错误并标记冷却；冷却期内的请求
-// 直接回 503，上游不再被命中。
-func TestFailureCacheAllDownNonStream503(t *testing.T) {
+// 单候选直连不应用故障冷却：每次请求都实际调用上游，并透传原始上游错误，
+// 不能在第二次请求时改回合成的 503 cooldown。
+func TestFailureCacheDirectNonStreamReturnsUpstreamError(t *testing.T) {
 	bad, badHits := countingFailServer(t, 500)
 	g, k := setupAliasGateway(t)
 	d := g.db
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
 	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
 
-	if w := aliasRequest(t, g, k.Key, `{"model":"bad/m","messages":[{"role":"user","content":"hi"}]}`); w.Code != 500 {
-		t.Fatalf("first request status=%d want 500 (real upstream error), body=%s", w.Code, w.Body.String())
+	body := `{"model":"bad/m","messages":[{"role":"user","content":"hi"}]}`
+	for i := 1; i <= 2; i++ {
+		w := aliasRequest(t, g, k.Key, body)
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "boom") || strings.Contains(w.Body.String(), "failure cooldown") {
+			t.Fatalf("request %d status=%d want original 500 upstream error, body=%s", i, w.Code, w.Body.String())
+		}
 	}
-	w := aliasRequest(t, g, k.Key, `{"model":"bad/m","messages":[{"role":"user","content":"hi"}]}`)
-	if w.Code != 503 || !strings.Contains(w.Body.String(), "failure cooldown") {
-		t.Fatalf("second request status=%d want 503 cooldown, body=%s", w.Code, w.Body.String())
-	}
-	if badHits.Load() != 1 {
-		t.Fatalf("cooling upstream was hit again: hits=%d want 1", badHits.Load())
+	if badHits.Load() != 2 {
+		t.Fatalf("direct upstream hits=%d want 2 (cooldown must not suppress the only call)", badHits.Load())
 	}
 }
 
@@ -215,28 +215,50 @@ func TestFailureCacheSkipsFailedCandidateStream(t *testing.T) {
 	}
 }
 
-// 流式全候选冷却：第一次请求头部已 flush，只能带内报错（状态仍 200）；
-// 第二次请求在头部 flush 前识别冷却，回干净的 503，上游不再被命中。
-func TestFailureCacheAllDownStream503(t *testing.T) {
+// 单候选直连流式请求同样不应用冷却：每次都在 200 头部后返回真实上游的
+// 带内错误，不能在后续请求的头部 flush 前改回合成的 503 cooldown。
+func TestFailureCacheDirectStreamReturnsUpstreamError(t *testing.T) {
 	bad, badHits := countingFailServer(t, 500)
 	g, k := setupAliasGateway(t)
 	d := g.db
 	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+
+	body := `{"model":"bad/m","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	for i := 1; i <= 2; i++ {
+		w := aliasRequest(t, g, k.Key, body)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"error"`) || !strings.Contains(w.Body.String(), "boom") || strings.Contains(w.Body.String(), "failure cooldown") {
+			t.Fatalf("request %d should contain the original in-band upstream error: status=%d body=%s", i, w.Code, w.Body.String())
+		}
+	}
+	if badHits.Load() != 2 {
+		t.Fatalf("direct upstream hits=%d want 2 (cooldown must not suppress the only call)", badHits.Load())
+	}
+}
+
+// 别名链全部失败的流式请求：前面的候选可在后续请求中冷却跳过，但末尾候选
+// 始终实际调用，客户端拿到的仍是它的原始错误类型与报文。
+func TestFailureCacheAliasStreamReturnsLastUpstreamError(t *testing.T) {
+	bad1, bad1Hits := countingFailServer(t, 500)
+	bad2, bad2Hits := countingFailServer(t, 429)
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad1", BaseURL: bad1.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad2", BaseURL: bad2.URL, APIKey: "sk", Format: "openai"})
 	store.CreateAlias(d, &store.ModelAlias{Name: "fixed", Bindings: []store.AliasBinding{
-		{UpstreamID: uid, ModelName: "m1"},
+		{UpstreamID: uid1, ModelName: "m1"},
+		{UpstreamID: uid2, ModelName: "m2"},
 	}})
 
 	body := `{"model":"fixed","messages":[{"role":"user","content":"hi"}],"stream":true}`
-	w := aliasRequest(t, g, k.Key, body)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"error"`) {
-		t.Fatalf("first request should fail in-band after 200 header: status=%d body=%s", w.Code, w.Body.String())
+	for i := 1; i <= 2; i++ {
+		w := aliasRequest(t, g, k.Key, body)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), "rate_limit_error") || !strings.Contains(w.Body.String(), "boom") || strings.Contains(w.Body.String(), "failure cooldown") {
+			t.Fatalf("request %d should contain last candidate's original in-band 429: status=%d body=%s", i, w.Code, w.Body.String())
+		}
 	}
-	w = aliasRequest(t, g, k.Key, body)
-	if w.Code != 503 || !strings.Contains(w.Body.String(), "failure cooldown") {
-		t.Fatalf("second request status=%d want 503 cooldown, body=%s", w.Code, w.Body.String())
-	}
-	if badHits.Load() != 1 {
-		t.Fatalf("cooling upstream was hit again: hits=%d want 1", badHits.Load())
+	if bad1Hits.Load() != 1 || bad2Hits.Load() != 2 {
+		t.Fatalf("upstream hits=(%d, %d), want (1, 2): first cools down, last is always tried", bad1Hits.Load(), bad2Hits.Load())
 	}
 }
 
