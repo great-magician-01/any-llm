@@ -158,10 +158,11 @@ func TestAliasFailoverStream(t *testing.T) {
 	}
 }
 
-// 全部候选失败：按最后一个错误映射回客户端格式。
+// 全部候选失败：按最后一个错误映射回客户端格式。后续请求可以冷却并跳过
+// 前面的候选，但最后一个候选仍必须实际调用，不能改回合成的 cooldown 错误。
 func TestAliasAllCandidatesFail(t *testing.T) {
-	bad1 := failUpstreamServer(t, 500)
-	bad2 := failUpstreamServer(t, 429)
+	bad1, bad1Hits := countingFailServer(t, 500)
+	bad2, bad2Hits := countingFailServer(t, 429)
 	g, k := setupAliasGateway(t)
 	d := g.db
 	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad1", BaseURL: bad1.URL, APIKey: "sk", Format: "openai"})
@@ -171,13 +172,20 @@ func TestAliasAllCandidatesFail(t *testing.T) {
 		{UpstreamID: uid2, ModelName: "m2"},
 	}})
 
-	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
-	if w.Code != 429 {
-		t.Fatalf("status=%d want 429 (last candidate), body=%s", w.Code, w.Body.String())
+	body := `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`
+	for i := 1; i <= 2; i++ {
+		w := aliasRequest(t, g, k.Key, body)
+		if w.Code != 429 || !strings.Contains(w.Body.String(), "boom") || strings.Contains(w.Body.String(), "failure cooldown") {
+			t.Fatalf("request %d status=%d want last candidate's original 429, body=%s", i, w.Code, w.Body.String())
+		}
 	}
+	if bad1Hits.Load() != 1 || bad2Hits.Load() != 2 {
+		t.Fatalf("upstream hits=(%d, %d), want (1, 2): first cools down, last is always tried", bad1Hits.Load(), bad2Hits.Load())
+	}
+	// 第一次 error+error 两条；第二次首选冷却跳过不记，仅末尾 error 一条。
 	_, total, _ := store.UsageRecordsList(d, 1, 10, "")
-	if total != 2 {
-		t.Fatalf("usage records=%d want 2", total)
+	if total != 3 {
+		t.Fatalf("usage records=%d want 3 (error+error, then final error only)", total)
 	}
 }
 
