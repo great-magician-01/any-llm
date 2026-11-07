@@ -132,3 +132,38 @@ func TestInitFailureKeepsPreviousLogger(t *testing.T) {
 // 跨天轮转的目录布局与切换时机由 logwriter 自身的测试套件覆盖
 // （logwriter 仓库 internal/writer/file_test.go）；这里只锁定本包负责的
 // 路径拼接规则（见 TestInitWritesToConsoleAndFile）。
+
+// Init 必须对坏日志路径快速失败：logwriter 懒打开文件，没有预检时不可写的
+// ANY_LLM_LOG_FILE 会让服务器带病启动、文件日志静默全丢（旧实现在 Init 内
+// 建目录开文件，启动即报错）。
+func TestInitFastFailsOnUnwritableLogPath(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Init(Options{Level: LevelInfo, FilePath: filepath.Join(blocker, "sub", "app.log")})
+	if err == nil {
+		_ = Close()
+		t.Fatal("Init with a log path under a regular file should fail fast")
+	}
+	if !strings.Contains(err.Error(), "create log dir") && !strings.Contains(err.Error(), "open log file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Init 成功后当天日志文件已被预检创建：LogFilePath 指向的路径确实存在
+// （与旧 dailyFileWriter 行为一致）。
+func TestInitPreflightCreatesLogFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := Init(Options{Level: LevelInfo, FilePath: filepath.Join(dir, "app.log")}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = Close()
+		SetDefault(slogNewDiscard())
+	}()
+	if _, err := os.Stat(LogFilePath()); err != nil {
+		t.Fatalf("log file should exist right after Init: %v", err)
+	}
+}

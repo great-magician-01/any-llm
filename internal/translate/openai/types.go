@@ -3,16 +3,17 @@ package openai
 import "encoding/json"
 
 type rawRequest struct {
-	Model       string          `json:"model"`
-	Messages    []rawMessage    `json:"messages"`
-	Tools       []rawTool       `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Stop        json.RawMessage `json:"stop,omitempty"`
-	StreamOpts  json.RawMessage `json:"stream_options,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []rawMessage    `json:"messages"`
+	Tools               []rawTool       `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	TopP                *float64        `json:"top_p,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
+	Stop                json.RawMessage `json:"stop,omitempty"`
+	StreamOpts          json.RawMessage `json:"stream_options,omitempty"`
 }
 
 type rawMessage struct {

@@ -129,6 +129,28 @@ func Init(opts Options) error {
 	if err != nil {
 		return err
 	}
+	if cfg.File {
+		// logwriter 懒打开文件（首次写入才建目录/开文件），坏路径会拖到启动
+		// 之后才暴露成静默丢日志（唯一信号是 OnError 的 10s 限频 stderr 行）。
+		// 这里恢复旧实现的快速失败：建当天目录并探测打开一次文件——顺带保证
+		// 启动后 LogFilePath 指向的文件确实存在（与旧 dailyFileWriter 一致）。
+		// 失败则关掉新实例、保留旧实例不受影响。
+		prefix := cfg.FilePrefix
+		if prefix == "" {
+			prefix = "app" // 与 logwriter.New 的缺省一致
+		}
+		dayDir := filepath.Join(cfg.Directory, time.Now().Format("2006-01-02"))
+		if err := os.MkdirAll(dayDir, 0o755); err != nil {
+			_ = n.Close()
+			return fmt.Errorf("create log dir: %w", err)
+		}
+		probe, err := os.OpenFile(filepath.Join(dayDir, prefix+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			_ = n.Close()
+			return fmt.Errorf("open log file: %w", err)
+		}
+		_ = probe.Close()
+	}
 	if lw != nil {
 		_ = lw.Close()
 	}
