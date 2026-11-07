@@ -1,7 +1,8 @@
 // Package logger 提供 any-llm 的日志门面：对外保持 slog 语义
 // （Default()/FileOnly() 返回 *slog.Logger），底层由 logwriter 承担队列化
-// 写入与按天分目录的文件轮转。输出格式由 entryFormatter 复刻，与旧实现
-// 逐字节一致。
+// 写入与按天分目录的文件轮转。输出格式由 entryFormatter 复刻：既有字段
+// 类型（string/数值/时间/duration/error）与旧实现逐字节一致，KindAny
+// 任意值沿用旧 slog 的 fmt.Sprint 渲染语义。
 package logger
 
 import (

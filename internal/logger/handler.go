@@ -11,7 +11,12 @@ import (
 // 在调用方 goroutine 完成，格式化与磁盘写入都由 logwriter 的单个后台消费者
 // 串行执行——请求热路径只剩字段拍平和一次 channel 发送。
 //
-// lw 为 nil 时（Init 之前的初始状态、或 Close 之后）记录被直接丢弃。
+// 契约：字段值按引用入队、由消费者协程稍后格式化，调用方在日志调用返回后
+// 不得再修改传入的切片/映射等可变值（旧实现同步格式化，没有这个约束）。
+//
+// lw 为 nil 时（Init 之前的初始状态）记录被直接丢弃；Close 之后现有 handler
+// 仍持有已关闭的 logwriter 实例，Log 返回 ErrClosed（此处忽略），记录同样
+// 被丢弃——只是不走 nil 快路径。
 type handler struct {
 	lw       *logwriter.Logger
 	level    slog.Level
