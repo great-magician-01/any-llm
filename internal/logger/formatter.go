@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"encoding"
 	"fmt"
 	"strings"
 	"time"
@@ -113,18 +112,13 @@ func appendField(b *strings.Builder, f logwriter.Field) {
 		b.WriteString(v.Format("2006-01-02 15:04:05"))
 	case time.Duration:
 		b.WriteString(v.String())
-	case encoding.TextMarshaler:
-		// 与 slog 的 KindAny 渲染保持一致：支持 TextMarshaler 的值用其文本
-		// 形式，其余退回 %+v。
-		if data, err := v.MarshalText(); err == nil {
-			b.Write(data)
-			return
-		}
-		fmt.Fprintf(b, "%+v", v)
-	case []byte:
-		b.Write(v)
 	default:
-		fmt.Fprintf(b, "%+v", v)
+		// 与旧实现的 slog KindAny 渲染保持一致（Value.String() = fmt.Sprint）：
+		// error/Stringer、TextMarshaler、[]byte 数字列表（含换行的字节串不会
+		// 拆行注入伪造日志）等一律交给 fmt 的既有语义，方法 panic 也由 fmt
+		// 兜住（typed-nil 的 MarshalText 在这里安全降级而不是炸掉消费者协程、
+		// 丢掉整条记录）。不要在这里手写类型分支绕开 fmt。
+		fmt.Fprint(b, v)
 	}
 }
 

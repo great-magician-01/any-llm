@@ -84,8 +84,13 @@ func TestFieldValueRendering(t *testing.T) {
 		{"dur not int", logwriter.Field{Key: "duration_ms", Value: "500"}, " duration_ms=500"},
 		{"error", logwriter.Field{Key: "err", Value: errors.New("boom")}, " err=boom"},
 		{"nil", logwriter.Field{Key: "err", Value: nil}, " err=<nil>"},
-		{"text marshaler", logwriter.Field{Key: "tm", Value: textMarshaler}, " tm=raw-bytes"},
-		{"bytes", logwriter.Field{Key: "b", Value: []byte("raw")}, " b=raw"},
+		// KindAny 统一经 fmt.Sprint 语义渲染（与旧 slog handler 一致）：
+		// []byte 是数字列表——含换行的字节串不会拆行注入；只实现
+		// MarshalText 的 struct 走反射花括号而非 MarshalText 文本；struct
+		// 是 %v 空格分隔而非 %+v 字段名。
+		{"text marshaler", logwriter.Field{Key: "tm", Value: textMarshaler}, " tm={raw-bytes}"},
+		{"bytes", logwriter.Field{Key: "b", Value: []byte("raw")}, " b=[114 97 119]"},
+		{"struct", logwriter.Field{Key: "s", Value: struct{ A int }{1}}, " s={1}"},
 	}
 	for _, c := range cases {
 		got := formatEntry(t, false, logwriter.Entry{Time: fixtureTime, Level: logwriter.InfoLevel, Fields: []logwriter.Field{c.f}})
