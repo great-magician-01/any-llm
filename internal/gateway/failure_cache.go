@@ -13,9 +13,17 @@ import (
 
 // failureCacheTTL 是故障候选的冷却时长：候选（上游+模型）发生一次可缓存的
 // 失败后在这段时间内被跳过，请求直接故障转移到下一候选，避免故障上游在每个
-// 请求上都被重打一遍。调用方只在后面仍有其他候选时查询冷却；最后一个候选
-// 始终实际调用，确保直连与别名链末尾都透传真实上游异常。
+// 请求上都被重打一遍。
 const failureCacheTTL = 60 * time.Second
+
+// failureCacheTTLLabel 是冷却时长的固定文本（日志字段用），避免每次跳过/
+// 记录都重新格式化 duration。
+var failureCacheTTLLabel = failureCacheTTL.String()
+
+// coolable 报告候选 i（共 n 个）是否参与故障冷却：「末尾候选始终实际调用、
+// 透传真实上游异常」这条规则只有一个家——冷却的查询（down）与记录（mark）
+// 都以它为准。直连路由与别名链末尾不受冷却影响，每个请求都会真实调用。
+func coolable(i, n int) bool { return i < n-1 }
 
 // failKey 标识一个可故障转移的候选。粒度是「上游+模型」而不是整个上游：
 // 同一上游的不同模型互不影响（单个模型下线/限流不代表上游整体不可用）。
@@ -25,12 +33,13 @@ type failKey struct {
 }
 
 // failureCache 记录各候选最近一次调度失败的冷却截止时刻（纯内存态，进程
-// 重启即清空，与并发信号量同为 Gateway 级）。命中冷却的候选在派发时被跳过，
-// 跳过本身不发上游调用、不记 usage（与并发跳过一致）。
+// 重启即清空，与并发信号量同为 Gateway 级）。命中冷却的非末尾候选在派发时
+// 被跳过，跳过本身不发上游调用、不记 usage（与并发跳过一致）。
 //
 // 条目惰性过期：冷却结束后的下一个请求照常尝试该候选——成功即 clear 恢复
-// 全量流量，失败则重新冷却一个 TTL。因此上游持续故障时每个 TTL 只被真实
-// 命中一次。冷却是故障转移优化，不会替代最后一次真实调用生成客户端错误。
+// 全量流量，失败则重新冷却一个 TTL。因此持续故障的非末尾候选每个 TTL 只被
+// 真实命中一次；末尾候选不受冷却影响（coolable 为 false），每个请求都会
+// 真实调用并透传其原始异常。
 type failureCache struct {
 	mu    sync.Mutex
 	until map[failKey]time.Time
@@ -68,9 +77,12 @@ func failureCacheable(err error) bool {
 	return false
 }
 
-// mark 在候选发生可缓存失败时记录冷却（再次失败顺延一个 TTL）。
-func (c *failureCache) mark(t *store.AliasTarget, err error, now time.Time) {
-	if !failureCacheable(err) {
+// mark 在候选发生可缓存失败时记录冷却（再次失败顺延一个 TTL）。只为
+// hasSuccessor（coolable）为真的候选记录：末尾候选的冷却从不被 down() 查询，
+// 记了也只会沉淀成永不过期的死条目和无人响应的 WARN——直连路由的 model 名
+// 来自客户端输入，无条件记录会让 map 随任意 model 名无界增长。
+func (c *failureCache) mark(t *store.AliasTarget, err error, now time.Time, hasSuccessor bool) {
+	if !hasSuccessor || !failureCacheable(err) {
 		return
 	}
 	k := failKey{upstreamID: t.Upstream.ID, model: t.ModelName}
@@ -78,7 +90,7 @@ func (c *failureCache) mark(t *store.AliasTarget, err error, now time.Time) {
 	c.until[k] = now.Add(failureCacheTTL)
 	c.mu.Unlock()
 	logger.Warn("candidate marked failed, entering failure cooldown",
-		"upstream", t.Upstream.Name, "model", t.ModelName, "ttl", failureCacheTTL.String(), "err", truncate(err.Error(), 200))
+		"upstream", t.Upstream.Name, "model", t.ModelName, "ttl", failureCacheTTLLabel, "err", truncate(err.Error(), 200))
 }
 
 // clear 在候选调用成功后清除其冷却记录：冷却到期后的探测一旦成功，立即
@@ -110,5 +122,5 @@ func (c *failureCache) down(t *store.AliasTarget, now time.Time) bool {
 // logFailureSkip 记录一次因故障冷却被跳过的候选：非流式派发、流式预占、
 // 流式失败转移三处共用同一组日志字段（与 logConcurrencySkip 对齐）。
 func logFailureSkip(msg string, i int, t *store.AliasTarget) {
-	logger.Info(msg, "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "cooldown", failureCacheTTL.String())
+	logger.Info(msg, "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "cooldown", failureCacheTTLLabel)
 }
