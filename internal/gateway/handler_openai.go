@@ -114,7 +114,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 	now := time.Now()
 	for i := range targets {
 		t := &targets[i]
-		if i < len(targets)-1 && g.fail.down(t, now) {
+		if coolable(i, len(targets)) && g.fail.down(t, now) {
 			down++
 			logFailureSkip("candidate skipped: upstream in failure cooldown", i, t)
 			continue
@@ -138,7 +138,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, inFormat stri
 		if err != nil {
 			// mark 内部 failureCacheable 已排除随客户端断开冒出的
 			// context.Canceled，调用方主动终止不会把候选打进冷却。
-			g.fail.mark(t, err, time.Now())
+			g.fail.mark(t, err, time.Now(), coolable(i, len(targets)))
 			failure := usageFailureFromError(err)
 			if r.Context().Err() != nil {
 				failure.body = "client disconnected before upstream call returned: " + failure.body
@@ -364,7 +364,7 @@ func (run *streamRun) acquireCandidate() bool {
 	now := time.Now()
 	for i := range run.targets {
 		t := &run.targets[i]
-		if i < len(run.targets)-1 && run.g.fail.down(t, now) {
+		if coolable(i, len(run.targets)) && run.g.fail.down(t, now) {
 			logFailureSkip("stream candidate skipped: upstream in failure cooldown", i, t)
 			continue
 		}
@@ -424,13 +424,14 @@ func (run *streamRun) newPingWriter() func() {
 // 客户端断开时置 clientGone 并返回（上游调用已随请求上下文取消，不计入故障
 // 缓存——断开不是上游的错）。
 func (run *streamRun) firstPhase() {
+	now := time.Now()
 	for i := run.heldIdx; i < len(run.targets); i++ {
 		t := &run.targets[i]
 		var release func()
 		if i == run.heldIdx {
 			release = run.winRelease
 		} else {
-			if i < len(run.targets)-1 && run.g.fail.down(t, time.Now()) {
+			if coolable(i, len(run.targets)) && run.g.fail.down(t, now) {
 				logFailureSkip("stream candidate skipped: upstream in failure cooldown", i, t)
 				continue
 			}
@@ -465,7 +466,7 @@ func (run *streamRun) firstPhase() {
 		if err != nil {
 			run.release()
 			run.lastErr = err
-			run.g.fail.mark(t, err, time.Now())
+			run.g.fail.mark(t, err, time.Now(), coolable(i, len(run.targets)))
 			if len(run.targets) > 1 {
 				logger.Warn("stream candidate call failed, failing over", "alias_candidate", i, "upstream", t.Upstream.Name, "model", t.ModelName, "err", err)
 			}

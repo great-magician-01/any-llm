@@ -74,13 +74,13 @@ func TestFailureCacheable(t *testing.T) {
 }
 
 // 冷却语义：mark 后 TTL 内 down=true，到期自动失效（条目随之清除），
-// clear 立即摘除；不可缓存的失败 mark 是空操作。
+// clear 立即摘除；不可缓存的失败 mark 是空操作；末尾候选（无后继）不记录。
 func TestFailureCacheMarkDownClear(t *testing.T) {
 	c := newFailureCache()
 	target := &store.AliasTarget{Upstream: &store.Upstream{ID: 1, Name: "u"}, ModelName: "m"}
 	t0 := time.Now()
 
-	c.mark(target, errors.New("call upstream: timeout"), t0)
+	c.mark(target, errors.New("call upstream: timeout"), t0, true)
 	if !c.down(target, t0.Add(time.Second)) {
 		t.Fatal("marked candidate should be down inside TTL")
 	}
@@ -91,15 +91,21 @@ func TestFailureCacheMarkDownClear(t *testing.T) {
 		t.Fatalf("expired entry should be evicted, got %d entries", len(c.until))
 	}
 
-	c.mark(target, errors.New("boom"), t0)
+	c.mark(target, errors.New("boom"), t0, true)
 	c.clear(target)
 	if c.down(target, t0.Add(time.Second)) {
 		t.Fatal("cleared candidate should not be down")
 	}
 
-	c.mark(target, &upstream.UpstreamError{StatusCode: 400}, t0)
+	c.mark(target, &upstream.UpstreamError{StatusCode: 400}, t0, true)
 	if c.down(target, t0.Add(time.Second)) {
 		t.Fatal("request-level error (400) must not enter cooldown")
+	}
+
+	// 末尾候选（hasSuccessor=false）不记录：它的冷却从不被查询。
+	c.mark(target, errors.New("call upstream: timeout"), t0, false)
+	if len(c.until) != 0 {
+		t.Fatalf("tail candidate must not be marked, got %d entries", len(c.until))
 	}
 }
 
@@ -331,5 +337,29 @@ func TestNonStreamClientGoneNoCooldown(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Fatalf("upstream hits=%d want 2", hits.Load())
+	}
+}
+
+// 尾候选（含单候选直连）失败不打冷却：末尾候选的冷却从不被 down() 查询，
+// 记了也只会沉淀成永不过期的死条目（直连 model 名来自客户端输入，map 会
+// 无界增长）和无人响应的 WARN。
+func TestFailureCacheTailNotMarked(t *testing.T) {
+	bad, hits := countingFailServer(t, 500)
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid, _ := store.CreateUpstream(d, &store.Upstream{Name: "bad", BaseURL: bad.URL, APIKey: "sk", Format: "openai"})
+	store.AddModel(d, uid, store.UpstreamModel{ModelName: "m"})
+
+	body := `{"model":"bad/m","messages":[{"role":"user","content":"hi"}]}`
+	for i := 1; i <= 2; i++ {
+		if w := aliasRequest(t, g, k.Key, body); w.Code != 500 {
+			t.Fatalf("request %d status=%d want 500", i, w.Code)
+		}
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("upstream hits=%d want 2", hits.Load())
+	}
+	if len(g.fail.until) != 0 {
+		t.Fatalf("failure cache entries=%d want 0: tail/direct candidates must not be marked", len(g.fail.until))
 	}
 }
