@@ -74,8 +74,8 @@ All settings load from environment variables. A `.env` file in the working direc
 
 ## Logging
 
-- `internal/logger` wraps stdlib `log/slog` (text handler), writing to **both** stdout and the configured log file (append mode, parent dirs auto-created)
-- Log files rotate daily (local time): `<dir>/<YYYY-MM-DD>/<name>.log`; `dailyFileWriter` checks the date on every write and opens the new day's file after midnight — no restart needed
+- `internal/logger` keeps its `log/slog` facade (`Default()`/`FileOnly()` return `*slog.Logger`), but the plumbing is the [`logwriter`](https://github.com/great-magician-01/logwriter) library: records are flattened to fields on the calling goroutine and enqueued; a single background consumer serializes formatting, stdout, and file writes (`Close()` drains the queue). Output format is reproduced byte-for-byte by `entryFormatter` (`INF`/`WRN`/`ERR`/`DBG` abbrevs, `duration_ms` → `dur=…`), colored on stdout, plain in files
+- Log files rotate daily (local time): `<dir>/<YYYY-MM-DD>/<name>.log` via logwriter's `DirectoryByDay` layout — no restart needed; entries logged after a crash lose whatever is still in the queue (bounded by logwriter's queue size)
 - All HTTP requests logged via `gateway.LoggingMiddleware` (method, path, status, size, duration, remote)
 - Gateway completion requests additionally log: key id/label, upstream, model, in_format, stream flag, token usage, status
 - Upstream errors are logged with status code and truncated response body (≤512 chars)

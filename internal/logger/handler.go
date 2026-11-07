@@ -1,75 +1,34 @@
 package logger
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"log/slog"
-	"sync"
+
+	"github.com/great-magician-01/logwriter"
 )
 
-func levelAbbrev(l slog.Level) string {
-	switch {
-	case l >= slog.LevelError:
-		return "ERR"
-	case l >= slog.LevelWarn:
-		return "WRN"
-	case l >= slog.LevelInfo:
-		return "INF"
-	default:
-		return "DBG"
-	}
-}
-
-func levelColor(l slog.Level) string {
-	switch {
-	case l >= slog.LevelError:
-		return "\033[31m"
-	case l >= slog.LevelWarn:
-		return "\033[33m"
-	case l >= slog.LevelInfo:
-		return "\033[32m"
-	default:
-		return "\033[90m"
-	}
-}
-
-const colorReset = "\033[0m"
-const colorGray = "\033[90m"
-
-type output struct {
-	w       io.Writer
-	color   bool
-	console bool
-}
-
+// handler 把 slog 记录转换成 logwriter 条目并入队。attrs 转换（含分组拍平）
+// 在调用方 goroutine 完成，格式化与磁盘写入都由 logwriter 的单个后台消费者
+// 串行执行——请求热路径只剩字段拍平和一次 channel 发送。
+//
+// lw 为 nil 时（Init 之前的初始状态、或 Close 之后）记录被直接丢弃。
 type handler struct {
+	lw       *logwriter.Logger
 	level    slog.Level
-	mu       sync.Mutex
-	outputs  []output
-	preAttrs []slog.Attr
-	group    string
-	fileOnly bool
+	attrs    []logwriter.Field // With(...) 预置的、已按分组前缀拍平的字段
+	group    string            // 累积的分组前缀（WithGroup 链接成 "a.b"）
+	fileOnly bool              // true 时附加 FileOnly 标记，logwriter 只写文件
 }
 
-func newHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group string) *handler {
-	return &handler{
-		level:    level,
-		outputs:  outputs,
-		preAttrs: preAttrs,
-		group:    group,
-	}
+func newHandler(lw *logwriter.Logger, level slog.Level, attrs []logwriter.Field, group string, fileOnly bool) *handler {
+	return &handler{lw: lw, level: level, attrs: attrs, group: group, fileOnly: fileOnly}
 }
 
-func newFileOnlyHandler(level slog.Level, outputs []output, preAttrs []slog.Attr, group string) *handler {
-	return &handler{
-		level:    level,
-		outputs:  outputs,
-		preAttrs: preAttrs,
-		group:    group,
-		fileOnly: true,
-	}
+// withFileOnly 返回同配置、但只写文件的 handler（FileOnly() 的底座）。
+func (h *handler) withFileOnly() *handler {
+	c := *h
+	c.fileOnly = true
+	return &c
 }
 
 func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
@@ -77,150 +36,73 @@ func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (h *handler) Handle(_ context.Context, r slog.Record) error {
-	var msgBuf bytes.Buffer
-
-	timestr := r.Time.Format("2006-01-02 15:04:05.000")
-
-	msgBuf.WriteString(r.Message)
-
-	var attrBuf bytes.Buffer
-	for _, a := range h.preAttrs {
-		appendAttr(&attrBuf, a)
+	if h.lw == nil {
+		return nil
 	}
+	fields := make([]logwriter.Field, 0, len(h.attrs)+r.NumAttrs()+1)
+	fields = append(fields, h.attrs...)
 	r.Attrs(func(a slog.Attr) bool {
-		// WithGroup 必须给后续的记录属性也加前缀（slog 的约定）：
-		// logger.WithGroup("g").Info("m", "k", "v") 的 k 要写成 g.k，
-		// 否则分组只对 With(...) 生效，日志字段名会自相矛盾。
-		if h.group != "" {
-			a.Key = h.group + "." + a.Key
-		}
-		appendAttr(&attrBuf, a)
+		fields = flattenAttr(fields, h.group, a)
 		return true
 	})
-	attrBytes := attrBuf.Bytes()
-
-	for _, out := range h.outputs {
-		if h.fileOnly && out.console {
-			continue
-		}
-
-		var buf bytes.Buffer
-
-		if out.color {
-			buf.WriteString(colorGray)
-			buf.WriteString(timestr)
-			buf.WriteString(colorReset)
-		} else {
-			buf.WriteString(timestr)
-		}
-		buf.WriteByte(' ')
-
-		if out.color {
-			buf.WriteString(levelColor(r.Level))
-			buf.WriteString(levelAbbrev(r.Level))
-			buf.WriteString(colorReset)
-		} else {
-			buf.WriteString(levelAbbrev(r.Level))
-		}
-
-		buf.WriteByte(' ')
-		buf.Write(msgBuf.Bytes())
-		if len(attrBytes) > 0 {
-			buf.WriteByte(' ')
-			buf.Write(attrBytes[1:])
-		}
-		buf.WriteByte('\n')
-
-		h.mu.Lock()
-		out.w.Write(buf.Bytes())
-		h.mu.Unlock()
+	if h.fileOnly {
+		fields = append(fields, logwriter.FileOnly())
 	}
-	return nil
+	return h.lw.Log(toLogwriterLevel(r.Level), r.Message, fields...)
 }
 
-func appendAttr(buf *bytes.Buffer, a slog.Attr) {
+// flattenAttr 把一个 slog 属性拍平成 logwriter 字段。prefix 是累积分组前缀；
+// slog.KindGroup（logger.With("g", slog.Group(...)) 风格）递归展开成
+// "g.k=v"。空属性按 slog 约定跳过。
+func flattenAttr(fields []logwriter.Field, prefix string, a slog.Attr) []logwriter.Field {
 	a.Value = a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
-		return
+		return fields
 	}
 	key := a.Key
-
-	if key == "duration_ms" && a.Value.Kind() == slog.KindInt64 {
-		ms := a.Value.Int64()
-		if ms >= 1000 {
-			fmt.Fprintf(buf, " dur=%.3fs", float64(ms)/1000.0)
-		} else {
-			fmt.Fprintf(buf, " dur=%dms", ms)
-		}
-		return
+	if prefix != "" {
+		key = prefix + "." + key
 	}
-
-	buf.WriteByte(' ')
-	buf.WriteString(key)
-	buf.WriteByte('=')
-
-	switch a.Value.Kind() {
-	case slog.KindString:
-		s := a.Value.String()
-		if needQuote(s) {
-			fmt.Fprintf(buf, "%q", s)
-		} else {
-			buf.WriteString(s)
-		}
-	case slog.KindInt64:
-		fmt.Fprintf(buf, "%d", a.Value.Int64())
-	case slog.KindUint64:
-		fmt.Fprintf(buf, "%d", a.Value.Uint64())
-	case slog.KindFloat64:
-		fmt.Fprintf(buf, "%g", a.Value.Float64())
-	case slog.KindBool:
-		fmt.Fprintf(buf, "%v", a.Value.Bool())
-	case slog.KindTime:
-		buf.WriteString(a.Value.Time().Format("2006-01-02 15:04:05"))
-	case slog.KindDuration:
-		buf.WriteString(a.Value.Duration().String())
-	case slog.KindGroup:
+	if a.Value.Kind() == slog.KindGroup {
 		for _, ga := range a.Value.Group() {
-			sub := slog.Attr{Key: key + "." + ga.Key, Value: ga.Value}
-			appendAttr(buf, sub)
+			fields = flattenAttr(fields, key, ga)
 		}
-	default:
-		buf.WriteString(a.Value.String())
+		return fields
 	}
+	return append(fields, logwriter.Field{Key: key, Value: a.Value.Any()})
 }
 
-func needQuote(s string) bool {
-	for _, c := range s {
-		if c <= ' ' || c == '=' || c == '"' || c == '\\' || c >= 127 {
-			return true
-		}
+// toLogwriterLevel 把 slog 级别映射到 logwriter 的四档。非标准档位
+// （如 Warn+1）按区间归入下一档，与旧 handler 的级别缩写渲染一致。
+func toLogwriterLevel(l slog.Level) logwriter.Level {
+	switch {
+	case l >= slog.LevelError:
+		return logwriter.ErrorLevel
+	case l >= slog.LevelWarn:
+		return logwriter.WarnLevel
+	case l >= slog.LevelInfo:
+		return logwriter.InfoLevel
+	default:
+		return logwriter.DebugLevel
 	}
-	return false
 }
 
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	newAttrs := make([]slog.Attr, 0, len(h.preAttrs)+len(attrs))
-	newAttrs = append(newAttrs, h.preAttrs...)
+	n := make([]logwriter.Field, len(h.attrs), len(h.attrs)+len(attrs))
+	copy(n, h.attrs)
 	for _, a := range attrs {
-		if h.group != "" {
-			a.Key = h.group + "." + a.Key
-		}
-		newAttrs = append(newAttrs, a)
+		n = flattenAttr(n, h.group, a)
 	}
-	return &handler{
-		level:    h.level,
-		outputs:  h.outputs,
-		preAttrs: newAttrs,
-		fileOnly: h.fileOnly,
-	}
+	return &handler{lw: h.lw, level: h.level, attrs: n, group: h.group, fileOnly: h.fileOnly}
 }
 
 func (h *handler) WithGroup(name string) slog.Handler {
-	return &handler{
-		level:    h.level,
-		outputs:  h.outputs,
-		preAttrs: h.preAttrs,
-		group:    name,
-		fileOnly: h.fileOnly,
+	if name == "" {
+		return h
 	}
+	g := name
+	if h.group != "" {
+		g = h.group + "." + name
+	}
+	return &handler{lw: h.lw, level: h.level, attrs: h.attrs, group: g, fileOnly: h.fileOnly}
 }

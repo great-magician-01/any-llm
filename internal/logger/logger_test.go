@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,7 +10,7 @@ import (
 )
 
 func slogNewDiscard() *slog.Logger {
-	return slog.New(newHandler(LevelInfo, []output{{w: io.Discard, color: false}}, nil, ""))
+	return slog.New(newHandler(nil, LevelInfo, nil, "", false))
 }
 
 func TestParseLevel(t *testing.T) {
@@ -56,6 +55,7 @@ func TestInitWritesToConsoleAndFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Close 之后 LogFilePath 仍应返回最近一次的路径。
 	actualPath := LogFilePath()
 	if actualPath == "" {
 		t.Fatal("LogFilePath returned empty")
@@ -86,70 +86,49 @@ func TestInitWritesToConsoleAndFile(t *testing.T) {
 	}
 }
 
-func TestDailyFileWriterRotatesAcrossDays(t *testing.T) {
-	dir := t.TempDir()
-	w, err := newDailyFileWriter(dir, "app.log")
+func TestInitRejectsBadFilePath(t *testing.T) {
+	// Base(...) 解析成 ".." 的病态配置应报错而不是半初始化
+	// （logwriter 拒绝 "."/".."/含分隔符的文件名前缀）。
+	if err := Init(Options{Level: LevelInfo, FilePath: "logs/.."}); err == nil {
+		t.Fatal("expected error for '..' file name")
+	}
+	// 失败的 Init 必须保留上一个（可能仍在用的）配置——这由
+	// TestInitFailureKeepsPreviousLogger 在受控状态下验证。
+	_ = Close()
+	SetDefault(slogNewDiscard())
+}
+
+func TestInitFailureKeepsPreviousLogger(t *testing.T) {
+	good := filepath.Join(t.TempDir(), "app.log")
+	if err := Init(Options{Level: LevelInfo, FilePath: good}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = Close()
+		SetDefault(slogNewDiscard())
+	}()
+
+	// 文件名前缀 ".." 会被 logwriter 拒绝；失败后旧实例必须原样可用
+	// （Join 会清洗路径，这里必须字符串拼接）。
+	if err := Init(Options{Level: LevelInfo, FilePath: good + "/.."}); err == nil {
+		t.Fatal("expected error for '..' prefix")
+	}
+	if LogFilePath() == "" {
+		t.Fatal("previous file config lost after failed Init")
+	}
+	Info("still-works")
+	if err := Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(LogFilePath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = w.Close() }()
-
-	// Pin the clock so the test is independent of when it runs.
-	day1 := time.Now()
-	w.mu.Lock()
-	w.now = func() time.Time { return day1 }
-	w.mu.Unlock()
-
-	if _, err := w.Write([]byte("day1\n")); err != nil {
-		t.Fatal(err)
-	}
-	firstPath := w.Path()
-	wantFirst := filepath.Join(dir, day1.Format(dateDirFormat), "app.log")
-	if firstPath != wantFirst {
-		t.Fatalf("Path=%q want %q", firstPath, wantFirst)
-	}
-
-	// Cross into the next local day: the next Write must rotate.
-	day2 := day1.Add(24 * time.Hour)
-	w.mu.Lock()
-	w.now = func() time.Time { return day2 }
-	w.mu.Unlock()
-
-	if _, err := w.Write([]byte("day2\n")); err != nil {
-		t.Fatal(err)
-	}
-	secondPath := w.Path()
-	wantSecond := filepath.Join(dir, day2.Format(dateDirFormat), "app.log")
-	if secondPath != wantSecond {
-		t.Fatalf("Path=%q want %q", secondPath, wantSecond)
-	}
-	if secondPath == firstPath {
-		t.Fatal("no rotation across days")
-	}
-
-	data1, err := os.ReadFile(firstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data1) != "day1\n" {
-		t.Fatalf("old file content=%q", data1)
-	}
-	data2, err := os.ReadFile(secondPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data2) != "day2\n" {
-		t.Fatalf("new file content=%q", data2)
-	}
-
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write([]byte("x")); err != os.ErrClosed {
-		t.Fatalf("write after close err=%v", err)
-	}
-	// Path still reports the last file after Close.
-	if p := w.Path(); p != secondPath {
-		t.Fatalf("Path after close=%q want %q", p, secondPath)
+	if !strings.Contains(string(data), "still-works") {
+		t.Fatalf("old logger not usable after failed Init: %s", data)
 	}
 }
+
+// 跨天轮转的目录布局与切换时机由 logwriter 自身的测试套件覆盖
+// （logwriter 仓库 internal/writer/file_test.go）；这里只锁定本包负责的
+// 路径拼接规则（见 TestInitWritesToConsoleAndFile）。
