@@ -8,17 +8,24 @@ import (
 // Request is the normalized, format-agnostic representation of an inbound
 // chat completion request.
 type Request struct {
-	Model       string
-	System      []TextBlock
-	Messages    []Message
-	Tools       []Tool
-	ToolChoice  *ToolChoice
-	MaxTokens   int
-	Temperature *float64
-	TopP        *float64
-	Stream      bool
-	Stop        []string
-	Extra       map[string]any
+	Model      string
+	System     []TextBlock
+	Messages   []Message
+	Tools      []Tool
+	ToolChoice *ToolChoice
+	MaxTokens  int
+	// MaxTokensParam records which OpenAI parameter MaxTokens was decoded
+	// from ("max_tokens" or "max_completion_tokens"); "" means the request
+	// did not come from the OpenAI decoder. The OpenAI encoder re-emits the
+	// same parameter (new OpenAI models reject max_tokens, so blindly
+	// renaming would break openai→openai round trips); cross-format encoders
+	// only use the MaxTokens value and ignore this field.
+	MaxTokensParam string
+	Temperature    *float64
+	TopP           *float64
+	Stream         bool
+	Stop           []string
+	Extra          map[string]any
 }
 
 type TextBlock struct {

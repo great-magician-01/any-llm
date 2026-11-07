@@ -119,6 +119,38 @@ func TestDecodeRequest_ExtraFields(t *testing.T) {
 	}
 }
 
+// max_completion_tokens（o 系/gpt-5 时代的具名参数）必须解进 IR.MaxTokens，
+// 不能经 Extra 原样漏给跨格式上游——anthropic 端会因此多出一个非法字段，
+// 且 IR.MaxTokens 缺位会让 anthropic 编码器兜底出错误的 4096。
+func TestDecodeRequest_MaxCompletionTokens(t *testing.T) {
+	req, err := DecodeRequest([]byte(`{"model":"gpt-5","messages":[],"max_completion_tokens":131072}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.MaxTokens != 131072 || req.MaxTokensParam != "max_completion_tokens" {
+		t.Fatalf("max=%d param=%q", req.MaxTokens, req.MaxTokensParam)
+	}
+	if _, ok := req.Extra["max_completion_tokens"]; ok {
+		t.Fatalf("max_completion_tokens leaked into Extra: %+v", req.Extra)
+	}
+	// 与旧参数同现时新语义优先
+	both, err := DecodeRequest([]byte(`{"model":"gpt-5","messages":[],"max_tokens":1024,"max_completion_tokens":131072}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if both.MaxTokens != 131072 || both.MaxTokensParam != "max_completion_tokens" {
+		t.Fatalf("both: max=%d param=%q", both.MaxTokens, both.MaxTokensParam)
+	}
+	// 旧参数照旧
+	legacy, err := DecodeRequest([]byte(`{"model":"gpt-4o","messages":[],"max_tokens":1024}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.MaxTokens != 1024 || legacy.MaxTokensParam != "max_tokens" {
+		t.Fatalf("legacy: max=%d param=%q", legacy.MaxTokens, legacy.MaxTokensParam)
+	}
+}
+
 func TestDecodeRequest_StreamOptionsFlowsToExtra(t *testing.T) {
 	src := []byte(`{"model":"gpt-4o","messages":[],"stream":true,"stream_options":{"include_usage":true}}`)
 	req, err := DecodeRequest(src)

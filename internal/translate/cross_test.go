@@ -44,6 +44,30 @@ func TestCrossRequest_OpenAIToAnthropic(t *testing.T) {
 	assertRequestsMatch(t, ir1, ir2)
 }
 
+// OpenAI 客户端的 max_completion_tokens 必须以 max_tokens 的形态到达
+// anthropic 上游，且不得经 Extra 把 OpenAI 专属参数名原样带过去。
+func TestCrossRequest_MaxCompletionTokensToAnthropic(t *testing.T) {
+	src := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":131072}`)
+	ir, err := openai.DecodeRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	antBytes, err := anthropic.EncodeRequest(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(antBytes, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["max_tokens"] != float64(131072) {
+		t.Fatalf("max_tokens=%v", got["max_tokens"])
+	}
+	if _, ok := got["max_completion_tokens"]; ok {
+		t.Fatalf("max_completion_tokens leaked to anthropic body: %+v", got)
+	}
+}
+
 func TestCrossRequest_AnthropicToOpenAI(t *testing.T) {
 	src := []byte(`{
 		"model":"claude-3-5","system":"be good",

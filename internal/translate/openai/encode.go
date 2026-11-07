@@ -76,7 +76,14 @@ func EncodeRequest(req *translate.Request) ([]byte, error) {
 		"messages": msgs,
 	}
 	if req.MaxTokens > 0 {
-		out["max_tokens"] = req.MaxTokens
+		// 参数名跟随解码来源：真 OpenAI 的新模型拒绝 max_tokens，客户端发来
+		// 的 max_completion_tokens 原名回传；其它来源（anthropic/responses
+		// 解码、手构 IR）维持传统的 max_tokens。
+		if req.MaxTokensParam == "max_completion_tokens" {
+			out["max_completion_tokens"] = req.MaxTokens
+		} else {
+			out["max_tokens"] = req.MaxTokens
+		}
 	}
 	if req.Temperature != nil {
 		out["temperature"] = *req.Temperature
