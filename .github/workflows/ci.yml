@@ -45,9 +45,6 @@ jobs:
       DB_TEST_MYSQL_DSN: >-
         root:anyllm@tcp(127.0.0.1:3306)/any_llm_test?parseTime=true&loc=Local&charset=utf8mb4&collation=utf8mb4_bin&maxAllowedPacket=0
       DB_TEST_PG_DSN: postgres://postgres:anyllm@127.0.0.1:5432/any_llm_test?sslmode=disable
-      # 自家模块刚发布时 sumdb（sum.golang.org）尚未收录，校验会 404；
-      # 等 proxy/sumdb 收录后此行可删。
-      GONOSUMDB: github.com/great-magician-01/*
     steps:
       - uses: actions/checkout@v4
 
