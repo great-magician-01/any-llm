@@ -17,10 +17,19 @@ func DecodeRequest(body []byte) (*translate.Request, error) {
 
 	req := &translate.Request{
 		Model:       known.Model,
-		MaxTokens:   known.MaxTokens,
 		Temperature: known.Temperature,
 		TopP:        known.TopP,
 		Stream:      known.Stream,
+	}
+	// max_completion_tokens 是 OpenAI 的新参数（o 系/gpt-5 已废弃 max_tokens，
+	// pi 等客户端只发新参数），是具名字段而非透传杂项：解进 IR 才不会经
+	// Extra 原样漏给 anthropic 等其它格式的上游。两者同现时新语义优先。
+	if known.MaxCompletionTokens > 0 {
+		req.MaxTokens = known.MaxCompletionTokens
+		req.MaxTokensParam = "max_completion_tokens"
+	} else if known.MaxTokens > 0 {
+		req.MaxTokens = known.MaxTokens
+		req.MaxTokensParam = "max_tokens"
 	}
 	for _, m := range known.Messages {
 		switch m.Role {
@@ -158,8 +167,8 @@ func decodeStop(raw json.RawMessage) []string {
 
 var knownRequestKeys = map[string]bool{
 	"model": true, "messages": true, "tools": true, "tool_choice": true,
-	"max_tokens": true, "temperature": true, "top_p": true, "stream": true,
-	"stop": true,
+	"max_tokens": true, "max_completion_tokens": true, "temperature": true,
+	"top_p": true, "stream": true, "stop": true,
 }
 
 func DecodeResponse(body []byte) (*translate.Response, error) {

@@ -98,6 +98,55 @@ func TestEncodeRequest_ToolUseAndResult(t *testing.T) {
 	}
 }
 
+// 参数名跟随解码来源：客户端发来的 max_completion_tokens 原名回传（真 OpenAI
+// 的新模型拒绝 max_tokens）；其它来源维持传统的 max_tokens。
+func TestEncodeRequest_MaxTokensParamFollowsSource(t *testing.T) {
+	enc := func(param string) map[string]any {
+		req := &translate.Request{
+			Model:          "gpt-5",
+			Messages:       []translate.Message{},
+			MaxTokens:      8192,
+			MaxTokensParam: param,
+		}
+		out, err := EncodeRequest(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		_ = json.Unmarshal(out, &got)
+		return got
+	}
+	if got := enc("max_completion_tokens"); got["max_completion_tokens"] != float64(8192) {
+		t.Fatalf("completion param: %+v", got)
+	}
+	if got := enc(""); got["max_tokens"] != float64(8192) {
+		t.Fatalf("default param: %+v", got)
+	}
+	if got := enc("max_tokens"); got["max_tokens"] != float64(8192) {
+		t.Fatalf("legacy param: %+v", got)
+	}
+}
+
+// decode → encode 回环保持参数名不变，且不再经 Extra 重复出现。
+func TestEncodeRequest_MaxCompletionTokensRoundTrip(t *testing.T) {
+	req, err := DecodeRequest([]byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":4096}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := EncodeRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["max_completion_tokens"] != float64(4096) {
+		t.Fatalf("round trip lost param: %+v", got)
+	}
+	if _, ok := got["max_tokens"]; ok {
+		t.Fatalf("unexpected max_tokens: %+v", got)
+	}
+}
+
 func TestEncodeRequest_ExtraMerged(t *testing.T) {
 	req := &translate.Request{
 		Model:    "gpt-4o",
