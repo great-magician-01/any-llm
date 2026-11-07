@@ -102,6 +102,7 @@ type Options struct {
 
 // Init 装配 logwriter 实例并重建两个 slog 门面。FilePath 非空时启用文件
 // 输出，布局与旧实现一致：<Dir(FilePath)>/<2006-01-02>/<Base(FilePath)>；
+// logwriter 会给文件名恒定追加 .log，故无 .log 后缀的基础名会自动补上。
 // 空串表示关闭文件输出。重复 Init 先建新实例、成功后再排干并关闭旧的，
 // 失败则保留旧实例不受影响。
 func Init(opts Options) error {
@@ -118,10 +119,17 @@ func Init(opts Options) error {
 		DirectoryByDay:   true,
 	}
 	if opts.FilePath != "" {
+		// logwriter 恒定给文件名追加 .log，这里剥掉配置里已有的后缀；剥完
+		// 为空/`.`/`..` 的病态基础名（".log"、"..log"）显式拒绝——logwriter
+		// 会把空前缀静默替换成 "app"、把 "."/".." 直接报错，两者都会让实际
+		// 写入的文件偏离配置（空前缀还会让 LogFilePath 报出幻影路径）。
+		prefix := strings.TrimSuffix(filepath.Base(opts.FilePath), ".log")
+		if prefix == "" || prefix == "." || prefix == ".." {
+			return fmt.Errorf("invalid log file name in %q: base name after trimming \".log\" must not be empty, \".\" or \"..\"", opts.FilePath)
+		}
 		cfg.File = true
 		cfg.Directory = filepath.Dir(opts.FilePath)
-		// logwriter 总是给文件名追加 .log，这里剥掉配置里已有的后缀。
-		cfg.FilePrefix = strings.TrimSuffix(filepath.Base(opts.FilePath), ".log")
+		cfg.FilePrefix = prefix
 	}
 
 	n, err := logwriter.New(cfg)
@@ -144,7 +152,9 @@ func Init(opts Options) error {
 }
 
 // LogFilePath 返回当前日志文件路径（Close 之后仍返回最近一次的路径）；
-// 未配置文件输出时为空串。
+// 未配置文件输出时为空串。日期取当前时刻的预测值：logwriter 按条目时间
+// 落盘并轮转，午夜前后或轮转失败期间报告的路径可能与实际文件偏差一天；
+// Init 的预检保证启动时刻该文件存在。
 func LogFilePath() string {
 	mu.Lock()
 	defer mu.Unlock()
