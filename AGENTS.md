@@ -67,7 +67,7 @@ All settings load from environment variables. A `.env` file in the working direc
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | persistence path (0600) for the auto-generated secret |
 | `ANY_LLM_SESSION_TTL` | `24h` | admin session expiry; Go duration or plain hours; `0` = never expire; sliding — cookie re-issued with a fresh full TTL once less than half remains |
 | `ANY_LLM_BALANCE_INTERVAL` | `10m` | balance/quota snapshot polling; Go duration or plain hours; `0` = disable all automatic fetching incl. the boot snapshot (manual refresh still works) |
-| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging |
+| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | empty string disables file logging; the file is always written as `<base>.log` (a missing suffix is added; `.log`/`..log` base names are rejected at init) |
 | `ANY_LLM_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
 `.env` is gitignored. See `.env.example` for the template.

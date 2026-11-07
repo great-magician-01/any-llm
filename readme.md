@@ -88,7 +88,7 @@ docker compose up -d
 | `ANY_LLM_SESSION_SECRET_FILE` | `./.session-secret` | 自动生成的会话密钥的保存路径（仅 `ANY_LLM_SESSION_SECRET` 为空时生效） |
 | `ANY_LLM_SESSION_TTL` | `24h` | 管理员会话有效期：Go duration（`24h`、`168h`）或纯小时数（`24`）；`0` = 永不过期。滑动续期：剩余不足一半时自动重新签发，活跃期间不掉线 |
 | `ANY_LLM_BALANCE_INTERVAL` | `10m` | 厂商余额/额度快照轮询间隔：Go duration（`10m`、`30m`）或纯小时数；`0` = 关闭自动抓取（含启动时），管理页手动刷新仍可用 |
-| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}`；留空仅输出到 stdout |
+| `ANY_LLM_LOG_FILE` | `./logs/any-llm.log` | 日志基础路径，实际写入 `{dir}/{日期}/{filename}.log`（无 `.log` 后缀会自动补上；`.log`/`..log` 这类基础名启动即拒绝）；留空仅输出到 stdout |
 | `ANY_LLM_LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` |
 | `DB_TYPE` | `sqlite` | 数据库类型：`sqlite` / `postgres` / `mysql`（不区分大小写） |
 | `DB_HOST` | `localhost` | PostgreSQL / MySQL 主机（`DB_TYPE=postgres` 或 `mysql` 时生效） |

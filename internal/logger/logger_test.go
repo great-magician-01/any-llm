@@ -129,8 +129,7 @@ func TestInitFailureKeepsPreviousLogger(t *testing.T) {
 	}
 }
 
-// 跨天轮转的目录布局与切换时机由 logwriter 自身的测试套件覆盖
-// （logwriter 仓库 internal/writer/file_test.go）；这里只锁定本包负责的
+// 跨天轮转的目录布局与切换时机由 logwriter 自身的测试套件覆盖（logwriter 仓库 internal/writer/file_test.go）；这里只锁定本包负责的
 // 路径拼接规则（见 TestInitWritesToConsoleAndFile）。
 
 // Init 必须对坏日志路径快速失败：logwriter 懒打开文件，没有预检时不可写的
@@ -165,5 +164,30 @@ func TestInitPreflightCreatesLogFile(t *testing.T) {
 	}()
 	if _, err := os.Stat(LogFilePath()); err != nil {
 		t.Fatalf("log file should exist right after Init: %v", err)
+	}
+}
+
+// 病态基础名（".log"/"..log" 剥后缀后为空/`.`/`..`）启动即拒绝；合法名字
+// （含无后缀）写入的文件与 LogFilePath 报告一致——logwriter 恒补 .log。
+func TestInitLogFileNameSemantics(t *testing.T) {
+	dir := t.TempDir()
+	for _, base := range []string{".log", "..log"} {
+		if err := Init(Options{Level: LevelInfo, FilePath: filepath.Join(dir, base)}); err == nil {
+			_ = Close()
+			t.Fatalf("Init(%q) should be rejected", base)
+		}
+	}
+
+	// 无后缀配置：文件名补 .log，LogFilePath 与之一致。
+	if err := Init(Options{Level: LevelInfo, FilePath: filepath.Join(dir, "any-llm")}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = Close()
+		SetDefault(slogNewDiscard())
+	}()
+	want := filepath.Join(dir, time.Now().Format("2006-01-02"), "any-llm.log")
+	if got := LogFilePath(); got != want {
+		t.Fatalf("LogFilePath()=%q want %q", got, want)
 	}
 }
