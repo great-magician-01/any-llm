@@ -80,7 +80,8 @@ func TestInit_LevelFiltering(t *testing.T) {
 
 // TestInit_DualWriteAndNoANSIInFile 断言同一记录同时进 stdout 与文件，且
 // **文件里不能有 ANSI 颜色码**（生产日志要被 grep/采集，颜色码是污染），
-// 控制台则应带颜色。
+// 控制台则应带颜色。Close 必须在 captureStdout 的 fn 里完成：队列是异步
+// 的，fn 返回后管道即关闭，排干必须发生在管道还开着的时候。
 func TestInit_DualWriteAndNoANSIInFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.log")
 	stdout := captureStdout(t, func() {
@@ -88,10 +89,10 @@ func TestInit_DualWriteAndNoANSIInFile(t *testing.T) {
 			t.Fatalf("init: %v", err)
 		}
 		Info("both-sinks", "k", "v")
+		if err := Close(); err != nil {
+			t.Fatal(err)
+		}
 	})
-	if err := Close(); err != nil {
-		t.Fatal(err)
-	}
 	defer SetDefault(slogNewDiscard())
 
 	file := readFile(t, LogFilePath())
@@ -110,7 +111,8 @@ func TestInit_DualWriteAndNoANSIInFile(t *testing.T) {
 }
 
 // TestFileOnly_SkipsConsole 断言 FileOnly 只写文件：流式原始 SSE 这类噪声
-// 日志不应该淹没控制台，但必须留在文件里可查。
+// 日志不应该淹没控制台，但必须留在文件里可查。Close 放进 fn 的原因同
+// TestInit_DualWriteAndNoANSIInFile。
 func TestFileOnly_SkipsConsole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.log")
 	stdout := captureStdout(t, func() {
@@ -119,10 +121,10 @@ func TestFileOnly_SkipsConsole(t *testing.T) {
 		}
 		FileOnly().Info("file-only-msg")
 		Info("console-msg")
+		if err := Close(); err != nil {
+			t.Fatal(err)
+		}
 	})
-	if err := Close(); err != nil {
-		t.Fatal(err)
-	}
 	defer SetDefault(slogNewDiscard())
 
 	if strings.Contains(stdout, "file-only-msg") {
@@ -148,6 +150,9 @@ func TestFileOnly_NoFileConfigured(t *testing.T) {
 			t.Fatalf("init: %v", err)
 		}
 		FileOnly().Info("dropped-msg")
+		if err := Close(); err != nil {
+			t.Fatal(err)
+		}
 	})
 	defer SetDefault(slogNewDiscard())
 

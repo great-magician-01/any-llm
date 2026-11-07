@@ -1,3 +1,7 @@
+// Package logger 提供 any-llm 的日志门面：对外保持 slog 语义
+// （Default()/FileOnly() 返回 *slog.Logger），底层由 logwriter 承担队列化
+// 写入与按天分目录的文件轮转。输出格式由 entryFormatter 复刻，与旧实现
+// 逐字节一致。
 package logger
 
 import (
@@ -7,7 +11,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/great-magician-01/logwriter"
 )
 
 type Level = slog.Level
@@ -22,16 +30,15 @@ const (
 var (
 	mu             sync.Mutex
 	logger         *slog.Logger
-	currentHandler *handler
 	fileOnlyLogger *slog.Logger
-	closer         io.Closer
-	fileWriter     *dailyFileWriter
+	lw             *logwriter.Logger // nil 表示未 Init 或已 Close
+	fileDir        string            // 文件输出的目录与文件名前缀；保留到下一次
+	filePrefix     string            // Init（含关闭后），供 LogFilePath 使用
 )
 
 func init() {
-	currentHandler = newHandler(LevelInfo, []output{{w: io.Discard, color: false}}, nil, "")
-	logger = slog.New(currentHandler)
-	fileOnlyLogger = slog.New(newFileOnlyHandler(currentHandler.level, currentHandler.outputs, nil, ""))
+	logger = slog.New(newHandler(nil, LevelInfo, nil, "", false))
+	fileOnlyLogger = slog.New(newHandler(nil, LevelInfo, nil, "", true))
 }
 
 func Default() *slog.Logger {
@@ -45,8 +52,7 @@ func SetDefault(l *slog.Logger) {
 	defer mu.Unlock()
 	logger = l
 	if h, ok := l.Handler().(*handler); ok {
-		currentHandler = h
-		fileOnlyLogger = slog.New(newFileOnlyHandler(h.level, h.outputs, nil, ""))
+		fileOnlyLogger = slog.New(h.withFileOnly())
 	}
 }
 
@@ -60,12 +66,13 @@ func FileOnly() *slog.Logger {
 	return fileOnlyLogger
 }
 
+// Close 排干 logwriter 队列、落盘并关闭文件后返回，之后记录被丢弃。
 func Close() error {
 	mu.Lock()
 	defer mu.Unlock()
-	if closer != nil {
-		err := closer.Close()
-		closer = nil
+	if lw != nil {
+		err := lw.Close()
+		lw = nil
 		return err
 	}
 	return nil
@@ -93,48 +100,76 @@ type Options struct {
 	FilePath string
 }
 
+// Init 装配 logwriter 实例并重建两个 slog 门面。FilePath 非空时启用文件
+// 输出，布局与旧实现一致：<Dir(FilePath)>/<2006-01-02>/<Base(FilePath)>；
+// 空串表示关闭文件输出。重复 Init 先建新实例、成功后再排干并关闭旧的，
+// 失败则保留旧实例不受影响。
 func Init(opts Options) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	level := opts.Level
-	outputs := []output{{w: os.Stdout, color: true, console: true}}
-
-	// 重新 Init 时先摘掉上一次的文件输出：否则 FilePath 为空时 fileWriter 仍
-	// 指着旧文件（LogFilePath 报上一次的路径），旧句柄也不会被关闭。
-	if closer != nil {
-		_ = closer.Close()
-		closer = nil
+	cfg := logwriter.Config{
+		Level:            toLogwriterLevel(opts.Level),
+		Console:          true,
+		ConsoleWriter:    os.Stdout, // 调用时读取，测试可替换
+		ConsoleFormatter: entryFormatter(true),
+		FileFormatter:    entryFormatter(false),
+		OnError:          reportBackgroundError,
+		DirectoryByDay:   true,
 	}
-	fileWriter = nil
-
 	if opts.FilePath != "" {
-		w, err := newDailyFileWriter(filepath.Dir(opts.FilePath), filepath.Base(opts.FilePath))
-		if err != nil {
-			return err
-		}
-		outputs = append(outputs, output{w: w, color: false, console: false})
-		closer = w
-		fileWriter = w
+		cfg.File = true
+		cfg.Directory = filepath.Dir(opts.FilePath)
+		// logwriter 总是给文件名追加 .log，这里剥掉配置里已有的后缀。
+		cfg.FilePrefix = strings.TrimSuffix(filepath.Base(opts.FilePath), ".log")
 	}
 
-	h := newHandler(level, outputs, nil, "")
-	currentHandler = h
-	logger = slog.New(h)
-	fileOnlyLogger = slog.New(newFileOnlyHandler(h.level, h.outputs, nil, ""))
+	n, err := logwriter.New(cfg)
+	if err != nil {
+		return err
+	}
+	if lw != nil {
+		_ = lw.Close()
+	}
+	lw = n
+	fileDir = cfg.Directory
+	filePrefix = cfg.FilePrefix
+
+	logger = slog.New(newHandler(n, opts.Level, nil, "", false))
+	fileOnlyLogger = slog.New(newHandler(n, opts.Level, nil, "", true))
 	slog.SetDefault(logger)
 	log.SetFlags(0)
 	log.SetOutput(io.Discard)
 	return nil
 }
 
+// LogFilePath 返回当前日志文件路径（Close 之后仍返回最近一次的路径）；
+// 未配置文件输出时为空串。
 func LogFilePath() string {
 	mu.Lock()
 	defer mu.Unlock()
-	if fileWriter == nil {
+	if fileDir == "" {
 		return ""
 	}
-	return fileWriter.Path()
+	return filepath.Join(fileDir, time.Now().Format("2006-01-02"), filePrefix+".log")
+}
+
+// reportBackgroundError 把 logwriter 的后台错误（写文件失败、轮转失败、
+// Formatter panic 等）限频转发到 stderr。必须用独立的锁：Close 持有包级
+// mu 等待队列排干，期间消费者可能调到这里，拿 mu 会死锁。
+var errReport struct {
+	sync.Mutex
+	last time.Time
+}
+
+func reportBackgroundError(err error) {
+	errReport.Lock()
+	defer errReport.Unlock()
+	if time.Since(errReport.last) < 10*time.Second {
+		return
+	}
+	errReport.last = time.Now()
+	fmt.Fprintf(os.Stderr, "logger: %v\n", err)
 }
 
 func Debug(msg string, args ...any) { Default().Debug(msg, args...) }
