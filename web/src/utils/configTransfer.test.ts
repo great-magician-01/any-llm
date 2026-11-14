@@ -27,7 +27,9 @@ describe('parseConfigFile', () => {
     expect(() => parseConfigFile('{"upstreams":[]}')).toThrow('aliases')
   })
 
-  it('拒绝超过当前版本的文件', () => {
+  it('接受 v2（多配置）文件，拒绝超过当前版本的文件', () => {
+    expect(() => parseConfigFile('{"version":2,"upstreams":[],"aliases":[]}')).not.toThrow()
+    expect(() => parseConfigFile('{"version":3,"upstreams":[],"aliases":[]}')).toThrow('版本')
     expect(() => parseConfigFile('{"version":99,"upstreams":[],"aliases":[]}')).toThrow('版本')
   })
 

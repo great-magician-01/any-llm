@@ -238,6 +238,10 @@ var schemaTables = []Table{
 			{Name: "created_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			{Name: "updated_at", Type: TypeTime, Default: "CURRENT_TIMESTAMP"},
 			{Name: "is_active", Type: TypeInt, Default: "1"},
+			// 当前生效的配置名（见 model_alias_bindings.profile）。一个别名可存多套
+			// 命名配置，网关只解析 active_profile 这一套；管理端手动一键切换。
+			// 老库由 LateAdd 补列，默认 'default'，与存量绑定的默认 profile 对齐。
+			{Name: "active_profile", Type: TypeText, Len: 64, Default: "'default'", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_model_aliases_name", Columns: []string{"name"}, Unique: true, Where: "is_active = 1"},
@@ -252,6 +256,9 @@ var schemaTables = []Table{
 			{Name: "model_name", Type: TypeText, Len: 255},
 			{Name: "priority", Type: TypeInt, Default: "0"},
 			{Name: "is_active", Type: TypeInt, Default: "1"},
+			// 该绑定所属的配置名。同一别名下按 profile 分组，每组是一条独立的
+			// 故障转移链；priority 仍是整个别名内的全局序号，组内相对顺序即尝试顺序。
+			{Name: "profile", Type: TypeText, Len: 64, Default: "'default'", LateAdd: true},
 		},
 		Idx: []Index{
 			{Name: "idx_alias_bindings_order", Columns: []string{"alias_id", "priority"}, Unique: true, Where: "is_active = 1"},

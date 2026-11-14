@@ -1,6 +1,8 @@
 import type { ConfigFile, ImportResult } from '../api/config'
 
-const CONFIG_VERSION = 1
+// 与服务端 internal/adminapi/config.go 的 configVersion 同步：v2 起别名带
+// active_profile + per-binding profile；v1 文件仍按全 default 接受。
+const CONFIG_VERSION = 2
 
 /** 导出文件名：any-llm-config-YYYYMMDD-HHmmss.json（本地时间） */
 export function configFileName(now: Date): string {
@@ -34,7 +36,7 @@ export function parseConfigFile(text: string): ConfigFile {
 /** 导入确认弹窗里的摘要：文件内容 + 覆盖语义提醒。 */
 export function describeConfigFile(f: ConfigFile): string {
   return `该文件包含 ${f.upstreams.length} 个上游、${f.aliases.length} 个别名。` +
-    '导入后：同名配置将被覆盖，其余现有配置保持不变。' +
+    '导入后：同名配置将被覆盖（别名会整体替换，包括多套配置与当前生效配置），其余现有配置保持不变。' +
     '注意：地址、API Key、格式等基础字段以文件为准（缺省会清空原值），启用状态、限额、有效期、备注、标记、模型列表与附加端点缺省则保持现状。'
 }
 

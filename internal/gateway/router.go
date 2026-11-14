@@ -127,6 +127,11 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 		for _, a := range aliases {
 			hasUsable := false
 			for _, b := range a.Bindings {
+				// 只算当前生效配置（active_profile）的绑定：其它配置的绑定
+				// 此刻不会被网关解析，不能据此把别名列为可用。
+				if b.Profile != a.ActiveProfile {
+					continue
+				}
 				// 绑定指向的上游仍活跃、启用且未过期
 				if b.UpstreamName != "" && b.UpstreamEnabled && !expiredByID[b.UpstreamID] {
 					hasUsable = true

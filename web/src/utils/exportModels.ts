@@ -4,10 +4,10 @@
  * 清单口径与网关 /v1/models 完全一致：
  *   - 直连名 upstream/model：只收启用且未过期的上游——禁用/过期上游的模型
  *     导出来了这个 key 也用不了（与 /v1/models 的隐藏口径一致）；
- *   - 别名：至少有一个可用绑定（上游存在、启用、未过期）才收录——网关对
- *     「全绑定不可用」的别名同样不列出。
- * 别名的长度取链上第一个可用绑定的模型配置（与网关的候选顺序一致）；绑定
- * 指向的模型行已不存在时回落网关默认值。
+ *   - 别名：只看**当前生效配置**（active_profile），至少有一个可用绑定
+ *     （上游存在、启用、未过期）才收录——网关对「全绑定不可用」的别名同样不列出。
+ * 别名的长度取当前配置链上第一个可用绑定的模型配置（与网关的候选顺序一致）；
+ * 绑定指向的模型行已不存在时回落网关默认值。
  */
 import {
   listUpstreams,
@@ -18,6 +18,7 @@ import {
   type UpstreamModel,
 } from '../api/upstreams'
 import { listAliases, type ModelAlias } from '../api/aliases'
+import { normalizeProfileName } from './aliasProfiles'
 import { isExpired } from './upstreamStatus'
 
 /** 一个待导出的模型：对外 id（与 /v1/models 列出的一致）+ 容量 */
@@ -51,11 +52,14 @@ export function expandExportModels(
     }
   }
   for (const a of aliases) {
+    const active = normalizeProfileName(a.active_profile ?? '')
     const live = a.bindings.find((b) => {
+      // 非当前生效配置的绑定此刻不会被网关解析，不能据此导出别名
+      if (normalizeProfileName(b.profile ?? '') !== active) return false
       const u = upsById.get(b.upstream_id)
       return u != null && u.enabled && !isExpired(u, now)
     })
-    if (!live) continue // 全绑定不可用：/v1/models 不列出，导出同样跳过
+    if (!live) continue // 当前配置全绑定不可用：/v1/models 不列出，导出同样跳过
     const cfg = modelsByUpstream.get(live.upstream_id)?.find((m) => m.model_name === live.model_name)
     out.set(a.name, {
       id: a.name,
