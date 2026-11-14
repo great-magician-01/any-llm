@@ -75,6 +75,85 @@ func TestAliasRouting(t *testing.T) {
 	}
 }
 
+// 多配置：网关只解析 active_profile 的绑定；一键切换后下一个请求立即走新配置
+// （缓存由 store 写路径逐出，无需重启/TTL）。
+func TestAliasActiveProfileRoutingAndSwitch(t *testing.T) {
+	peak := okUpstreamServer(t, "from-peak")
+	valley := okUpstreamServer(t, "from-valley")
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "peak", BaseURL: peak.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "valley", BaseURL: valley.URL, APIKey: "sk", Format: "openai"})
+	id, err := store.CreateAlias(d, &store.ModelAlias{Name: "fixed", ActiveProfile: "峰期", Bindings: []store.AliasBinding{
+		{UpstreamID: uid1, ModelName: "peak-model", Profile: "峰期"},
+		{UpstreamID: uid2, ModelName: "valley-model", Profile: "谷期"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-peak") {
+		t.Fatalf("peak: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	if err := store.SetAliasActiveProfile(d, id, "谷期"); err != nil {
+		t.Fatal(err)
+	}
+	w = aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-valley") {
+		t.Fatalf("valley: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// usage 记录的是实际被调用的上游模型
+	records, total, _ := store.UsageRecordsList(d, 1, 10, "")
+	if total != 2 {
+		t.Fatalf("usage records=%d want 2", total)
+	}
+	models := map[string]bool{}
+	for _, r := range records {
+		models[r.Model] = true
+	}
+	if !models["peak-model"] || !models["valley-model"] {
+		t.Fatalf("usage models=%+v", models)
+	}
+}
+
+// 当前生效配置的绑定全部不可用 → 404（不回落到另一套配置）；切到另一套后恢复。
+func TestAliasActiveProfileNoFallback(t *testing.T) {
+	peak := okUpstreamServer(t, "from-peak")
+	valley := okUpstreamServer(t, "from-valley")
+	g, k := setupAliasGateway(t)
+	d := g.db
+	uid1, _ := store.CreateUpstream(d, &store.Upstream{Name: "peak", BaseURL: peak.URL, APIKey: "sk", Format: "openai"})
+	uid2, _ := store.CreateUpstream(d, &store.Upstream{Name: "valley", BaseURL: valley.URL, APIKey: "sk", Format: "openai"})
+	id, err := store.CreateAlias(d, &store.ModelAlias{Name: "fixed", ActiveProfile: "峰期", Bindings: []store.AliasBinding{
+		{UpstreamID: uid1, ModelName: "peak-model", Profile: "峰期"},
+		{UpstreamID: uid2, ModelName: "valley-model", Profile: "谷期"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u1, _ := store.GetUpstreamByID(d, uid1)
+	u1.Enabled = false
+	if err := store.UpdateUpstream(d, u1); err != nil {
+		t.Fatal(err)
+	}
+
+	w := aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != 404 || strings.Contains(w.Body.String(), "from-valley") {
+		t.Fatalf("must not fall back to another profile: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	if err := store.SetAliasActiveProfile(d, id, "谷期"); err != nil {
+		t.Fatal(err)
+	}
+	w = aliasRequest(t, g, k.Key, `{"model":"fixed","messages":[{"role":"user","content":"hi"}]}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "from-valley") {
+		t.Fatalf("after switch: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 // 非流式故障转移：首选候选 500，自动切到第二候选成功；每次尝试各记一条 usage。
 func TestAliasFailoverNonStream(t *testing.T) {
 	bad := failUpstreamServer(t, 500)

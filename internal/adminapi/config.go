@@ -33,7 +33,10 @@ import (
 // ↔ id 升序的禁用行，不够的新建），保证导出→导入往返收敛。导入非单事务：
 // 中途 DB 失败时已提交的条目会保留，直接重导同一文件即可收敛。
 
-const configVersion = 1
+// configVersion 2 起别名带多配置（active_profile + binding.profile）。
+// 新服务端仍接受 v1（全部按 default 配置处理），但旧服务端会拒绝 v2——
+// 这是刻意的：让旧版本导入时响亮失败，而不是静默把多套配置并成一条链。
+const configVersion = 2
 
 type configUpstreamModel struct {
 	ModelName       string `json:"model_name"`
@@ -51,13 +54,13 @@ type configUpstream struct {
 	Format  string `json:"format"`
 	// 附加格式端点（选填）。指针沿用「缺席即保留」惯例：导入时 nil = 新建不带 /
 	// 更新保留现值，显式空数组 = 清空；导出侧无条件写出（空也落成 []），否则
-	// 导出→导入往返永远无法清空该字段。version 保持 1：旧文件没有该字段，语义不变。
+	// 导出→导入往返永远无法清空该字段。v1 旧文件没有该字段，语义不变。
 	ExtraEndpoints *[]store.UpstreamEndpoint `json:"extra_endpoints,omitempty"`
 	Remark         *string                   `json:"remark"`
 	// 上游标记（官方/中转）。与 remark 同款指针三态：导入时 nil = 新建按默认
 	// 官方 / 更新保留现值，显式空串 = 回官方，非法值整体 400；导出侧无条件写出
 	// （与 extra_endpoints 同理——缺省在导入侧是「保留」，不写该键的导出文件
-	// 永远改不了目标实例上的标记）。version 保持 1：旧文件没有该键，语义不变。
+	// 永远改不了目标实例上的标记）。v1 旧文件没有该键，语义不变。
 	Tag               *string               `json:"tag"`
 	Enabled           *bool                 `json:"enabled"`
 	ExpiresAt         optTime               `json:"expires_at"`
@@ -70,11 +73,13 @@ type configUpstream struct {
 type configBinding struct {
 	Upstream  string `json:"upstream"`
 	ModelName string `json:"model_name"`
+	Profile   string `json:"profile"`
 }
 
 type configAlias struct {
-	Name     string          `json:"name"`
-	Bindings []configBinding `json:"bindings"`
+	Name          string          `json:"name"`
+	ActiveProfile string          `json:"active_profile"`
+	Bindings      []configBinding `json:"bindings"`
 }
 
 // configFile 同时充当导出响应与导入请求体（导入侧忽略 exported_at）。
@@ -134,14 +139,14 @@ func (a *API) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		out.Upstreams = append(out.Upstreams, cu)
 	}
 	for _, al := range aliases {
-		ca := configAlias{Name: al.Name, Bindings: make([]configBinding, 0, len(al.Bindings))}
+		ca := configAlias{Name: al.Name, ActiveProfile: al.ActiveProfile, Bindings: make([]configBinding, 0, len(al.Bindings))}
 		for _, b := range al.Bindings {
 			// 指向已删除上游的绑定（管理端联查给出空名）在导出文件里无法
 			// 解析回上游，跳过即可——正常路径 DeleteUpstream 已顺带软删绑定。
 			if b.UpstreamName == "" {
 				continue
 			}
-			ca.Bindings = append(ca.Bindings, configBinding{Upstream: b.UpstreamName, ModelName: b.ModelName})
+			ca.Bindings = append(ca.Bindings, configBinding{Upstream: b.UpstreamName, ModelName: b.ModelName, Profile: b.Profile})
 		}
 		out.Aliases = append(out.Aliases, ca)
 	}
@@ -226,23 +231,39 @@ func (a *API) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 					// 真实 DB 错误必须让导入失败，不能伪装成「不存在」
 					return fmt.Errorf("resolve upstream %q: %w", b.Upstream, err)
 				}
-				bindings = append(bindings, store.AliasBinding{UpstreamID: ex.ID, ModelName: b.ModelName})
+				bindings = append(bindings, store.AliasBinding{UpstreamID: ex.ID, ModelName: b.ModelName, Profile: b.Profile})
 			}
 			if len(bindings) == 0 {
 				res.AliasesSkipped++
 				continue
+			}
+			// 被丢弃的绑定可能正好是 active_profile 的唯一来源：此时改选第一套
+			// 仍存在的配置，避免导入出一个「当前配置为空」的别名。
+			active := al.ActiveProfile
+			activeAlive := false
+			for _, b := range bindings {
+				if b.Profile == active {
+					activeAlive = true
+					break
+				}
+			}
+			if !activeAlive {
+				active = bindings[0].Profile
+				logger.Warn("admin: imported alias active profile has no surviving bindings, falling back",
+					"alias", al.Name, "wanted", al.ActiveProfile, "using", active)
 			}
 			ex, err := store.GetAliasByName(d, al.Name)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("alias %q: %w", al.Name, err)
 			}
 			if err == nil {
+				ex.ActiveProfile = active
 				ex.Bindings = bindings
 				if err := store.UpdateAlias(d, ex); err != nil {
 					return fmt.Errorf("alias %q: %w", al.Name, err)
 				}
 				res.AliasesUpdated++
-			} else if _, err := store.CreateAlias(d, &store.ModelAlias{Name: al.Name, Bindings: bindings}); err != nil {
+			} else if _, err := store.CreateAlias(d, &store.ModelAlias{Name: al.Name, ActiveProfile: active, Bindings: bindings}); err != nil {
 				return fmt.Errorf("alias %q: %w", al.Name, err)
 			} else {
 				res.AliasesCreated++
@@ -342,6 +363,7 @@ func validateImport(in *configFile) error {
 			return fmt.Errorf("aliases[%d]: duplicate name %q", i, al.Name)
 		}
 		seenAliases[al.Name] = true
+		profiles := make(map[string]bool, len(al.Bindings))
 		for j := range al.Bindings {
 			b := &al.Bindings[j]
 			b.Upstream = strings.TrimSpace(b.Upstream)
@@ -349,7 +371,31 @@ func validateImport(in *configFile) error {
 			if b.Upstream == "" || b.ModelName == "" {
 				return fmt.Errorf("aliases[%d].bindings[%d]: upstream and model_name are required", i, j)
 			}
+			profile, err := store.NormalizeAliasProfile(b.Profile)
+			if err != nil {
+				return fmt.Errorf("aliases[%d].bindings[%d]: %w", i, j, err)
+			}
+			b.Profile = profile
+			profiles[profile] = true
 		}
+		// v1 文件没有 active_profile：按第一条绑定归一；空绑定列表的条目
+		// 稍后会因解析不到上游而整体跳过，这里只做结构性兜底。
+		if strings.TrimSpace(al.ActiveProfile) == "" {
+			if len(al.Bindings) > 0 {
+				al.ActiveProfile = al.Bindings[0].Profile
+			} else {
+				al.ActiveProfile = store.DefaultAliasProfile
+			}
+			continue
+		}
+		active, err := store.NormalizeAliasProfile(al.ActiveProfile)
+		if err != nil {
+			return fmt.Errorf("aliases[%d]: %w", i, err)
+		}
+		if len(al.Bindings) > 0 && !profiles[active] {
+			return fmt.Errorf("aliases[%d]: active_profile %q has no bindings", i, active)
+		}
+		al.ActiveProfile = active
 	}
 	return nil
 }

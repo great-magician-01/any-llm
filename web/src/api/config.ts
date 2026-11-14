@@ -35,10 +35,14 @@ export interface ConfigUpstream {
 export interface ConfigBinding {
   upstream: string
   model_name: string
+  /** 所属配置名；v1 文件缺省 = default */
+  profile?: string
 }
 
 export interface ConfigAlias {
   name: string
+  /** 当前生效配置；v1 文件缺省 = default（或第一条绑定所属配置） */
+  active_profile?: string
   bindings: ConfigBinding[]
 }
 

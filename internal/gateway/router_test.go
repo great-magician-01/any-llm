@@ -229,6 +229,58 @@ func TestModelsEndpointExcludesDisabled(t *testing.T) {
 	}
 }
 
+// /v1/models 的别名可用性只看当前生效配置：active 配置指向禁用上游时即使
+// 另一套配置可用也不列出；切换后立即出现。
+func TestModelsEndpointUsesActiveProfile(t *testing.T) {
+	g, d := setupGateway(t)
+	off, _ := store.CreateUpstream(d, &store.Upstream{Name: "peak-off", BaseURL: "b", APIKey: "k", Format: "openai"})
+	on, _ := store.CreateUpstream(d, &store.Upstream{Name: "valley-on", BaseURL: "b", APIKey: "k", Format: "openai"})
+	aliasID, err := store.CreateAlias(d, &store.ModelAlias{Name: "fixed", ActiveProfile: "峰期", Bindings: []store.AliasBinding{
+		{UpstreamID: off, ModelName: "m1", Profile: "峰期"},
+		{UpstreamID: on, ModelName: "m2", Profile: "谷期"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := store.GetUpstreamByID(d, off)
+	u.Enabled = false
+	if err := store.UpdateUpstream(d, u); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := store.CreateExtKey(d, "l", "", 0, 0, nil)
+
+	list := func() map[string]bool {
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+k.Key)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		ids := map[string]bool{}
+		for _, m := range resp.Data {
+			ids[m.ID] = true
+		}
+		return ids
+	}
+
+	if ids := list(); ids["fixed"] {
+		t.Fatalf("active profile with disabled upstream must hide alias: %+v", ids)
+	}
+	if err := store.SetAliasActiveProfile(d, aliasID, "谷期"); err != nil {
+		t.Fatal(err)
+	}
+	if ids := list(); !ids["fixed"] {
+		t.Fatalf("switched profile should make alias visible: %+v", ids)
+	}
+}
+
 // 直连请求已过有效期的上游 → 404，与禁用分开报（该去续期，不是去点启用）。
 func TestRouteExpiredUpstream(t *testing.T) {
 	g, d := setupGateway(t)

@@ -66,6 +66,39 @@ describe('expandExportModels', () => {
     ])
   })
 
+  it('别名只看当前生效配置：非 active 配置的绑定不参与导出', () => {
+    const ups = [up(1, 'peak-up', { enabled: false }), up(2, 'valley-up')]
+    const models = new Map<number, UpstreamModel[]>([
+      [1, [mod('peak-model')]],
+      [2, [mod('valley-model')]],
+    ])
+    const aliases: ModelAlias[] = [
+      {
+        id: 0,
+        name: 'deepseek',
+        active_profile: '峰期',
+        bindings: [
+          { upstream_id: 1, model_name: 'peak-model', priority: 0, profile: '峰期' },
+          { upstream_id: 2, model_name: 'valley-model', priority: 1, profile: '谷期' },
+        ],
+      },
+      {
+        id: 0,
+        name: 'deepseek-offpeak',
+        active_profile: '谷期',
+        bindings: [
+          { upstream_id: 1, model_name: 'peak-model', priority: 0, profile: '峰期' },
+          { upstream_id: 2, model_name: 'valley-model', priority: 1, profile: '谷期' },
+        ],
+      },
+    ]
+    const ids = expandExportModels(ups, models, aliases).map((m) => m.id)
+    // 峰期上游被禁用：active=峰期 的别名不收录（不回落到谷期绑定）；
+    // active=谷期 的别名正常收录
+    expect(ids).not.toContain('deepseek')
+    expect(ids).toContain('deepseek-offpeak')
+  })
+
   it('全绑定不可用的别名不收录（/v1/models 同样不列出）', () => {
     const ups = [up(1, 'a', { enabled: false }), up(2, 'gone', { expires_at: past })]
     const models = new Map<number, UpstreamModel[]>([

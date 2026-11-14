@@ -65,7 +65,7 @@ func TestExportConfig(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%s", err, w.Body.String())
 	}
-	if out.Version != 1 {
+	if out.Version != 2 {
 		t.Fatalf("version=%d", out.Version)
 	}
 	if out.ExportedAt == "" {
@@ -100,7 +100,7 @@ func TestExportConfig(t *testing.T) {
 		t.Fatalf("aliases=%d", len(out.Aliases))
 	}
 	al := out.Aliases[0]
-	if al["name"] != "gpt4" {
+	if al["name"] != "gpt4" || al["active_profile"] != store.DefaultAliasProfile {
 		t.Fatalf("alias=%v", al)
 	}
 	bindings, _ := al["bindings"].([]any)
@@ -108,11 +108,11 @@ func TestExportConfig(t *testing.T) {
 		t.Fatalf("bindings=%v", al["bindings"])
 	}
 	b0 := bindings[0].(map[string]any)
-	if b0["upstream"] != "openai" || b0["model_name"] != "gpt-4o" {
+	if b0["upstream"] != "openai" || b0["model_name"] != "gpt-4o" || b0["profile"] != store.DefaultAliasProfile {
 		t.Fatalf("binding0=%v", b0)
 	}
 	b1 := bindings[1].(map[string]any)
-	if b1["upstream"] != "deepseek" || b1["model_name"] != "deepseek-chat" {
+	if b1["upstream"] != "deepseek" || b1["model_name"] != "deepseek-chat" || b1["profile"] != store.DefaultAliasProfile {
 		t.Fatalf("binding1=%v", b1)
 	}
 }
@@ -219,12 +219,118 @@ func TestImportConfig_CreatesAndOverwrites(t *testing.T) {
 		da.Bindings[0].Priority != 0 || da.Bindings[1].UpstreamName != "fresh" || da.Bindings[1].ModelName != "fresh-model" || da.Bindings[1].Priority != 1 {
 		t.Fatalf("dup-alias bindings=%+v", da.Bindings)
 	}
+	// v1 文件没有配置字段：全部落到 default，行为与升级前一致
+	if da.ActiveProfile != store.DefaultAliasProfile || da.Bindings[0].Profile != store.DefaultAliasProfile || da.Bindings[1].Profile != store.DefaultAliasProfile {
+		t.Fatalf("v1 profiles=%+v active=%q", da.Bindings, da.ActiveProfile)
+	}
 	fa, err := store.GetAliasByName(d, "fresh-alias")
 	if err != nil {
 		t.Fatalf("fresh-alias missing: %v", err)
 	}
 	if len(fa.Bindings) != 1 || fa.Bindings[0].UpstreamName != "fresh" || fa.Bindings[0].ModelName != "fresh-model" {
 		t.Fatalf("fresh-alias=%+v", fa.Bindings)
+	}
+}
+
+// TestImportConfig_AliasProfiles 覆盖 v2 配置的多套 profile：导入后 active 与
+// 各绑定所属配置完整还原；导出再导入往返不丢字段；active 配置的绑定全部被丢弃
+// （上游不存在）时回退到第一套仍存在的配置。
+func TestImportConfig_AliasProfiles(t *testing.T) {
+	a, d := setupAPI(t)
+	store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://u", APIKey: "sk", Format: "openai"})
+
+	payload := map[string]any{
+		"version": 2,
+		"upstreams": []map[string]any{
+			{"name": "u", "base_url": "https://u", "api_key": "sk", "format": "openai"},
+		},
+		"aliases": []map[string]any{
+			{
+				"name": "deepseek", "active_profile": "谷期",
+				"bindings": []map[string]any{
+					{"upstream": "u", "model_name": "peak", "profile": "峰期"},
+					{"upstream": "u", "model_name": "valley", "profile": "谷期"},
+				},
+			},
+			{
+				// 峰期配置的绑定指向不存在的上游 → 被丢弃，active 回退到谷期
+				"name": "fallback", "active_profile": "峰期",
+				"bindings": []map[string]any{
+					{"upstream": "missing", "model_name": "m", "profile": "峰期"},
+					{"upstream": "u", "model_name": "v", "profile": "谷期"},
+				},
+			},
+		},
+	}
+	w := postConfig(t, a, "/api/admin/config/import", payload)
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var res importResult
+	json.Unmarshal(w.Body.Bytes(), &res)
+	if res.AliasesCreated != 2 || res.BindingsDropped != 1 {
+		t.Fatalf("counts=%+v", res)
+	}
+
+	ds, err := store.GetAliasByName(d, "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.ActiveProfile != "谷期" || len(ds.Bindings) != 2 ||
+		ds.Bindings[0].Profile != "峰期" || ds.Bindings[1].Profile != "谷期" {
+		t.Fatalf("deepseek=%+v", ds)
+	}
+	fb, err := store.GetAliasByName(d, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fb.ActiveProfile != "谷期" || len(fb.Bindings) != 1 || fb.Bindings[0].ModelName != "v" {
+		t.Fatalf("fallback=%+v", fb)
+	}
+
+	// 导出 → 再导入到全新实例，配置字段完整往返
+	w = getConfig(t, a, "/api/admin/config/export")
+	if w.Code != 200 {
+		t.Fatalf("export status=%d", w.Code)
+	}
+	var exported configFile
+	if err := json.Unmarshal(w.Body.Bytes(), &exported); err != nil {
+		t.Fatal(err)
+	}
+	a2, d2 := setupAPI(t)
+	// 目标库需要同名上游，绑定才会保留
+	store.CreateUpstream(d2, &store.Upstream{Name: "u", BaseURL: "https://u", APIKey: "sk", Format: "openai"})
+	w = postConfig(t, a2, "/api/admin/config/import", exported)
+	if w.Code != 200 {
+		t.Fatalf("re-import status=%d body=%s", w.Code, w.Body.String())
+	}
+	ds2, err := store.GetAliasByName(d2, "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds2.ActiveProfile != "谷期" || len(ds2.Bindings) != 2 ||
+		ds2.Bindings[0].Profile != "峰期" || ds2.Bindings[1].Profile != "谷期" {
+		t.Fatalf("roundtrip deepseek=%+v", ds2)
+	}
+}
+
+// TestImportConfig_AliasProfilesValidation active_profile 指向不存在的配置 →
+// 整个文件拒绝，不做任何写入。
+func TestImportConfig_AliasProfilesValidation(t *testing.T) {
+	a, d := setupAPI(t)
+	store.CreateUpstream(d, &store.Upstream{Name: "u", BaseURL: "https://u", APIKey: "sk", Format: "openai"})
+	w := postConfig(t, a, "/api/admin/config/import", map[string]any{
+		"version": 2,
+		"aliases": []map[string]any{{
+			"name": "x", "active_profile": "谷期",
+			"bindings": []map[string]any{{"upstream": "u", "model_name": "m", "profile": "峰期"}},
+		}},
+	})
+	if w.Code != 400 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := store.GetAliasByName(d, "x"); err == nil {
+		t.Fatal("invalid import should not create alias")
 	}
 }
 

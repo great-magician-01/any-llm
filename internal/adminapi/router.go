@@ -45,6 +45,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/aliases/{id}", withID(a.getAlias))
 	mux.HandleFunc("PUT /api/admin/aliases/{id}", withID(a.updateAlias))
 	mux.HandleFunc("DELETE /api/admin/aliases/{id}", withID(a.deleteAlias))
+	mux.HandleFunc("POST /api/admin/aliases/{id}/activate", withID(a.activateAlias))
 	mux.HandleFunc("GET /api/admin/keys", a.listKeys)
 	mux.HandleFunc("POST /api/admin/keys", a.createKey)
 	mux.HandleFunc("PUT /api/admin/keys/{id}", withID(a.updateKey))

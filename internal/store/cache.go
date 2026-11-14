@@ -50,7 +50,7 @@ import (
 type aliasEntry struct {
 	id         int64         // 别名行 ID：改名时旧名只有按 ID 扫才找得到
 	found      bool          // 别名行存在且活跃（candidates 为空 = 存在但无可用绑定）
-	candidates []AliasTarget // JOIN 出的原始候选，含已过有效期者；顺序即优先级
+	candidates []AliasTarget // active_profile 解析出的原始候选，含已过有效期者；顺序即优先级
 }
 
 // configCacheTTL 缓存条目寿命。固定 1 小时，不做成可配置项——它只是写时失效之外
@@ -221,11 +221,13 @@ func CachedUpstreamByName(d *sql.DB, name string) (*Upstream, error) {
 
 // CachedAliasTargets 按对外名称解析别名候选链（网关别名路由）。返回值与
 // ResolveAliasTargets 一致：found=false 表示没有这个别名（调用方回落直连拆分），
-// found=true 但 targets 为空表示别名存在却无可用绑定。
+// found=true 但 targets 为空表示别名存在却无可用绑定（例如当前生效配置的绑定
+// 全部指向已禁用/过期上游）。
 //
-// 缓存的是未过滤有效期的原始候选；过期判定（Upstream.Expired）在这里按 now 做，
-// 所以一个已缓存的别名不需要因为「时间走过 expires_at」而被失效——那与条目自身
-// 的 TTL 是两回事，后者到期会连候选一起重查。
+// 缓存的是当前生效配置（active_profile）的、未过滤有效期的原始候选；切换配置
+// 走 SetAliasActiveProfile 的写路径逐出条目。过期判定（Upstream.Expired）在这里
+// 按 now 做，所以一个已缓存的别名不需要因为「时间走过 expires_at」而被失效——
+// 那与条目自身的 TTL 是两回事，后者到期会连候选一起重查。
 func CachedAliasTargets(d *sql.DB, name string, now time.Time) (found bool, targets []AliasTarget, err error) {
 	entry, err := loadThrough(&cfgCache.aliases, &cfgCache.aliasesGen, name,
 		func() (*aliasEntry, error) {

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,6 +257,146 @@ func TestUpstreamExpired(t *testing.T) {
 	}
 	if !u.Expired(at.Add(time.Second)) {
 		t.Fatal("after expiry should be expired")
+	}
+}
+
+// TestAliasProfiles 覆盖多配置的核心语义：创建时按 profile 分组、网关只解析
+// active_profile、一键切换只改指针不改绑定、目标配置必须存在。
+func TestAliasProfiles(t *testing.T) {
+	d := testDB(t)
+	u1, _ := CreateUpstream(d, &Upstream{Name: "u1", BaseURL: "b", APIKey: "k", Format: "openai"})
+	u2, _ := CreateUpstream(d, &Upstream{Name: "u2", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	id, err := CreateAlias(d, &ModelAlias{Name: "fixed", ActiveProfile: "峰期", Bindings: []AliasBinding{
+		{UpstreamID: u1, ModelName: "peak-1", Profile: "峰期"},
+		{UpstreamID: u2, ModelName: "valley-1", Profile: "谷期"},
+		{UpstreamID: u2, ModelName: "peak-2", Profile: "峰期"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetAliasByID(d, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveProfile != "峰期" {
+		t.Fatalf("active_profile=%q", got.ActiveProfile)
+	}
+	wantProfiles := []string{"峰期", "谷期", "峰期"}
+	for i, want := range wantProfiles {
+		if got.Bindings[i].Profile != want || got.Bindings[i].Priority != i {
+			t.Fatalf("binding[%d]=%+v", i, got.Bindings[i])
+		}
+	}
+
+	// 网关只看到当前配置的绑定；priority 保持全局相对顺序
+	found, targets, err := ResolveAliasTargets(d, "fixed", time.Now())
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if len(targets) != 2 || targets[0].ModelName != "peak-1" || targets[1].ModelName != "peak-2" {
+		t.Fatalf("peak targets=%+v", targets)
+	}
+
+	// 一键切换：只改 active_profile，绑定原样保留
+	if err := SetAliasActiveProfile(d, id, "谷期"); err != nil {
+		t.Fatal(err)
+	}
+	found, targets, err = ResolveAliasTargets(d, "fixed", time.Now())
+	if err != nil || !found {
+		t.Fatalf("after switch: found=%v err=%v", found, err)
+	}
+	if len(targets) != 1 || targets[0].ModelName != "valley-1" {
+		t.Fatalf("valley targets=%+v", targets)
+	}
+	got, _ = GetAliasByID(d, id)
+	if got.ActiveProfile != "谷期" || len(got.Bindings) != 3 {
+		t.Fatalf("switch must not touch bindings: %+v", got)
+	}
+
+	// 目标配置不存在 → 明确错误，不改现状
+	if err := SetAliasActiveProfile(d, id, "不存在"); !errors.Is(err, ErrAliasProfileNotFound) {
+		t.Fatalf("unknown profile err=%v", err)
+	}
+	if got, _ := GetAliasByID(d, id); got.ActiveProfile != "谷期" {
+		t.Fatalf("failed switch changed active_profile: %q", got.ActiveProfile)
+	}
+
+	// 整体替换绑定且未指定 active_profile：现配置已被删掉时自动选第一套
+	got.ActiveProfile = ""
+	got.Bindings = []AliasBinding{{UpstreamID: u1, ModelName: "new", Profile: "新配置"}}
+	if err := UpdateAlias(d, got); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := GetAliasByID(d, id); got.ActiveProfile != "新配置" || len(got.Bindings) != 1 {
+		t.Fatalf("after replace: %+v", got)
+	}
+}
+
+// TestAliasProfilesDefaultAndValidation 覆盖配置名归一与写库边界校验：
+// 未给配置名全部落 default；显式 active_profile 必须在绑定中存在。
+func TestAliasProfilesDefaultAndValidation(t *testing.T) {
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+
+	id, err := CreateAlias(d, &ModelAlias{Name: "legacy", Bindings: []AliasBinding{{UpstreamID: uid, ModelName: "m"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := GetAliasByID(d, id)
+	if got.ActiveProfile != DefaultAliasProfile || got.Bindings[0].Profile != DefaultAliasProfile {
+		t.Fatalf("defaults: %+v", got)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		active string
+		want   string
+	}{
+		{"missing active binding", "谷期", "active profile"},
+		{"profile too long", strings.Repeat("峰", maxAliasProfileLen+1), "too long"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CreateAlias(d, &ModelAlias{Name: "bad-" + tc.name, ActiveProfile: tc.active, Bindings: []AliasBinding{
+				{UpstreamID: uid, ModelName: "m", Profile: "峰期"},
+			}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err=%v want contains %q", err, tc.want)
+			}
+		})
+	}
+
+	// 读写两侧都裁剪空白；空白 active 视作未给
+	if p, err := NormalizeAliasProfile("  谷期  "); err != nil || p != "谷期" {
+		t.Fatalf("normalize=%q err=%v", p, err)
+	}
+	if p, err := NormalizeAliasProfile(""); err != nil || p != DefaultAliasProfile {
+		t.Fatalf("empty normalize=%q err=%v", p, err)
+	}
+}
+
+// TestCachedAliasTargetsSwitchProfile 钉住切换配置的缓存语义：缓存条目只对应
+// 解析时的 active_profile，SetAliasActiveProfile 写库后必须逐出，下一次读取
+// 立即看到新配置的绑定链（不依赖 TTL）。
+func TestCachedAliasTargetsSwitchProfile(t *testing.T) {
+	pinTTL(t, time.Hour)
+	d := testDB(t)
+	uid, _ := CreateUpstream(d, &Upstream{Name: "u", BaseURL: "b", APIKey: "k", Format: "openai"})
+	id, err := CreateAlias(d, &ModelAlias{Name: "fixed", ActiveProfile: "峰期", Bindings: []AliasBinding{
+		{UpstreamID: uid, ModelName: "peak", Profile: "峰期"},
+		{UpstreamID: uid, ModelName: "valley", Profile: "谷期"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, targets, err := CachedAliasTargets(d, "fixed", time.Now()); err != nil || len(targets) != 1 || targets[0].ModelName != "peak" {
+		t.Fatalf("initial targets=%+v err=%v", targets, err)
+	}
+	if err := SetAliasActiveProfile(d, id, "谷期"); err != nil {
+		t.Fatal(err)
+	}
+	if _, targets, err := CachedAliasTargets(d, "fixed", time.Now()); err != nil || len(targets) != 1 || targets[0].ModelName != "valley" {
+		t.Fatalf("after switch targets=%+v err=%v (cache not evicted?)", targets, err)
 	}
 }
 
