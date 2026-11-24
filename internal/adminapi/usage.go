@@ -28,6 +28,18 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"data": summaries})
 }
 
+// usageOverview serves GET /api/admin/usage/overview — 首页所需的模型窗口汇总、
+// 每日日历和全部上游日/月用量，一次响应返回，替代多接口与逐上游请求扇出。
+func (a *API) usageOverview(w http.ResponseWriter, r *http.Request) {
+	overview, err := store.UsageOverviewStats(a.db)
+	if err != nil {
+		logger.Error("admin: usage overview failed", "err", err)
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, overview)
+}
+
 // usageRecords serves GET /api/admin/usage/records?page=&size=&model=.
 // model 非空时按模型精确筛选（请求明细页的模型下拉框）。
 func (a *API) usageRecords(w http.ResponseWriter, r *http.Request) {

@@ -53,13 +53,18 @@ const maxUsageDailyDays = 370
 // without records are zero-filled. Days are bucketed in the server's local
 // timezone, matching the day windows used by the token-limit checks.
 func UsageDailyStats(d *sql.DB, days int, from, to string) ([]UsageDayStat, error) {
+	return usageDailyStatsAt(d, days, from, to, time.Now())
+}
+
+// usageDailyStatsAt 让概览的日历与其它汇总共用同一个 now，避免跨午夜时
+// 三条并行查询分别取时间而落在不同的日/月窗口。
+func usageDailyStatsAt(d *sql.DB, days int, from, to string, now time.Time) ([]UsageDayStat, error) {
 	if days < 1 {
 		days = 14
 	}
 	if days > maxUsageDailyDays {
 		days = maxUsageDailyDays
 	}
-	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -(days - 1))
 	end := start.AddDate(0, 0, days) // exclusive
 	if from != "" && to != "" {

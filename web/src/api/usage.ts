@@ -1,4 +1,26 @@
 import client from './client'
+import type { UsageTotals } from './types'
+
+export interface UsageOverviewTotals {
+  request_count: number; total_tokens: number; ok_count: number; error_count: number
+}
+
+export interface UsageOverviewModel extends UsageOverviewTotals {
+  group_key: string
+}
+
+export interface UsageOverviewUpstream extends UsageTotals {
+  upstream_id: number
+}
+
+export interface UsageOverview {
+  today: UsageOverviewTotals
+  month: UsageOverviewTotals
+  all_time: UsageOverviewTotals
+  models: UsageOverviewModel[]
+  daily: UsageDayStat[]
+  upstream_totals: UsageOverviewUpstream[]
+}
 
 export interface UsageSummary {
   group_key: string; request_count: number; total_tokens: number
@@ -32,6 +54,12 @@ export async function fetchSummary(groupBy: string, from?: string, to?: string) 
 export async function fetchDaily(days: number, from?: string, to?: string) {
   const { data } = await client.get('/usage/daily', { params: { days, from, to } })
   return data.data as UsageDayStat[]
+}
+
+/** 概览专用聚合：三窗口汇总 + 本月模型 Top + 370 天日历 + 全部上游日/月用量。 */
+export async function fetchUsageOverview() {
+  const { data } = await client.get('/usage/overview')
+  return data as UsageOverview
 }
 
 export async function fetchRecords(page: number, size: number, model?: string) {

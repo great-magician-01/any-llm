@@ -194,6 +194,32 @@ func TestSchemaUsageModelIndex(t *testing.T) {
 	}
 }
 
+// TestSchemaUsageRangeIndexes 盯住“主体 + 时间范围”的配额/概览查询索引。
+// 两个组合索引都从同一声明渲染到三种方言，存量库由通用普通索引迁移补建。
+func TestSchemaUsageRangeIndexes(t *testing.T) {
+	tbl, ok := schemaTableByName("usage_records")
+	if !ok {
+		t.Fatal("usage_records missing")
+	}
+	for _, ix := range []Index{
+		{Name: "idx_usage_ext_key_created", Columns: []string{"ext_key_id", "created_at"}},
+		{Name: "idx_usage_upstream_created", Columns: []string{"upstream_id", "created_at"}},
+	} {
+		for _, dialect := range []Dialect{DialectSQLite, DialectPostgres} {
+			ddl := joinDDL(mustDDL(t, tbl, dialect, DDLConfig{IfNotExists: true})[1:])
+			want := "CREATE INDEX IF NOT EXISTS " + ix.Name + " ON usage_records(" + ix.Columns[0] + ", " + ix.Columns[1] + ")"
+			if !strings.Contains(ddl, want) {
+				t.Errorf("%s usage range index missing %q:\n%s", dialect, want, ddl)
+			}
+		}
+		mysqlDDL := mustDDL(t, tbl, DialectMySQL, DDLConfig{IfNotExists: true})[0]
+		want := "KEY `" + ix.Name + "` (`" + ix.Columns[0] + "`, `" + ix.Columns[1] + "`)"
+		if !strings.Contains(mysqlDDL, want) {
+			t.Errorf("MySQL usage range index missing %q:\n%s", want, mysqlDDL)
+		}
+	}
+}
+
 // TestSchemaMySQLLongTextForSessionMessages 盯住 64 KiB 陷阱：MySQL 的 TEXT 只有
 // 64 KiB，而 messages 存的是累积的整段会话历史，长会话会直接写失败。
 func TestSchemaMySQLLongTextForSessionMessages(t *testing.T) {

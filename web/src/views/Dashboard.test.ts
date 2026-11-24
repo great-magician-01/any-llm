@@ -24,10 +24,20 @@ vi.mock('naive-ui', async (importOriginal) => {
 const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
 const execDescriptor = Object.getOwnPropertyDescriptor(document, 'execCommand')
 
-/** 概览首屏的请求：三份 usage/summary + daily + 上游 + 密钥 + 余额快照 */
+const zeroTotals = () => ({ request_count: 0, total_tokens: 0, ok_count: 0, error_count: 0 })
+const overview = (overrides: Record<string, any> = {}) => ({
+  today: zeroTotals(),
+  month: zeroTotals(),
+  all_time: zeroTotals(),
+  models: [],
+  daily: [],
+  upstream_totals: [],
+  ...overrides,
+})
+
+/** 概览首屏：一个聚合请求 + 上游 + 密钥 + 余额快照。 */
 function baseRoutes(api: ApiMock) {
-  api.on('get', '/usage/summary', { data: { data: [] } })
-  api.on('get', '/usage/daily', { data: { data: [] } })
+  api.on('get', '/usage/overview', { data: overview() })
   api.on('get', '/upstreams', { data: { data: [] } })
   api.on('get', '/keys', { data: { data: [] } })
   api.on('get', '/balances', { data: { data: [] } })
@@ -81,6 +91,51 @@ async function open() {
 }
 
 describe('Dashboard 页', () => {
+  it('首屏只请求聚合接口，不再重复汇总或逐上游拉取', async () => {
+    await open()
+
+    expect(api.callsTo('get', '/usage/overview')).toHaveLength(1)
+    expect(api.callsTo('get', '/usage/summary')).toHaveLength(0)
+    expect(api.callsTo('get', '/usage/daily')).toHaveLength(0)
+    expect(api.calls.filter((c) => c.url.startsWith('/usage/upstream/'))).toHaveLength(0)
+  })
+
+  it('直接使用聚合结果，并给无用量记录的上游补零', async () => {
+    api.on('get', '/usage/overview', {
+      data: overview({
+        today: { request_count: 3, total_tokens: 42, ok_count: 2, error_count: 1 },
+        month: { request_count: 4, total_tokens: 50, ok_count: 3, error_count: 1 },
+        all_time: { request_count: 5, total_tokens: 60, ok_count: 4, error_count: 1 },
+        models: [{ group_key: 'model-top', request_count: 1, total_tokens: 42, ok_count: 1, error_count: 0 }],
+        upstream_totals: [{ upstream_id: 1, daily_tokens: 12, monthly_tokens: 34 }],
+      }),
+    })
+    api.on('get', '/upstreams', {
+      data: {
+        data: [
+          { id: 1, name: 'with-usage', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 },
+          { id: 2, name: 'without-usage', enabled: true, daily_token_limit: 0, monthly_token_limit: 0 },
+        ],
+      },
+    })
+    api.on('get', '/keys', { data: { data: [] } })
+    api.on('get', '/balances', { data: { data: [] } })
+
+    wrapper = mountPage(Dashboard)
+    await flush()
+
+    const text = wrapper.text()
+    expect(text).toContain('model-top')
+    expect(text).toContain('with-usage')
+    expect(text).toContain('日 12')
+    expect(text).toContain('月 34')
+    expect(text).toContain('without-usage')
+    expect(text).toContain('日 0')
+    expect(text).toContain('月 0')
+    expect(text).not.toContain('日 —')
+    expect(text).not.toContain('月 —')
+  })
+
   // 规则：剪贴板 API 不可用（局域网 HTTP）时点「复制 Base URL」必须退回 execCommand
   // 复制成功，不能直接弹复制失败
   it('剪贴板 API 不可用时仍能复制 Base URL（退回 execCommand）', async () => {
@@ -112,8 +167,14 @@ describe('Dashboard 页', () => {
   // 规则：概览的「上游用量」和「余额/额度」卡片只展示启用中的上游——
   // 已禁用代表下线观察，不应再占概览版面（过期的仍显示，续期即恢复服务）
   it('上游用量与余额/额度卡片隐藏已禁用的上游', async () => {
-    api.on('get', '/usage/summary', { data: { data: [] } })
-    api.on('get', '/usage/daily', { data: { data: [] } })
+    api.on('get', '/usage/overview', {
+      data: overview({
+        upstream_totals: [
+          { upstream_id: 1, daily_tokens: 100, monthly_tokens: 200 },
+          { upstream_id: 2, daily_tokens: 5, monthly_tokens: 6 },
+        ],
+      }),
+    })
     api.on('get', '/keys', { data: { data: [] } })
     api.on('get', '/upstreams', {
       data: {
@@ -123,8 +184,6 @@ describe('Dashboard 页', () => {
         ],
       },
     })
-    api.on('get', '/usage/upstream/1', { data: { daily_tokens: 100, monthly_tokens: 200 } })
-    api.on('get', '/usage/upstream/2', { data: { daily_tokens: 5, monthly_tokens: 6 } })
     const snapshot = (id: number, upstreamId: number, name: string) => ({
       id,
       upstream_id: upstreamId,
