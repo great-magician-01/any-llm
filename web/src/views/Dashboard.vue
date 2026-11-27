@@ -2,12 +2,12 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { fetchSummary, fetchDaily, type UsageSummary, type UsageDayStat } from '@/api/usage'
-import { listUpstreams, getUpstreamUsage, type Upstream, type UsageTotals } from '@/api/upstreams'
+import { fetchUsageOverview, type UsageOverviewModel, type UsageOverviewTotals, type UsageDayStat } from '@/api/usage'
+import { listUpstreams, type Upstream, type UsageTotals } from '@/api/upstreams'
 import { listKeys } from '@/api/keys'
 import { listLatestBalances, type BalanceSnapshot } from '@/api/balances'
 import { errText } from '@/utils/errText'
-import { formatCompact, formatInt, formatPercent, localISO } from '@/utils/format'
+import { formatCompact, formatInt, formatPercent } from '@/utils/format'
 import { suitePath } from '@/utils/suite'
 import { useClipboard } from '@/composables/useClipboard'
 import StatCard from '@/components/StatCard.vue'
@@ -25,7 +25,7 @@ const loading = ref(false)
 const today = ref({ requests: 0, tokens: 0, ok: 0, error: 0 })
 const month = ref({ requests: 0, tokens: 0 })
 const allTime = ref({ requests: 0, tokens: 0 })
-const topModels = ref<UsageSummary[]>([])
+const topModels = ref<UsageOverviewModel[]>([])
 const daily = ref<UsageDayStat[]>([])
 const upstreamRows = ref<Upstream[]>([])
 const usageByUpstream = ref<Record<number, UsageTotals>>({})
@@ -35,62 +35,37 @@ const modelCount = ref(0)
 const keyCount = ref(0)
 const enabledKeyCount = ref(0)
 
-function sum(list: UsageSummary[]) {
-  return list.reduce(
-    (acc, s) => ({
-      requests: acc.requests + s.request_count,
-      tokens: acc.tokens + s.total_tokens,
-      ok: acc.ok + s.ok_count,
-      error: acc.error + s.error_count,
-    }),
-    { requests: 0, tokens: 0, ok: 0, error: 0 },
-  )
-}
-
-function dayStart(): string {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return localISO(d)
-}
-function monthStart(): string {
-  const d = new Date()
-  d.setDate(1)
-  d.setHours(0, 0, 0, 0)
-  return localISO(d)
+function cardTotals(t: UsageOverviewTotals) {
+  return { requests: t.request_count, tokens: t.total_tokens, ok: t.ok_count, error: t.error_count }
 }
 
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [todayList, monthList, allList, ups, ks, dailyStats, snaps] = await Promise.all([
-      fetchSummary('model', dayStart()),
-      fetchSummary('model', monthStart()),
-      fetchSummary('model'),
+    const [overview, ups, ks, snaps] = await Promise.all([
+      fetchUsageOverview(),
       listUpstreams(),
       listKeys(),
-      // 日历热力图要铺满 53 周，窗口略大于一年（后端上限 370 天）
-      fetchDaily(370),
       // 余额快照接口失败不阻塞概览其余数据（同上游管理页的做法）
       listLatestBalances().catch(() => [] as BalanceSnapshot[]),
     ])
-    today.value = sum(todayList)
-    month.value = sum(monthList)
-    allTime.value = sum(allList)
-    topModels.value = [...monthList].sort((a, b) => b.total_tokens - a.total_tokens).slice(0, 8)
-    daily.value = dailyStats
+    today.value = cardTotals(overview.today)
+    month.value = cardTotals(overview.month)
+    allTime.value = cardTotals(overview.all_time)
+    topModels.value = overview.models
+    daily.value = overview.daily
     upstreamRows.value = ups
     upstreamCount.value = ups.length
     modelCount.value = ups.reduce((n, u) => n + (u.model_count ?? 0), 0)
     keyCount.value = ks.length
     enabledKeyCount.value = ks.filter((k) => k.enabled).length
-    // 每个上游的今日/本月用量：依赖上游列表，跟在第一批之后（同 API 密钥页的做法）
-    const usageResults = await Promise.all(
-      ups.map((u) => (u.id != null ? getUpstreamUsage(u.id).catch(() => null) : Promise.resolve(null))),
-    )
+    // 聚合接口只返回有用量记录的上游；给其余上游补零，保持原逐上游接口的展示语义。
     const uMap: Record<number, UsageTotals> = {}
-    ups.forEach((u, i) => {
-      const r = usageResults[i]
-      if (u.id != null && r) uMap[u.id] = r
+    ups.forEach((u) => {
+      if (u.id != null) uMap[u.id] = { daily_tokens: 0, monthly_tokens: 0 }
+    })
+    overview.upstream_totals.forEach((u) => {
+      uMap[u.upstream_id] = { daily_tokens: u.daily_tokens, monthly_tokens: u.monthly_tokens }
     })
     usageByUpstream.value = uMap
     const bMap: Record<number, BalanceSnapshot> = {}

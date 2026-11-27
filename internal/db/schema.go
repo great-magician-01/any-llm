@@ -207,6 +207,10 @@ var schemaTables = []Table{
 			{Name: "idx_usage_created", Columns: []string{"created_at"}},
 			{Name: "idx_usage_ext_key", Columns: []string{"ext_key_id"}},
 			{Name: "idx_usage_upstream", Columns: []string{"upstream_id"}},
+			// 日/月配额与概览都按“主体 + 时间范围”过滤；等值列在前，
+			// 让单日/单月窗口直接走组合索引范围扫描。
+			{Name: "idx_usage_ext_key_created", Columns: []string{"ext_key_id", "created_at"}},
+			{Name: "idx_usage_upstream_created", Columns: []string{"upstream_id", "created_at"}},
 			// 请求明细按模型筛选（GET /api/admin/usage/records?model=，COUNT 与
 			// 列表共用）：组合 id DESC 让「某模型的最新 N 条」沿索引免排序直接取，
 			// 与 idx_balance_snapshots_upstream 同款。model 有 Len(512)（MySQL 渲染

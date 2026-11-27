@@ -261,7 +261,7 @@ func migratePartialUniqueIndexes(d *sql.DB) error {
 	return nil
 }
 
-// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的四个、
+// migratePlainIndexes 建所有表声明的普通（非唯一）索引：usage_records 的六个、
 // response_sessions 与 balance_snapshots 各一个。与部分唯一索引分开：它们不依赖
 // is_active，且 SQLite 表重建后同样要重建。
 //
